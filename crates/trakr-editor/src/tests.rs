@@ -636,3 +636,264 @@ fn autosave_is_written_recovered_and_cleared() {
     assert!(!clean.autosave_path().unwrap().exists());
     let _ = std::fs::remove_dir_all(dir);
 }
+
+/// Compile-time check that `Action::ALL` lists every variant (adding a variant breaks this match).
+#[test]
+fn action_all_is_complete() {
+    fn index(a: Action) -> usize {
+        use Action::*;
+        match a {
+            New => 0,
+            Save => 1,
+            Quit => 2,
+            Undo => 3,
+            Redo => 4,
+            Cut => 5,
+            Copy => 6,
+            Paste => 7,
+            Clear => 8,
+            SelectAll => 9,
+            SelectNone => 10,
+            ToggleEdit => 11,
+            TransposeUp => 12,
+            TransposeDown => 13,
+            TransposeOctaveUp => 14,
+            TransposeOctaveDown => 15,
+            Reverse => 16,
+            Interpolate => 17,
+            InsertLine => 18,
+            DeleteLine => 19,
+            PlaySong => 20,
+            PlayPattern => 21,
+            PlayFromCursor => 22,
+            Stop => 23,
+            ToggleFollow => 24,
+            SeqPrev => 25,
+            SeqNext => 26,
+            SeqInsert => 27,
+            SeqClone => 28,
+            SeqDelete => 29,
+            SeqMoveUp => 30,
+            SeqMoveDown => 31,
+            PatternPrev => 32,
+            PatternNext => 33,
+            TrackAdd => 34,
+            TrackAddGroup => 35,
+            TrackAddSend => 36,
+            TrackRemove => 37,
+            TrackMute => 38,
+            NoteColumnAdd => 39,
+            NoteColumnRemove => 40,
+            EffectColumnAdd => 41,
+            EffectColumnRemove => 42,
+            OctaveDown => 43,
+            OctaveUp => 44,
+            StepDown => 45,
+            StepUp => 46,
+            InstrumentPrev => 47,
+            InstrumentNext => 48,
+            InstrumentRemove => 49,
+            RecordToggle => 50,
+            RenderToSample => 51,
+            FadeInBlock => 52,
+            FadeOutBlock => 53,
+            TrackSolo => 54,
+            LoopStart => 55,
+            LoopEnd => 56,
+            LoopClear => 57,
+        }
+    }
+    for (i, a) in Action::ALL.iter().enumerate() {
+        assert_eq!(index(*a), i, "{a:?} is out of order in Action::ALL");
+    }
+    assert_eq!(Action::ALL.len(), 58);
+    for a in Action::ALL {
+        assert!(!a.label().is_empty());
+    }
+}
+
+struct Lcg(u64);
+
+impl Lcg {
+    fn next(&mut self) -> u32 {
+        self.0 = self.0.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        (self.0 >> 33) as u32
+    }
+    fn below(&mut self, n: usize) -> usize {
+        self.next() as usize % n.max(1)
+    }
+}
+
+fn check_invariants(app: &Editor, step: usize, what: &str) {
+    let s = &app.song;
+    let nt = s.tracks.len();
+    assert!(nt >= 2, "step {step} ({what}): lost tracks");
+    assert!(app.cursor.track < nt, "step {step} ({what}): cursor track {} of {nt}", app.cursor.track);
+    let (n, f) = app.cols(app.cursor.track);
+    assert!(app.cursor.col < n + f, "step {step} ({what}): cursor col");
+    assert!(!s.sequence.is_empty() && app.seq_pos < s.sequence.len(), "step {step} ({what}): seq_pos");
+    assert!(s.sequence.iter().all(|&p| p < s.patterns.len()), "step {step} ({what}): dangling slot");
+    assert!(app.cursor.line < app.lines_in_pattern(), "step {step} ({what}): cursor line");
+    for (i, t) in s.tracks.iter().enumerate() {
+        if let Some(g) = t.group {
+            assert!(
+                g < nt && s.tracks[g].kind == trakr_core::TrackKind::Group && g != i,
+                "step {step} ({what}): bad group"
+            );
+        }
+        for send in &t.sends {
+            assert!(
+                send.target < nt && s.tracks[send.target].kind == trakr_core::TrackKind::Send,
+                "step {step} ({what}): bad send"
+            );
+        }
+    }
+    for p in &s.patterns {
+        assert!(
+            p.automation.iter().all(|a| a.track < nt),
+            "step {step} ({what}): automation track out of range"
+        );
+        assert!(p.number_of_lines >= 1 && p.number_of_lines <= trakr_core::MAX_LINES);
+    }
+    if let Some((a, b)) = s.loop_range {
+        assert!(a <= b && b < s.sequence.len(), "step {step} ({what}): loop range {a}..{b}");
+    }
+    assert!((app.instrument as usize) < 255);
+}
+
+fn fuzz_editor(seed: u64) {
+    let mut rng = Lcg(seed);
+    let mut app = Editor::new(Song::showcase(), None, None);
+    let keys = [
+        KeyCode::Up,
+        KeyCode::Down,
+        KeyCode::Left,
+        KeyCode::Right,
+        KeyCode::PageUp,
+        KeyCode::PageDown,
+        KeyCode::Home,
+        KeyCode::End,
+        KeyCode::Tab,
+        KeyCode::BackTab,
+        KeyCode::Backspace,
+        KeyCode::Delete,
+        KeyCode::Insert,
+        KeyCode::Esc,
+    ];
+    let chars: Vec<char> = "zsxdcvgbhnjmqwertyuiop234567890`abcdef ,./;[]-=".chars().collect();
+    for step in 0..12_000 {
+        let what: String;
+        match rng.below(14) {
+            0..=4 => {
+                let k = if rng.below(2) == 0 {
+                    KeyCode::Char(chars[rng.below(chars.len())])
+                } else {
+                    keys[rng.below(keys.len())]
+                };
+                let ev = KeyEvent {
+                    code: k,
+                    ctrl: rng.below(8) == 0,
+                    alt: rng.below(8) == 0,
+                    shift: rng.below(4) == 0,
+                };
+                what = format!("{ev:?}");
+                app.on_key(ev);
+            }
+            5..=7 => {
+                let a = Action::ALL[rng.below(Action::ALL.len())];
+                // These touch the file system or audio devices; everything else is fair game.
+                if matches!(
+                    a,
+                    Action::Save | Action::Quit | Action::RecordToggle | Action::RenderToSample | Action::New
+                ) {
+                    continue;
+                }
+                what = format!("{a:?}");
+                app.do_action(a);
+            }
+            8 => {
+                what = "set_cursor".into();
+                app.set_cursor(rng.below(40), rng.below(30), rng.below(12), rng.below(600) as u16);
+            }
+            9 => {
+                what = "pattern lines".into();
+                app.set_pattern_lines(rng.below(600) as u16);
+            }
+            10 => {
+                what = "devices".into();
+                let t = rng.below(app.song.tracks.len() + 2);
+                match rng.below(4) {
+                    0 => {
+                        let d = &trakr_core::DEVICES[rng.below(trakr_core::DEVICES.len())];
+                        app.device_add(t, d.id);
+                    }
+                    1 => app.device_remove(t, rng.below(4)),
+                    2 => app.device_move(t, rng.below(4), rng.below(3) as i32 - 1),
+                    _ => app.device_set_param(
+                        t,
+                        rng.below(4),
+                        rng.below(10),
+                        rng.below(100_000) as f32 - 50_000.0,
+                    ),
+                }
+            }
+            11 => {
+                what = "routing".into();
+                let n = app.song.tracks.len();
+                match rng.below(3) {
+                    0 => app.set_track_group(
+                        rng.below(n + 1),
+                        if rng.below(3) == 0 { None } else { Some(rng.below(n + 1)) },
+                    ),
+                    1 => app.set_send(
+                        rng.below(n + 1),
+                        rng.below(n + 1),
+                        rng.below(150) as f32 / 100.0,
+                        rng.below(2) == 0,
+                    ),
+                    _ => app.set_track_volume(rng.below(n + 1), rng.below(500) as f32 / 100.0),
+                }
+            }
+            12 => {
+                what = "automation / loop".into();
+                let n = app.song.tracks.len();
+                let target = if rng.below(2) == 0 {
+                    trakr_core::AutoTarget::TrackVolume
+                } else {
+                    trakr_core::AutoTarget::Device { device: rng.below(3), param: rng.below(5) }
+                };
+                if rng.below(3) == 0 {
+                    app.set_loop_edge(rng.below(2) == 0);
+                } else {
+                    let (l, v) = (rng.below(200) as f32 / 3.0, rng.below(100) as f32 / 100.0);
+                    app.automation_edit("fuzz", rng.below(n), target, |a| {
+                        a.set_point(l, v);
+                    });
+                }
+            }
+            _ => {
+                what = "undo/redo".into();
+                for _ in 0..1 + rng.below(4) {
+                    if rng.below(3) == 0 {
+                        app.redo();
+                    } else {
+                        app.undo();
+                    }
+                }
+            }
+        }
+        check_invariants(&app, step, &what);
+    }
+    // everything undoable: unwind completely and make sure it still holds together
+    while app.can_undo() {
+        app.undo();
+    }
+    check_invariants(&app, usize::MAX, "full undo");
+}
+
+#[test]
+fn random_editing_keeps_the_song_consistent() {
+    for seed in [0xBADC0DE, 1, 2, 3, 0xFEED, 77] {
+        fuzz_editor(seed);
+    }
+}

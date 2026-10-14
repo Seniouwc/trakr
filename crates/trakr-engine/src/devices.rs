@@ -4,6 +4,9 @@
 use crate::dsp::{db_to_gain, gain_to_db, sine_phase, smooth_coeff, Biquad, Coeffs, DelayLine};
 
 pub trait Device: Send {
+    /// Catalogue id this instance implements (empty for pass-through placeholders).
+    fn id(&self) -> &'static str;
+
     /// Process `buf` (interleaved stereo) in place with the current parameter values.
     fn process(&mut self, params: &[f32], buf: &mut [f32]);
 }
@@ -42,6 +45,10 @@ pub fn create_or_passthrough(id: &str, rate: u32) -> Box<dyn Device> {
 struct Passthrough;
 
 impl Device for Passthrough {
+    fn id(&self) -> &'static str {
+        ""
+    }
+
     fn process(&mut self, _params: &[f32], _buf: &mut [f32]) {}
 }
 
@@ -58,6 +65,10 @@ struct Gainer {
 }
 
 impl Device for Gainer {
+    fn id(&self) -> &'static str {
+        "native.gainer"
+    }
+
     fn process(&mut self, params: &[f32], buf: &mut [f32]) {
         let target = db_to_gain(p(params, 0, 0.0));
         let target = if p(params, 0, 0.0) <= -59.9 { 0.0 } else { target };
@@ -85,6 +96,10 @@ struct FilterDev {
 }
 
 impl Device for FilterDev {
+    fn id(&self) -> &'static str {
+        "native.filter"
+    }
+
     fn process(&mut self, params: &[f32], buf: &mut [f32]) {
         let (f, q) = (p(params, 1, 8000.0), p(params, 2, 0.707));
         let c = match p(params, 0, 0.0).round() as i32 {
@@ -108,6 +123,10 @@ struct Eq {
 }
 
 impl Device for Eq {
+    fn id(&self) -> &'static str {
+        "native.eq"
+    }
+
     fn process(&mut self, params: &[f32], buf: &mut [f32]) {
         let cs = [
             Coeffs::low_shelf(self.fs, p(params, 1, 100.0), p(params, 0, 0.0)),
@@ -141,6 +160,10 @@ impl Delay {
 }
 
 impl Device for Delay {
+    fn id(&self) -> &'static str {
+        "native.delay"
+    }
+
     fn process(&mut self, params: &[f32], buf: &mut [f32]) {
         let target = (p(params, 0, 300.0) * 0.001 * self.fs).clamp(1.0, (self.l.len() - 3) as f32);
         let (fb, mix, pp) = (p(params, 1, 0.4), p(params, 2, 0.3), p(params, 3, 0.0));
@@ -231,6 +254,10 @@ impl Reverb {
 }
 
 impl Device for Reverb {
+    fn id(&self) -> &'static str {
+        "native.reverb"
+    }
+
     fn process(&mut self, params: &[f32], buf: &mut [f32]) {
         let feedback = 0.7 + 0.28 * p(params, 0, 0.6).clamp(0.0, 1.0);
         let damp = 0.4 * p(params, 1, 0.4).clamp(0.0, 1.0);
@@ -279,6 +306,10 @@ impl Chorus {
 }
 
 impl Device for Chorus {
+    fn id(&self) -> &'static str {
+        "native.chorus"
+    }
+
     fn process(&mut self, params: &[f32], buf: &mut [f32]) {
         let (rate, depth, mix, fb) =
             (p(params, 0, 0.8), p(params, 1, 3.0), p(params, 2, 0.5), p(params, 3, 0.0));
@@ -308,6 +339,10 @@ struct Distortion {
 }
 
 impl Device for Distortion {
+    fn id(&self) -> &'static str {
+        "native.distortion"
+    }
+
     fn process(&mut self, params: &[f32], buf: &mut [f32]) {
         let drive = db_to_gain(p(params, 0, 12.0));
         let (mix, out) = (p(params, 1, 1.0), db_to_gain(p(params, 2, -6.0)));
@@ -335,6 +370,10 @@ struct Compressor {
 }
 
 impl Device for Compressor {
+    fn id(&self) -> &'static str {
+        "native.compressor"
+    }
+
     fn process(&mut self, params: &[f32], buf: &mut [f32]) {
         let (thr, ratio) = (p(params, 0, -18.0), p(params, 1, 4.0).max(1.0));
         let atk = smooth_coeff(self.fs, p(params, 2, 10.0) * 0.001);
@@ -362,6 +401,10 @@ struct Eq10 {
 }
 
 impl Device for Eq10 {
+    fn id(&self) -> &'static str {
+        "native.eq10"
+    }
+
     fn process(&mut self, params: &[f32], buf: &mut [f32]) {
         let mut cs = [Coeffs::PASS; 10];
         let mut active = [false; 10];
@@ -391,6 +434,10 @@ struct Ladder {
 }
 
 impl Device for Ladder {
+    fn id(&self) -> &'static str {
+        "native.ladder"
+    }
+
     fn process(&mut self, params: &[f32], buf: &mut [f32]) {
         let cutoff = p(params, 0, 2000.0).clamp(20.0, self.fs * 0.45);
         let k = p(params, 1, 0.3).clamp(0.0, 1.0) * 3.9; // 4.0 would self-oscillate
@@ -419,6 +466,10 @@ struct Gate {
 }
 
 impl Device for Gate {
+    fn id(&self) -> &'static str {
+        "native.gate"
+    }
+
     fn process(&mut self, params: &[f32], buf: &mut [f32]) {
         let thr = p(params, 0, -50.0);
         let open = smooth_coeff(self.fs, p(params, 1, 1.0) * 0.001);
@@ -467,6 +518,10 @@ impl Limiter {
 }
 
 impl Device for Limiter {
+    fn id(&self) -> &'static str {
+        "native.limiter"
+    }
+
     fn process(&mut self, params: &[f32], buf: &mut [f32]) {
         let pre = db_to_gain(p(params, 0, 0.0));
         let ceiling = db_to_gain(p(params, 1, -1.0));
@@ -504,6 +559,10 @@ struct Phaser {
 }
 
 impl Device for Phaser {
+    fn id(&self) -> &'static str {
+        "native.phaser"
+    }
+
     #[allow(clippy::needless_range_loop)] // index is shared by several per-channel arrays
     fn process(&mut self, params: &[f32], buf: &mut [f32]) {
         let (rate, depth, fb, mix) =
@@ -539,6 +598,10 @@ struct RingMod {
 }
 
 impl Device for RingMod {
+    fn id(&self) -> &'static str {
+        "native.ringmod"
+    }
+
     fn process(&mut self, params: &[f32], buf: &mut [f32]) {
         let (freq, mix) = (p(params, 0, 440.0), p(params, 1, 1.0));
         let inc = freq / self.fs;
@@ -559,6 +622,10 @@ struct BitCrusher {
 }
 
 impl Device for BitCrusher {
+    fn id(&self) -> &'static str {
+        "native.bitcrusher"
+    }
+
     fn process(&mut self, params: &[f32], buf: &mut [f32]) {
         let bits = p(params, 0, 8.0).round().clamp(1.0, 16.0);
         let reduce = p(params, 1, 1.0).max(1.0);
@@ -583,6 +650,10 @@ impl Device for BitCrusher {
 struct Width;
 
 impl Device for Width {
+    fn id(&self) -> &'static str {
+        "native.width"
+    }
+
     fn process(&mut self, params: &[f32], buf: &mut [f32]) {
         let width = p(params, 0, 1.0).clamp(0.0, 2.0);
         for fr in buf.chunks_exact_mut(2) {
@@ -601,6 +672,10 @@ struct AutoPan {
 }
 
 impl Device for AutoPan {
+    fn id(&self) -> &'static str {
+        "native.autopan"
+    }
+
     fn process(&mut self, params: &[f32], buf: &mut [f32]) {
         let (rate, depth, pan_mode) =
             (p(params, 0, 2.0), p(params, 1, 0.5).clamp(0.0, 1.0), p(params, 2, 0.0) >= 0.5);
@@ -629,6 +704,10 @@ struct Exciter {
 }
 
 impl Device for Exciter {
+    fn id(&self) -> &'static str {
+        "native.exciter"
+    }
+
     #[allow(clippy::needless_range_loop)] // index is shared by several per-channel arrays
     fn process(&mut self, params: &[f32], buf: &mut [f32]) {
         let (freq, amount) = (p(params, 0, 3000.0), p(params, 1, 0.3));

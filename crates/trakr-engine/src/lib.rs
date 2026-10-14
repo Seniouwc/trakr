@@ -540,14 +540,21 @@ impl Engine {
             if spec.bypass {
                 continue;
             }
-            let n = trakr_core::device_info(&spec.id).map_or(0, |i| i.params.len()).min(params.len());
+            // The song snapshot and the device instances are updated by separate commands. Never feed a
+            // device another device's parameters (that can blow up its feedback paths for good).
+            if self.chains[t][d].id() != spec.id {
+                continue;
+            }
+            let Some(info) = trakr_core::device_info(&spec.id) else { continue };
+            let n = info.params.len().min(params.len());
             for (i, slot) in params.iter_mut().enumerate().take(n) {
-                *slot = spec.param(i);
+                // Files and automation may carry out-of-range values; keep every device inside its design range.
+                *slot = spec.param(i).clamp(info.params[i].min, info.params[i].max);
             }
             for o in &self.overrides {
                 if let (true, Ov::Param { device, param }) = (o.track == t, &o.target) {
                     if *device == d && *param < n {
-                        params[*param] = o.value;
+                        params[*param] = o.value.clamp(info.params[*param].min, info.params[*param].max);
                     }
                 }
             }
@@ -1617,5 +1624,204 @@ mod device_tests {
         assert!(peak <= 1.0, "limiter should hold the master: {peak}");
         let rms = (out.iter().map(|s| s * s).sum::<f32>() / out.len() as f32).sqrt();
         assert!(rms > 0.03, "rms {rms}");
+    }
+
+    // ---- randomized robustness ----
+
+    struct Rng(u64);
+
+    impl Rng {
+        fn next(&mut self) -> u32 {
+            self.0 = self.0.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            (self.0 >> 33) as u32
+        }
+        fn below(&mut self, n: u32) -> u32 {
+            self.next() % n.max(1)
+        }
+        fn pick<'a, T>(&mut self, v: &'a [T]) -> &'a T {
+            &v[self.below(v.len() as u32) as usize]
+        }
+    }
+
+    const FX_IDS: [&[u8; 2]; 20] = [
+        b"ZT", b"ZL", b"ZB", b"0S", b"0B", b"0C", b"0Q", b"0R", b"0U", b"0D", b"0G", b"0V", b"0T", b"0A",
+        b"0W", b"0I", b"0O", b"XX", b"00", b"ZZ",
+    ];
+
+    fn random_song(rng: &mut Rng) -> Song {
+        let mut song = Song {
+            bpm: 40.0 + rng.below(200) as f32,
+            lpb: 1 + rng.below(8) as u8,
+            tpl: 1 + rng.below(16) as u8,
+            ..Song::default()
+        };
+        // instruments with odd samples: tiny, looped with odd points, stereo, envelopes, filters
+        for i in 0..1 + rng.below(4) {
+            let mut inst = Instrument::new(format!("i{i}"));
+            for _ in 0..1 + rng.below(3) {
+                let frames = 1 + rng.below(3000) as usize;
+                let ch = 1 + rng.below(2) as u8;
+                let data: Vec<f32> = (0..frames * ch as usize).map(|k| ((k as f32) * 0.07).sin()).collect();
+                let mut s = Sample::new("s", 4000 + rng.below(80_000), ch, data);
+                s.loop_mode =
+                    *rng.pick(&[LoopMode::Off, LoopMode::Forward, LoopMode::Reverse, LoopMode::PingPong]);
+                s.loop_start = rng.below(frames as u32 + 50) as usize;
+                s.loop_end = rng.below(frames as u32 + 50) as usize;
+                s.base_note = rng.below(120) as u8;
+                s.fine_tune = rng.below(256) as u8 as i8;
+                s.panning = rng.below(300) as f32 / 100.0 - 1.5;
+                s.volume = rng.below(500) as f32 / 100.0;
+                inst.samples.push(s);
+            }
+            if rng.below(2) == 0 {
+                *Arc::make_mut(&mut inst.volume_env) =
+                    trakr_core::Envelope::adsr(rng.below(100) as f32 / 100.0, 0.05, 0.5, 0.1);
+            }
+            inst.filter = InstrumentFilter {
+                mode: *rng.pick(&[
+                    trakr_core::FilterMode::Off,
+                    trakr_core::FilterMode::LowPass,
+                    trakr_core::FilterMode::BandPass,
+                ]),
+                cutoff: 20.0 + rng.below(20_000) as f32,
+                resonance: 0.1 + rng.below(1000) as f32 / 100.0,
+            };
+            inst.nna =
+                *rng.pick(&[trakr_core::Nna::Cut, trakr_core::Nna::NoteOff, trakr_core::Nna::Continue]);
+            song.instruments.push(inst);
+        }
+        // devices at extreme settings on random tracks
+        for t in 0..song.tracks.len() {
+            for _ in 0..rng.below(4) {
+                let info = rng.pick(trakr_core::DEVICES);
+                let mut d = DeviceSpec::new(info.id).unwrap();
+                for (i, p) in info.params.iter().enumerate() {
+                    d.params[i] = *rng.pick(&[p.min, p.max, p.default, (p.min + p.max) * 0.5]);
+                }
+                d.bypass = rng.below(8) == 0;
+                song.tracks[t].devices.push(d);
+            }
+            song.tracks[t].volume = rng.below(400) as f32 / 100.0;
+            song.tracks[t].panning = rng.below(300) as f32 / 100.0 - 1.5;
+        }
+        let ntracks = song.tracks.len();
+        let lines = 1 + rng.below(40) as u16;
+        let mut pat = trakr_core::Pattern::new(ntracks, lines);
+        for _ in 0..rng.below(200) {
+            let (t, l) = (rng.below(ntracks as u32) as usize, rng.below(lines as u32 + 5) as u16);
+            let line = pat.line_mut(t, l);
+            let c = rng.below(trakr_core::MAX_NOTE_COLUMNS as u32) as usize;
+            let n = &mut line.notes[c];
+            n.note = *rng.pick(&[48u8, 0, 119, 120, 121, 60, 24, 255]);
+            n.instrument = rng.below(6) as u8;
+            n.volume = rng.below(256) as u8;
+            n.panning = rng.below(256) as u8;
+            n.delay = rng.below(256) as u8;
+            n.effect = EffectCmd { id: **rng.pick(&FX_IDS), amount: rng.below(256) as u8 };
+            let e = rng.below(trakr_core::MAX_EFFECT_COLUMNS as u32) as usize;
+            line.effects[e] = EffectCmd { id: **rng.pick(&FX_IDS), amount: rng.below(256) as u8 };
+        }
+        if rng.below(2) == 0 {
+            let mut a =
+                trakr_core::Automation::new(rng.below(ntracks as u32) as usize, AutoTarget::TrackVolume);
+            a.set_point(0.0, 0.5);
+            a.set_point(lines as f32, 1.0);
+            pat.automation.push(a);
+        }
+        song.patterns = vec![Arc::new(pat)];
+        song.sequence = vec![0];
+        song
+    }
+
+    #[test]
+    fn random_songs_never_panic_or_produce_garbage() {
+        let mut rng = Rng(0xC0FFEE);
+        for round in 0..50 {
+            let song = random_song(&mut rng);
+            let rate = *rng.pick(&[8000u32, 22_050, 44_100, 48_000, 96_000]);
+            let chains = build_chains(&song, rate);
+            let (mut engine, mut h) = create(rate);
+            h.send(Command::SetSong(Arc::new(song.clone())));
+            for (track, chain) in chains.into_iter().enumerate() {
+                h.send(Command::SetChain { track, chain });
+            }
+            h.send(Command::Play { seq_pos: 0, line: 0, loop_pattern: rng.below(2) == 0 });
+            // buffer sizes a real driver might use, including odd ones
+            for _ in 0..(rate as usize / 256) {
+                let n = *rng.pick(&[64usize, 100, 256, 512, 1000, 1024, 2048]);
+                let mut out = vec![0.0f32; n * 2];
+                engine.render(&mut out);
+                h.collect_garbage();
+                if !out.iter().all(|s| s.is_finite()) {
+                    let mut no_dev = song.clone();
+                    no_dev.tracks.iter_mut().for_each(|t| t.devices.clear());
+                    let mut no_filter = song.clone();
+                    no_filter
+                        .instruments
+                        .iter_mut()
+                        .for_each(|i| i.filter.mode = trakr_core::FilterMode::Off);
+                    let devs: Vec<String> = song
+                        .tracks
+                        .iter()
+                        .enumerate()
+                        .flat_map(|(t, tr)| {
+                            tr.devices.iter().map(move |d| format!("t{t}:{}:{:?}", d.id, d.params))
+                        })
+                        .collect();
+                    let mut culprits = Vec::new();
+                    for (t, tr) in song.tracks.iter().enumerate() {
+                        for d in 0..tr.devices.len() {
+                            let mut one = song.clone();
+                            one.tracks[t].devices.remove(d);
+                            if finite_for(&one, rate) {
+                                culprits.push(format!("t{t}:{}", tr.devices[d].id));
+                            }
+                        }
+                    }
+                    panic!(
+                        "round {round} rate {rate}: culprits {culprits:?}; non-finite output. finite without devices: {}, without instrument filters: {}. devices: {devs:?}",
+                        finite_for(&no_dev, rate),
+                        finite_for(&no_filter, rate)
+                    );
+                }
+                // mid-render edits and transport changes must be safe too
+                match rng.below(40) {
+                    0 => {
+                        h.send(Command::Stop);
+                        h.send(Command::Play { seq_pos: 0, line: rng.below(50) as u16, loop_pattern: false });
+                    }
+                    1 => {
+                        h.send(Command::SetSong(Arc::new(random_song(&mut rng))));
+                    }
+                    2 => {
+                        h.send(Command::NoteOn {
+                            track: rng.below(10) as usize,
+                            instrument: rng.below(5) as u8,
+                            note: rng.below(130) as u8,
+                            volume: 1.0,
+                        });
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    fn finite_for(song: &Song, rate: u32) -> bool {
+        let chains = build_chains(song, rate);
+        let (mut engine, mut h) = create(rate);
+        h.send(Command::SetSong(Arc::new(song.clone())));
+        for (track, chain) in chains.into_iter().enumerate() {
+            h.send(Command::SetChain { track, chain });
+        }
+        h.send(Command::Play { seq_pos: 0, line: 0, loop_pattern: true });
+        for _ in 0..(rate as usize * 2 / 256) {
+            let mut out = vec![0.0f32; 512];
+            engine.render(&mut out);
+            if !out.iter().all(|s| s.is_finite()) {
+                return false;
+            }
+        }
+        true
     }
 }

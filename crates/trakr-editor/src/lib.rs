@@ -85,6 +85,7 @@ struct Snapshot {
     sequence: Vec<usize>,
     tracks: Vec<Track>,
     instruments: Vec<Instrument>,
+    loop_range: Option<(usize, usize)>,
     bpm: f32,
     lpb: u8,
     tpl: u8,
@@ -339,6 +340,7 @@ impl Editor {
             sequence: s.sequence.clone(),
             tracks: s.tracks.clone(),
             instruments: s.instruments.clone(),
+            loop_range: s.loop_range,
             bpm: s.bpm,
             lpb: s.lpb,
             tpl: s.tpl,
@@ -351,6 +353,7 @@ impl Editor {
         s.sequence = snap.sequence;
         s.tracks = snap.tracks;
         s.instruments = snap.instruments;
+        s.loop_range = snap.loop_range;
         s.bpm = snap.bpm;
         s.lpb = snap.lpb;
         s.tpl = snap.tpl;

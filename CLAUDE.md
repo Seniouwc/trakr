@@ -54,6 +54,11 @@ Dependency direction: core <- engine/format/xrns <- editor <- tui/gui <- trakr. 
 - No song loop range. Sample editing lives in `trakr-core::Sample` (range ops, slices, resample) with undo via `Editor::edit_sample`; no resampling on import, no sample view in the TUI. Recording goes through `trakr_engine::InputRecorder` (cpal impl behind the `audio` feature, injected by the binary via `Editor::set_recorder_factory`).
 - TUI keymap is mine, not Renoise's, apart from the tracker-style piano layout, F1/F2 octave, backtick note-off. Terminals cannot report key release or distinguish left/right modifiers; design around that.
 
+## Robustness tests
+
+- Seeded random tests guard the hot paths: `random_songs_never_panic_or_produce_garbage` (engine: random songs, extreme device params, mid-render song swaps), `random_editing_keeps_the_song_consistent` (editor: thousands of random keys/actions/structure edits/undo with invariants), and corrupted-input tests for the MOD and XRNS importers. They already found real bugs (device parameter mismatch during chain updates, undo not restoring the loop range); when adding state or devices, extend the generators.
+- The engine clamps every device parameter to its catalogue range and skips a chain slot whose device id differs from the song's (`Device::id`).
+
 ## GUI notes
 
 - `trakr-gui` has synthetic-input tests (`crates/trakr-gui/src/tests.rs`) that run real egui frames: use them for any input or layout change. They caught a freeze: never call `Response` methods (`clicked()`, `drag_started()`, ...) or `ctx.input` inside `ctx.memory_mut`/`ui.memory_mut` closures; the context lock is not reentrant.

@@ -410,4 +410,36 @@ mod import_tests {
         let back: Song = serde_json::from_str(&json).unwrap();
         assert_eq!(back.instruments[0].samples[0].name, "Tone");
     }
+
+    #[test]
+    fn mangled_xml_never_panics() {
+        let base = r#"<RenoiseSong><GlobalSongData><BeatsPerMin>140</BeatsPerMin></GlobalSongData>
+<Instruments><Instrument><Name>A</Name><SampleGenerator><Samples><Sample><Name>s</Name><LoopStart>9999999999</LoopStart><Transpose>-9999</Transpose><Panning>nan</Panning></Sample></Samples></SampleGenerator></Instrument></Instruments>
+<Tracks><SequencerTrack><Name>T</Name><NumberOfVisibleNoteColumns>999</NumberOfVisibleNoteColumns></SequencerTrack><SequencerMasterTrack/></Tracks>
+<PatternPool><Patterns><Pattern><NumberOfLines>99999</NumberOfLines><Tracks><PatternTrack><Lines><Line index="70000"><NoteColumns><NoteColumn><Note>Z-9</Note><Instrument>GG</Instrument></NoteColumn></NoteColumns></Line><Line index="x"/></Lines></PatternTrack></Tracks></Pattern></Patterns></PatternPool>
+<PatternSequence><SequenceEntries><SequenceEntry><Pattern>77</Pattern></SequenceEntry></SequenceEntries></PatternSequence></RenoiseSong>"#;
+        // hostile values in a well-formed document
+        if let Ok(song) = import_xml(base) {
+            assert!(song
+                .patterns
+                .iter()
+                .all(|p| p.number_of_lines >= 1 && p.number_of_lines <= trakr_core::MAX_LINES));
+        }
+        let mut seed = 1u32;
+        let mut rnd = move || {
+            seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            seed >> 8
+        };
+        let bytes = base.as_bytes();
+        for _ in 0..2000 {
+            let mut b = bytes.to_vec();
+            for _ in 0..1 + rnd() % 6 {
+                let i = rnd() as usize % b.len();
+                b[i] = b" <>/=\"0aZ-9\n"[rnd() as usize % 12];
+            }
+            if let Ok(text) = String::from_utf8(b) {
+                let _ = import_xml(&text);
+            }
+        }
+    }
 }

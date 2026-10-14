@@ -356,4 +356,39 @@ mod tests {
         assert!(peak > 0.05, "the module should be audible, peak {peak}");
         assert!(out.len() / 2 > 44_100, "and last longer than a second");
     }
+
+    #[test]
+    fn corrupted_modules_never_panic() {
+        let good = module();
+        let mut seed = 0x9E37_79B9u32;
+        let mut rnd = move || {
+            seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            seed >> 8
+        };
+        for round in 0..3000 {
+            let mut bytes = good.clone();
+            // flip a few random bytes, sometimes truncate or extend
+            for _ in 0..1 + rnd() % 8 {
+                let i = rnd() as usize % bytes.len();
+                bytes[i] = rnd() as u8;
+            }
+            match rnd() % 4 {
+                0 => bytes.truncate(rnd() as usize % bytes.len()),
+                1 => bytes.extend((0..rnd() % 5000).map(|_| rnd() as u8)),
+                _ => {}
+            }
+            // must return Ok or Err, never panic or hang
+            if let Ok((song, _)) = import(&bytes) {
+                assert!(
+                    song.sequence.iter().all(|&i| i < song.patterns.len()),
+                    "round {round}: bad order table"
+                );
+            }
+        }
+        // pure noise too
+        for _ in 0..200 {
+            let bytes: Vec<u8> = (0..2000 + rnd() % 3000).map(|_| rnd() as u8).collect();
+            let _ = import(&bytes);
+        }
+    }
 }
