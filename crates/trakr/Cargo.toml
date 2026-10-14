@@ -1,0 +1,14 @@
+[package]
+name = "trakr"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+anyhow = "1.0.104"
+trakr-core = { workspace = true }
+trakr-engine = { workspace = true, features = ["audio"] }
+trakr-format = { workspace = true }
+trakr-tui = { workspace = true }
+trakr-xrns = { workspace = true }

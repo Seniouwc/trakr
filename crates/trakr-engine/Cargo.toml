@@ -1,0 +1,17 @@
+[package]
+name = "trakr-engine"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+trakr-core = { workspace = true }
+rtrb = "0.4.0"
+cpal = { version = "0.17.3", optional = true }
+anyhow = { version = "1.0.104", optional = true }
+
+[features]
+default = ["audio"]
+# Real-time output via cpal (needs ALSA headers on Linux). Disable for headless tests.
+audio = ["dep:cpal", "dep:anyhow"]

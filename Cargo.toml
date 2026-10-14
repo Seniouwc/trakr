@@ -1,0 +1,30 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/trakr-core",
+    "crates/trakr-engine",
+    "crates/trakr-format",
+    "crates/trakr-xrns",
+    "crates/trakr-tui",
+    "crates/trakr",
+]
+
+[workspace.package]
+version = "0.0.1"
+edition = "2021"
+license = "MIT"
+rust-version = "1.80"
+
+[workspace.dependencies]
+trakr-core = { path = "crates/trakr-core" }
+trakr-engine = { path = "crates/trakr-engine", default-features = false }
+trakr-format = { path = "crates/trakr-format" }
+trakr-xrns = { path = "crates/trakr-xrns" }
+trakr-tui = { path = "crates/trakr-tui" }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+
+[profile.dev]
+opt-level = 1   # keeps the audio callback usable in debug builds
