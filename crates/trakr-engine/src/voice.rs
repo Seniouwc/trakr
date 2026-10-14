@@ -1,5 +1,6 @@
+use crate::dsp::{Biquad, Coeffs};
 use std::sync::Arc;
-use trakr_core::{Envelope, Instrument, LoopMode, Sample};
+use trakr_core::{Envelope, FilterMode, Instrument, InstrumentFilter, LoopMode, Sample};
 
 /// How fast a voice's gain and pitch follow their targets (smooths ticks, fades and envelopes).
 const SMOOTH_SECONDS: f32 = 0.003;
@@ -55,6 +56,10 @@ pub struct Voice {
     vol_env: Arc<Envelope>,
     pan_env: Arc<Envelope>,
     pitch_env: Arc<Envelope>,
+    cutoff_env: Arc<Envelope>,
+    filter: InstrumentFilter,
+    filter_coeffs: Coeffs,
+    filter_state: [Biquad; 2],
     gm_cur: f32,
     gm_target: f32,
     step_cur: f64,
@@ -142,6 +147,10 @@ impl Voice {
             vol_env: inst.volume_env.clone(),
             pan_env: inst.pan_env.clone(),
             pitch_env: inst.pitch_env.clone(),
+            cutoff_env: inst.cutoff_env.clone(),
+            filter: inst.filter,
+            filter_coeffs: Coeffs::PASS,
+            filter_state: [Biquad::default(); 2],
             gm_cur: 0.0,
             gm_target: 0.0,
             step_cur: 0.0,
@@ -303,6 +312,22 @@ impl Voice {
             pan += (self.pan_env.value_at(t) - 0.5) * 2.0;
         }
         self.pan_now = pan.clamp(-1.0, 1.0);
+
+        if self.filter.mode != FilterMode::Off {
+            let mut cutoff = self.filter.cutoff;
+            if self.cutoff_env.enabled {
+                let t = self.cutoff_env.effective_time(age, rel);
+                cutoff *= 2f32.powf((self.cutoff_env.value_at(t) - 0.5) * 10.0);
+                // +-5 octaves
+            }
+            let (fs, q) = (rate as f32, self.filter.resonance);
+            self.filter_coeffs = match self.filter.mode {
+                FilterMode::HighPass => Coeffs::highpass(fs, cutoff, q),
+                FilterMode::BandPass => Coeffs::bandpass(fs, cutoff, q),
+                FilterMode::Notch => Coeffs::notch(fs, cutoff, q),
+                _ => Coeffs::lowpass(fs, cutoff, q),
+            };
+        }
     }
 
     #[inline]
@@ -348,6 +373,14 @@ impl Voice {
             let l = self.frame(i, 0) * (1.0 - frac) + self.frame(j, 0) * frac;
             let r =
                 if self.channels > 1 { self.frame(i, 1) * (1.0 - frac) + self.frame(j, 1) * frac } else { l };
+            let (l, r) = if self.filter.mode != FilterMode::Off {
+                (
+                    self.filter_state[0].process(&self.filter_coeffs, l),
+                    self.filter_state[1].process(&self.filter_coeffs, r),
+                )
+            } else {
+                (l, r)
+            };
             if self.ending {
                 self.end_fade -= end_step;
                 if self.end_fade <= 0.0 {

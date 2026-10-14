@@ -326,6 +326,32 @@ impl Sample {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum FilterMode {
+    #[default]
+    Off,
+    LowPass,
+    HighPass,
+    BandPass,
+    Notch,
+}
+
+/// Per-instrument resonant filter, applied to every voice of the instrument.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct InstrumentFilter {
+    pub mode: FilterMode,
+    /// Cutoff in Hz.
+    pub cutoff: f32,
+    /// Resonance as Q (0.707 = flat).
+    pub resonance: f32,
+}
+
+impl Default for InstrumentFilter {
+    fn default() -> Self {
+        Self { mode: FilterMode::Off, cutoff: 8000.0, resonance: 0.707 }
+    }
+}
+
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct Instrument {
     pub name: String,
@@ -340,6 +366,11 @@ pub struct Instrument {
     /// Pitch over note time in semitones: 0.5 = no change, range +-12.
     #[serde(default)]
     pub pitch_env: Arc<Envelope>,
+    #[serde(default)]
+    pub filter: InstrumentFilter,
+    /// Cutoff modulation over note time: 0.5 = none, range +-5 octaves.
+    #[serde(default)]
+    pub cutoff_env: Arc<Envelope>,
 }
 
 impl Instrument {
@@ -351,6 +382,8 @@ impl Instrument {
             volume_env: Arc::default(),
             pan_env: Arc::default(),
             pitch_env: Arc::default(),
+            filter: InstrumentFilter::default(),
+            cutoff_env: Arc::default(),
         }
     }
 

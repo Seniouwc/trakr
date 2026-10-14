@@ -1,3 +1,4 @@
+use crate::automation::Automation;
 use crate::note::{EffectCmd, NoteColumn};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -30,6 +31,9 @@ pub struct Pattern {
     pub name: String,
     pub number_of_lines: u16,
     pub tracks: Vec<PatternTrack>,
+    /// Parameter curves that play with this pattern.
+    #[serde(default)]
+    pub automation: Vec<Automation>,
 }
 
 impl Pattern {
@@ -38,6 +42,7 @@ impl Pattern {
             name: String::new(),
             number_of_lines: lines.clamp(1, MAX_LINES),
             tracks: vec![PatternTrack::default(); num_tracks],
+            automation: Vec::new(),
         }
     }
 

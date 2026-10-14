@@ -6,16 +6,44 @@
 
 #[cfg(feature = "audio")]
 pub mod audio;
+pub mod devices;
+mod dsp;
 mod voice;
+
+pub use devices::Device;
 
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
-use trakr_core::{EffectCmd, MuteState, Song, EMPTY, NOTE_EMPTY, NOTE_OFF};
+use trakr_core::{AutoTarget, EffectCmd, MuteState, Song, EMPTY, NOTE_EMPTY, NOTE_OFF};
 use voice::{TriggerOpts, Voice};
 
 const MAX_VOICES: usize = 128;
 const QUEUE_CAP: usize = 256;
 const MAX_EVENTS: usize = 512;
+/// Samples of audio processed per mixing block (also the granularity of automation).
+const BLOCK: usize = 512;
+/// Tracks that get their own mix bus and device chain.
+const MAX_TRACKS: usize = MAX_METER_TRACKS;
+const MAX_OVERRIDES: usize = 256;
+
+/// Things handed back to the UI thread so they are freed there, not on the audio thread.
+pub enum Garbage {
+    Song(Arc<Song>),
+    Chain(Vec<Box<dyn Device>>),
+}
+
+/// A parameter value forced by pattern automation for the current block.
+struct Override {
+    track: usize,
+    target: Ov,
+    value: f32,
+}
+
+enum Ov {
+    Volume,
+    Pan,
+    Param { device: usize, param: usize },
+}
 
 /// A sub-line event scheduled by the delay column or timing effects.
 struct Event {
@@ -35,6 +63,11 @@ enum EventKind {
 pub enum Command {
     /// Swap in a new song snapshot. TODO: replace with incremental edit commands.
     SetSong(Arc<Song>),
+    /// Replace one track's device chain with freshly built devices (see [`devices::create`]).
+    SetChain {
+        track: usize,
+        chain: Vec<Box<dyn Device>>,
+    },
     Play {
         seq_pos: usize,
         line: u16,
@@ -117,7 +150,7 @@ impl SharedPos {
 /// UI-thread side of the engine.
 pub struct EngineHandle {
     tx: rtrb::Producer<Command>,
-    garbage: rtrb::Consumer<Arc<Song>>,
+    garbage: rtrb::Consumer<Garbage>,
     pub pos: Arc<SharedPos>,
     pub sample_rate: u32,
 }
@@ -128,7 +161,7 @@ impl EngineHandle {
         self.tx.push(cmd).is_ok()
     }
 
-    /// Drop song snapshots the audio thread is done with (keeps deallocation off the RT thread).
+    /// Drop song snapshots and device chains the audio thread is done with (keeps deallocation off the RT thread).
     pub fn collect_garbage(&mut self) {
         while self.garbage.pop().is_ok() {}
     }
@@ -158,6 +191,16 @@ pub fn create(sample_rate: u32) -> (Engine, EngineHandle) {
         stop_at_end: false,
         tick: 0,
         frames_to_tick: 0.0,
+        chains: (0..MAX_TRACKS).map(|_| Vec::new()).collect(),
+        track_bufs: vec![0.0; MAX_TRACKS * BLOCK * 2],
+        bus: vec![0.0; BLOCK * 2],
+        track_used: [false; MAX_TRACKS],
+        fader_prev: [-1.0; MAX_TRACKS],
+        overrides: Vec::with_capacity(MAX_OVERRIDES),
+        playing_seq: 0,
+        playing_line: 0,
+        meter_acc: [0.0; MAX_TRACKS],
+        master_acc: [0.0; 2],
     };
     (engine, EngineHandle { tx, garbage: grx, pos, sample_rate })
 }
@@ -168,7 +211,7 @@ pub struct Engine {
     bpm: f32,
     lpb: u8,
     rx: rtrb::Consumer<Command>,
-    garbage: rtrb::Producer<Arc<Song>>,
+    garbage: rtrb::Producer<Garbage>,
     pos: Arc<SharedPos>,
     playing: bool,
     loop_pattern: bool,
@@ -183,6 +226,18 @@ pub struct Engine {
     /// Tick index within the current line and frames until the next tick.
     tick: u8,
     frames_to_tick: f64,
+    chains: Vec<Vec<Box<dyn Device>>>,
+    /// One stereo bus per track, `BLOCK` frames each, so devices can process a track's whole signal.
+    track_bufs: Vec<f32>,
+    bus: Vec<f32>,
+    track_used: [bool; MAX_TRACKS],
+    /// Last fader gain per track (negative = never used), ramped to the new gain across each block.
+    fader_prev: [f32; MAX_TRACKS],
+    overrides: Vec<Override>,
+    playing_seq: usize,
+    playing_line: u16,
+    meter_acc: [f32; MAX_TRACKS],
+    master_acc: [f32; 2],
 }
 
 impl Engine {
@@ -193,14 +248,33 @@ impl Engine {
     /// Render interleaved stereo f32 into `out` (`out.len()` must be even).
     pub fn render(&mut self, out: &mut [f32]) {
         self.drain_commands();
-        out.fill(0.0);
+        self.meter_acc = [0.0; MAX_TRACKS];
+        self.master_acc = [0.0; 2];
         let total = out.len() / 2;
+        let mut off = 0;
+        while off < total {
+            let n = (total - off).min(BLOCK);
+            self.render_block(&mut out[off * 2..(off + n) * 2]);
+            off += n;
+        }
+        for (slot, p) in self.pos.meters.iter().zip(self.meter_acc) {
+            slot.store(p.to_bits(), Ordering::Relaxed);
+        }
+        self.pos.master[0].store(self.master_acc[0].to_bits(), Ordering::Relaxed);
+        self.pos.master[1].store(self.master_acc[1].to_bits(), Ordering::Relaxed);
+    }
+
+    /// Sequence, trigger and mix voices into per-track buses for up to `BLOCK` frames, then mix down.
+    fn render_block(&mut self, out: &mut [f32]) {
+        let frames = out.len() / 2;
+        self.track_used = [false; MAX_TRACKS];
+        self.update_automation();
         let mut done = 0;
-        let mut meters = [0.0f32; MAX_METER_TRACKS];
-        let any_solo = self.song.tracks.iter().any(|t| t.solo);
-        while done < total {
+        while done < frames {
             if self.playing && self.frames_to_line <= 0.0 {
                 self.trigger_line();
+                self.playing_seq = self.seq_pos;
+                self.playing_line = self.line;
                 self.frames_to_line += Song::frames_per_line(self.bpm, self.lpb, self.sample_rate);
                 self.tick = 0;
                 self.frames_to_tick = self.frames_per_tick();
@@ -210,7 +284,7 @@ impl Engine {
                 self.advance_line();
             }
             self.fire_due_events();
-            let mut chunk = total - done;
+            let mut chunk = frames - done;
             if self.playing {
                 chunk = chunk
                     .min((self.frames_to_line.ceil() as usize).max(1))
@@ -219,17 +293,19 @@ impl Engine {
             for e in &self.events {
                 chunk = chunk.min((e.at.ceil() as usize).max(1));
             }
-            let buf = &mut out[done * 2..(done + chunk) * 2];
             for v in &mut self.voices {
-                let track = self.song.tracks.get(v.track);
-                let (vol, pan) = track.map_or((1.0, 0.0), |t| {
-                    let audible = t.mute == MuteState::Active && (!any_solo || t.solo);
-                    (if audible { t.volume } else { 0.0 }, t.panning)
-                });
-                let peak = v.mix(buf, self.sample_rate, vol, pan);
-                if let Some(m) = meters.get_mut(v.track) {
-                    *m = m.max(peak);
+                let t = v.track.min(MAX_TRACKS - 1);
+                let base = t * BLOCK * 2;
+                if !self.track_used[t] {
+                    self.track_bufs[base..base + frames * 2].fill(0.0);
+                    self.track_used[t] = true;
                 }
+                v.mix(
+                    &mut self.track_bufs[base + done * 2..base + (done + chunk) * 2],
+                    self.sample_rate,
+                    1.0,
+                    0.0,
+                );
             }
             self.voices.retain(|v| v.alive());
             if self.playing {
@@ -248,26 +324,149 @@ impl Engine {
             }
             done += chunk;
         }
+        self.mix_down(out, frames);
+    }
 
-        // Master track volume, then meters.
-        let master_vol = self
-            .song
-            .tracks
-            .iter()
-            .find(|t| t.kind == trakr_core::TrackKind::Master)
-            .map_or(1.0, |t| if t.mute == MuteState::Active { t.volume } else { 0.0 });
-        let (mut pl, mut pr) = (0.0f32, 0.0f32);
-        for f in out.chunks_exact_mut(2) {
-            f[0] *= master_vol;
-            f[1] *= master_vol;
-            pl = pl.max(f[0].abs());
-            pr = pr.max(f[1].abs());
+    /// Fill `overrides` with the automated values for the current playback position.
+    fn update_automation(&mut self) {
+        self.overrides.clear();
+        if !self.playing {
+            return;
         }
-        for (slot, p) in self.pos.meters.iter().zip(meters) {
-            slot.store(p.to_bits(), Ordering::Relaxed);
+        let song = self.song.clone();
+        let Some(pat) = song.pattern_at(self.playing_seq) else { return };
+        let fpl = Song::frames_per_line(self.bpm, self.lpb, self.sample_rate);
+        // Before the first line triggers (frames_to_line <= 0) we are at the line about to play.
+        let pos = if self.frames_to_line <= 0.0 {
+            self.line as f32
+        } else {
+            self.playing_line as f32 + (1.0 - self.frames_to_line / fpl).clamp(0.0, 1.0) as f32
+        };
+        for a in &pat.automation {
+            let Some(v) = a.value_at(pos) else { continue };
+            if self.overrides.len() >= MAX_OVERRIDES || a.track >= MAX_TRACKS {
+                continue;
+            }
+            let (target, value) = match a.target {
+                AutoTarget::TrackVolume => (Ov::Volume, v),
+                AutoTarget::TrackPan => (Ov::Pan, v),
+                AutoTarget::Device { device, param } => {
+                    let info = song
+                        .tracks
+                        .get(a.track)
+                        .and_then(|t| t.devices.get(device))
+                        .and_then(|d| trakr_core::device_info(&d.id))
+                        .and_then(|i| i.params.get(param));
+                    match info {
+                        Some(i) => (Ov::Param { device, param }, i.denormalize(v)),
+                        None => continue,
+                    }
+                }
+            };
+            self.overrides.push(Override { track: a.track, target, value });
         }
-        self.pos.master[0].store(pl.to_bits(), Ordering::Relaxed);
-        self.pos.master[1].store(pr.to_bits(), Ordering::Relaxed);
+    }
+
+    fn override_for(&self, track: usize, f: impl Fn(&Ov) -> bool) -> Option<f32> {
+        self.overrides.iter().find(|o| o.track == track && f(&o.target)).map(|o| o.value)
+    }
+
+    /// Run device chains, apply faders (mute/solo/automation), sum into the master bus, run the master chain.
+    fn mix_down(&mut self, out: &mut [f32], frames: usize) {
+        let song = self.song.clone(); // refcount bump only
+        let any_solo = song.tracks.iter().any(|t| t.solo);
+        self.bus[..frames * 2].fill(0.0);
+        let mut master = None;
+        for (t, tr) in song.tracks.iter().enumerate().take(MAX_TRACKS) {
+            if tr.kind == trakr_core::TrackKind::Master {
+                master = Some(t);
+                continue;
+            }
+            let base = t * BLOCK * 2;
+            if !self.track_used[t] && self.chains[t].is_empty() {
+                continue;
+            }
+            if !self.track_used[t] {
+                self.track_bufs[base..base + frames * 2].fill(0.0); // silence in, tails out
+            }
+            self.run_chain(t, tr, base, frames);
+
+            let vol = match self.override_for(t, |o| matches!(o, Ov::Volume)) {
+                Some(n) if n <= 0.0 => 0.0,
+                Some(n) => dsp::db_to_gain(-60.0 + 66.0 * n),
+                None => tr.volume,
+            };
+            let pan = self.override_for(t, |o| matches!(o, Ov::Pan)).map_or(tr.panning, |n| n * 2.0 - 1.0);
+            let audible = tr.mute == MuteState::Active && (!any_solo || tr.solo);
+            let target = if audible { vol } else { 0.0 };
+            let (pl, pr) = ((1.0 - pan).min(1.0), (1.0 + pan).min(1.0));
+            let prev = if self.fader_prev[t] < 0.0 { target } else { self.fader_prev[t] }; // first use: no ramp
+            let buf = &self.track_bufs[base..base + frames * 2];
+            let mut peak = 0.0f32;
+            for (i, (f, b)) in buf.chunks_exact(2).zip(self.bus.chunks_exact_mut(2)).enumerate() {
+                let g = prev + (target - prev) * (i as f32 + 1.0) / frames as f32;
+                let (l, r) = (f[0] * g * pl, f[1] * g * pr);
+                b[0] += l;
+                b[1] += r;
+                peak = peak.max(l.abs()).max(r.abs());
+            }
+            self.fader_prev[t] = target;
+            self.meter_acc[t] = self.meter_acc[t].max(peak);
+        }
+
+        if let Some(m) = master {
+            let tr = &song.tracks[m];
+            let base = m.min(MAX_TRACKS - 1) * BLOCK * 2;
+            if m < MAX_TRACKS {
+                self.track_bufs[base..base + frames * 2].copy_from_slice(&self.bus[..frames * 2]);
+                self.run_chain(m, tr, base, frames);
+                self.bus[..frames * 2].copy_from_slice(&self.track_bufs[base..base + frames * 2]);
+            }
+            let vol = match self.override_for(m, |o| matches!(o, Ov::Volume)) {
+                Some(n) if n <= 0.0 => 0.0,
+                Some(n) => dsp::db_to_gain(-60.0 + 66.0 * n),
+                None => tr.volume,
+            };
+            let g = if tr.mute == MuteState::Active { vol } else { 0.0 };
+            for (o, b) in out.chunks_exact_mut(2).zip(self.bus.chunks_exact(2)) {
+                o[0] = b[0] * g;
+                o[1] = b[1] * g;
+                self.master_acc[0] = self.master_acc[0].max(o[0].abs());
+                self.master_acc[1] = self.master_acc[1].max(o[1].abs());
+            }
+        } else {
+            out.copy_from_slice(&self.bus[..frames * 2]);
+            for o in out.chunks_exact(2) {
+                self.master_acc[0] = self.master_acc[0].max(o[0].abs());
+                self.master_acc[1] = self.master_acc[1].max(o[1].abs());
+            }
+        }
+    }
+
+    fn run_chain(&mut self, t: usize, tr: &trakr_core::Track, base: usize, frames: usize) {
+        if t >= MAX_TRACKS {
+            return;
+        }
+        let mut params = [0.0f32; 16];
+        for d in 0..self.chains[t].len() {
+            let Some(spec) = tr.devices.get(d) else { break };
+            if spec.bypass {
+                continue;
+            }
+            let n = trakr_core::device_info(&spec.id).map_or(0, |i| i.params.len()).min(params.len());
+            for (i, slot) in params.iter_mut().enumerate().take(n) {
+                *slot = spec.param(i);
+            }
+            for o in &self.overrides {
+                if let (true, Ov::Param { device, param }) = (o.track == t, &o.target) {
+                    if *device == d && *param < n {
+                        params[*param] = o.value;
+                    }
+                }
+            }
+            let buf = &mut self.track_bufs[base..base + frames * 2];
+            self.chains[t][d].process(&params[..n], buf);
+        }
     }
 
     fn fire_due_events(&mut self) {
@@ -316,10 +515,20 @@ impl Engine {
                         self.lpb = self.song.lpb;
                     }
                     // If the garbage queue is full, leak rather than free on the RT thread.
-                    if let Err(rtrb::PushError::Full(old)) = self.garbage.push(old) {
+                    if let Err(rtrb::PushError::Full(old)) = self.garbage.push(Garbage::Song(old)) {
                         std::mem::forget(old);
                     }
                     self.clamp_position();
+                }
+                Command::SetChain { track, chain } => {
+                    if let Some(slot) = self.chains.get_mut(track) {
+                        let old = std::mem::replace(slot, chain);
+                        if let Err(rtrb::PushError::Full(old)) = self.garbage.push(Garbage::Chain(old)) {
+                            std::mem::forget(old);
+                        }
+                    } else {
+                        std::mem::forget(chain);
+                    }
                 }
                 Command::Play { seq_pos, line, loop_pattern } => {
                     self.bpm = self.song.bpm;
@@ -526,9 +735,18 @@ impl Engine {
     }
 }
 
+/// Build every track's device chain from the song's device list (unknown ids are skipped).
+pub fn build_chains(song: &Song, sample_rate: u32) -> Vec<Vec<Box<dyn Device>>> {
+    song.tracks
+        .iter()
+        .map(|t| t.devices.iter().filter_map(|d| devices::create(&d.id, sample_rate)).collect())
+        .collect()
+}
+
 /// Render `song` once through the sequence (plus ring-out) to interleaved stereo f32, offline.
 /// Stops at the end of the song, when everything has decayed, or after `max_seconds`.
 pub fn render_song(song: Arc<Song>, sample_rate: u32, max_seconds: f32) -> Vec<f32> {
+    let chains = build_chains(&song, sample_rate);
     let song = if song.loop_range.is_some() {
         let mut s = (*song).clone();
         s.loop_range = None; // an offline render plays the whole song once
@@ -538,6 +756,11 @@ pub fn render_song(song: Arc<Song>, sample_rate: u32, max_seconds: f32) -> Vec<f
     };
     let (mut engine, mut handle) = create(sample_rate);
     handle.send(Command::SetSong(song));
+    for (track, chain) in chains.into_iter().enumerate() {
+        if !chain.is_empty() {
+            handle.send(Command::SetChain { track, chain });
+        }
+    }
     handle.send(Command::SetStopAtEnd(true));
     handle.send(Command::Play { seq_pos: 0, line: 0, loop_pattern: false });
     let max_frames = (max_seconds * sample_rate as f32) as usize;
@@ -955,5 +1178,223 @@ mod sequencer_tests {
         }
         assert!(seen_after_start.iter().all(|&s| s == 1 || s == 2), "{seen_after_start:?}");
         assert!(seen_after_start.contains(&1) && seen_after_start.contains(&2));
+    }
+}
+
+#[cfg(test)]
+mod device_tests {
+    use super::*;
+    use trakr_core::{AutoTarget, Automation, DeviceSpec, Instrument, InstrumentFilter, LoopMode, Sample};
+
+    const RATE: u32 = 44_100;
+
+    fn sine(freq: f32, secs: f32, amp: f32) -> Vec<f32> {
+        (0..(RATE as f32 * secs) as usize)
+            .map(|i| (i as f32 / RATE as f32 * freq * std::f32::consts::TAU).sin() * amp)
+            .collect()
+    }
+
+    /// One-track song playing `data` at its native pitch from line 0 (BPM 60, LPB 1: a line is one second).
+    fn song_with(data: Vec<f32>) -> Song {
+        let mut song = Song { bpm: 60.0, lpb: 1, tpl: 4, ..Song::default() };
+        let mut inst = Instrument::new("t");
+        let mut s = Sample::new("t", RATE, 1, data);
+        s.loop_mode = LoopMode::Off;
+        inst.samples.push(s);
+        song.instruments.push(inst);
+        let n = &mut Arc::make_mut(&mut song.patterns[0]).line_mut(0, 0).notes[0];
+        n.note = 48;
+        n.instrument = 0;
+        song
+    }
+
+    fn device(song: &mut Song, id: &str, params: &[(usize, f32)]) {
+        let mut d = DeviceSpec::new(id).unwrap();
+        for &(i, v) in params {
+            d.params[i] = v;
+        }
+        song.tracks[0].devices.push(d);
+    }
+
+    /// Render `frames` mono-ified frames with device chains installed.
+    fn render(song: Song, frames: usize) -> Vec<f32> {
+        let chains = build_chains(&song, RATE);
+        let (mut engine, mut h) = create(RATE);
+        h.send(Command::SetSong(Arc::new(song)));
+        for (track, chain) in chains.into_iter().enumerate() {
+            h.send(Command::SetChain { track, chain });
+        }
+        h.send(Command::Play { seq_pos: 0, line: 0, loop_pattern: false });
+        let mut out = vec![0.0; frames * 2];
+        // small buffers, like a real audio callback
+        for chunk in out.chunks_mut(2 * 256) {
+            engine.render(chunk);
+            h.collect_garbage();
+        }
+        out.chunks_exact(2).map(|f| f[0]).collect()
+    }
+
+    fn peak(v: &[f32]) -> f32 {
+        v.iter().fold(0.0f32, |m, s| m.max(s.abs()))
+    }
+
+    #[test]
+    fn gainer_scales_the_signal() {
+        let mut song = song_with(vec![1.0; 20_000]);
+        device(&mut song, "native.gainer", &[(0, -6.0206)]);
+        let out = render(song, 10_000);
+        assert!((out[8000] - 0.5).abs() < 0.01, "{}", out[8000]);
+    }
+
+    #[test]
+    fn filter_passes_and_blocks() {
+        for (mode, freq, expect_loud) in
+            [(0.0, 100.0, true), (0.0, 10_000.0, false), (1.0, 100.0, false), (1.0, 10_000.0, true)]
+        {
+            let mut song = song_with(sine(freq, 0.5, 0.8));
+            device(&mut song, "native.filter", &[(0, mode), (1, 1000.0), (2, 0.707)]);
+            let out = render(song, 20_000);
+            let p = peak(&out[5000..20_000]);
+            if expect_loud {
+                assert!(p > 0.6, "mode {mode} {freq} Hz: {p}");
+            } else {
+                assert!(p < 0.1, "mode {mode} {freq} Hz: {p}");
+            }
+        }
+    }
+
+    #[test]
+    fn eq_boosts_the_mid_band() {
+        let mut song = song_with(sine(1000.0, 0.5, 0.2));
+        device(&mut song, "native.eq", &[(2, 12.0), (3, 1000.0), (4, 1.0)]);
+        let out = render(song, 20_000);
+        let p = peak(&out[5000..20_000]);
+        assert!((p / 0.2 - 3.98).abs() < 0.3, "boost was {}", p / 0.2);
+    }
+
+    #[test]
+    fn delay_echoes_after_the_set_time() {
+        let mut impulse = vec![0.0; 100];
+        impulse[0] = 1.0;
+        let mut song = song_with(impulse);
+        device(&mut song, "native.delay", &[(0, 100.0), (1, 0.0), (2, 1.0), (3, 0.0)]);
+        let out = render(song, 10_000);
+        let first = out.iter().position(|s| s.abs() > 0.1).unwrap();
+        assert!((first as i32 - 4410).abs() < 40, "echo at {first}");
+        assert!(peak(&out[..4000]) < 0.01, "dry signal leaked");
+    }
+
+    #[test]
+    fn reverb_rings_out() {
+        let mut impulse = vec![0.0; 100];
+        impulse[0] = 1.0;
+        let mut song = song_with(impulse);
+        device(&mut song, "native.reverb", &[(0, 0.8), (1, 0.3), (2, 1.0), (3, 1.0)]);
+        let out = render(song, 44_100);
+        let early: f32 = out[2000..8000].iter().map(|s| s.abs()).sum();
+        let late: f32 = out[30_000..44_000].iter().map(|s| s.abs()).sum();
+        assert!(early > 0.5 && late > 0.01, "early {early} late {late}");
+        assert!(late < early, "tail should decay");
+        assert!(peak(&out) < 1.5);
+    }
+
+    #[test]
+    fn chorus_changes_the_signal_but_stays_bounded() {
+        let dry = render(song_with(sine(440.0, 0.5, 0.5)), 20_000);
+        let mut song = song_with(sine(440.0, 0.5, 0.5));
+        device(&mut song, "native.chorus", &[(0, 1.0), (1, 5.0), (2, 1.0), (3, 0.0)]);
+        let wet = render(song, 20_000);
+        let diff: f32 = dry[5000..15_000].iter().zip(&wet[5000..15_000]).map(|(a, b)| (a - b).abs()).sum();
+        assert!(diff > 10.0, "chorus did nothing: {diff}");
+        assert!(peak(&wet) < 1.0);
+    }
+
+    #[test]
+    fn distortion_saturates() {
+        let mut song = song_with(sine(200.0, 0.5, 0.5));
+        device(&mut song, "native.distortion", &[(0, 30.0), (1, 1.0), (2, 0.0)]);
+        let out = render(song, 20_000);
+        let p = peak(&out[5000..20_000]);
+        assert!(p > 0.95 && p <= 1.0001, "peak {p}");
+    }
+
+    #[test]
+    fn compressor_reduces_loud_signals() {
+        let mut song = song_with(vec![1.0; 30_000]);
+        device(&mut song, "native.compressor", &[(0, -20.0), (1, 10.0), (2, 1.0), (3, 50.0), (4, 0.0)]);
+        let out = render(song, 20_000);
+        // 20 dB over threshold at 10:1 removes 18 dB: gain ~0.126
+        assert!((out[19_000] - 0.126).abs() < 0.04, "{}", out[19_000]);
+    }
+
+    #[test]
+    fn bypass_and_unknown_devices_are_harmless() {
+        let mut song = song_with(vec![1.0; 20_000]);
+        device(&mut song, "native.gainer", &[(0, -60.0)]);
+        song.tracks[0].devices[0].bypass = true;
+        song.tracks[0].devices.push(DeviceSpec {
+            id: "plugin.unknown".into(),
+            bypass: false,
+            params: vec![],
+        });
+        let out = render(song, 5000);
+        assert!((out[4000] - 1.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn automation_moves_track_volume_and_device_params() {
+        // volume ramps from silence (0) to unity (60/66) over the first line
+        let mut song = song_with(vec![1.0; 60_000]);
+        let mut a = Automation::new(0, AutoTarget::TrackVolume);
+        a.set_point(0.0, 0.0);
+        a.set_point(1.0, 60.0 / 66.0);
+        Arc::make_mut(&mut song.patterns[0]).automation.push(a);
+        let out = render(song, 44_000);
+        assert!(out[2000] < 0.2, "{}", out[2000]);
+        // at 0.907 of the line the volume is -60 + 66 * 0.824 = -5.6 dB
+        assert!((out[40_000] - 0.52).abs() < 0.05, "{}", out[40_000]);
+        assert!(out[20_000] > out[10_000]);
+
+        // gainer gain automated from -60 dB (normalized 0) to 0 dB (normalized 60/72)
+        let mut song = song_with(vec![1.0; 60_000]);
+        device(&mut song, "native.gainer", &[]);
+        let mut a = Automation::new(0, AutoTarget::Device { device: 0, param: 0 });
+        a.set_point(0.0, 0.0);
+        a.set_point(1.0, 60.0 / 72.0);
+        Arc::make_mut(&mut song.patterns[0]).automation.push(a);
+        let out = render(song, 44_000);
+        assert!(out[2000] < 0.1, "{}", out[2000]);
+        assert!((out[40_000] - 0.52).abs() < 0.05, "{}", out[40_000]);
+    }
+
+    #[test]
+    fn instrument_filter_removes_highs() {
+        let mut song = song_with(sine(10_000.0, 0.5, 0.8));
+        song.instruments[0].filter =
+            InstrumentFilter { mode: trakr_core::FilterMode::LowPass, cutoff: 500.0, resonance: 0.707 };
+        let out = render(song, 20_000);
+        assert!(peak(&out[5000..20_000]) < 0.1);
+        // filter envelope opening the cutoff by 5 octaves lets the tone through
+        let mut song = song_with(sine(10_000.0, 0.5, 0.8));
+        song.instruments[0].filter =
+            InstrumentFilter { mode: trakr_core::FilterMode::LowPass, cutoff: 500.0, resonance: 0.707 };
+        song.instruments[0].cutoff_env = Arc::new(trakr_core::Envelope {
+            enabled: true,
+            points: vec![(0.0, 1.0), (1.0, 1.0)],
+            sustain: None,
+        });
+        let out = render(song, 20_000);
+        assert!(peak(&out[5000..20_000]) > 0.5);
+    }
+
+    #[test]
+    fn offline_render_includes_devices() {
+        let mut impulse = vec![0.0; 100];
+        impulse[0] = 1.0;
+        let mut song = song_with(impulse);
+        device(&mut song, "native.delay", &[(0, 500.0), (1, 0.0), (2, 1.0), (3, 0.0)]);
+        // 64-line pattern is far longer than the echo, so the echo must be in the render
+        let out = render_song(Arc::new(song), RATE, 5.0);
+        assert!(out.iter().skip(2 * 20_000).any(|s| s.abs() > 0.1), "echo missing from the bounce");
     }
 }
