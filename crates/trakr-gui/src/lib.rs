@@ -81,6 +81,7 @@ pub(crate) struct GuiApp {
     /// A text field had keyboard focus at the end of the last frame.
     pub text_editing: bool,
     pub grid_info: GridInfo,
+    checked_recovery: bool,
 }
 
 impl GuiApp {
@@ -117,6 +118,7 @@ impl GuiApp {
             auto_drag: None,
             title: String::new(),
             text_editing: false,
+            checked_recovery: false,
             grid_info: GridInfo {
                 area: egui::Rect::NOTHING,
                 char_w: 8.0,
@@ -125,6 +127,12 @@ impl GuiApp {
                 cols: Vec::new(),
             },
         }
+    }
+}
+
+impl Drop for GuiApp {
+    fn drop(&mut self) {
+        self.editor.save_prefs();
     }
 }
 
@@ -163,6 +171,12 @@ impl GuiApp {
             }
             for k in keys {
                 self.editor.on_key(k);
+            }
+        }
+        if !self.checked_recovery {
+            self.checked_recovery = true;
+            if self.editor.recovery_available() {
+                self.confirm = Some(Confirm::Recover);
             }
         }
         self.editor.tick();

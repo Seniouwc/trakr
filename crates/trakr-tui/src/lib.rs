@@ -54,5 +54,6 @@ pub fn run(mut app: Editor) -> anyhow::Result<()> {
         Ok(())
     })();
     ratatui::restore();
+    app.save_prefs();
     result
 }

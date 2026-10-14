@@ -3930,6 +3930,8 @@ name = "trakr-editor"
 version = "0.0.1"
 dependencies = [
  "anyhow",
+ "serde",
+ "serde_json",
  "trakr-core",
  "trakr-engine",
  "trakr-format",

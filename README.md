@@ -24,7 +24,7 @@ An open source tracker DAW written in Rust, with a native window (egui) and a te
 - Mixer with per-track volume, pan, mute, solo, level meters; song loop range
 - 18 track devices (filters, EQs, dynamics, delay, reverb, modulation and distortion effects), instrument filter with cutoff envelope, and pattern automation of any device parameter
 - Real-time engine with sequencer, voices and mixer (cpal audio output)
-- Native `.trkr` project format (zip of `song.json` and raw sample data)
+- Native `.trkr` project format (zip of `song.json` and raw sample data), autosave with crash recovery, recent files, saved preferences
 - Best-effort `.xrns` import (patterns and instruments with samples) for interoperability
 
 ## Building

@@ -96,6 +96,27 @@ impl GuiApp {
                         self.guard_unsaved(Confirm::Open);
                         ui.close_menu();
                     }
+                    ui.add_enabled_ui(!self.editor.recent_files().is_empty(), |ui| {
+                        ui.menu_button("Open recent", |ui| {
+                            for path in self.editor.recent_files().to_vec() {
+                                let label = path
+                                    .file_name()
+                                    .map_or_else(|| path.display().to_string(), |n| n.to_string_lossy().into_owned());
+                                if ui.button(label).on_hover_text(path.display().to_string()).clicked() {
+                                    if self.editor.dirty {
+                                        self.confirm = Some(Confirm::Open);
+                                    } else {
+                                        self.editor.open(&path);
+                                    }
+                                    ui.close_menu();
+                                }
+                            }
+                        });
+                    });
+                    if self.editor.recovery_available() && ui.button("Recover autosave").clicked() {
+                        self.editor.recover_autosave();
+                        ui.close_menu();
+                    }
                     self.item(ui, Save);
                     if ui.button("Save as...").clicked() {
                         self.open_dialog(FileMode::SaveAs);

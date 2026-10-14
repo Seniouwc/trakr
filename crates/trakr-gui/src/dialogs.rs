@@ -78,6 +78,8 @@ impl FileDialog {
 }
 
 pub enum Confirm {
+    /// An autosave from a crashed or unsaved session was found.
+    Recover,
     Quit,
     New,
     Open,
@@ -100,6 +102,7 @@ impl GuiApp {
 
     fn proceed(&mut self, c: Confirm) {
         match c {
+            Confirm::Recover => {}
             Confirm::Quit => self.allow_close_now = true,
             Confirm::New => self.editor.new_song(),
             Confirm::Open => self.open_dialog(FileMode::Open),
@@ -234,6 +237,26 @@ impl GuiApp {
 
     fn confirm_ui(&mut self, ctx: &egui::Context) {
         let Some(c) = self.confirm.take() else { return };
+        if matches!(c, Confirm::Recover) {
+            let mut choice: Option<bool> = None;
+            egui::Window::new("Recover unsaved work?").collapsible(false).resizable(false).show(ctx, |ui| {
+                ui.label("trakr found an autosave newer than the saved song (the last session may have ended unexpectedly).");
+                ui.horizontal(|ui| {
+                    if ui.button("Recover").clicked() {
+                        choice = Some(true);
+                    }
+                    if ui.button("Discard").clicked() {
+                        choice = Some(false);
+                    }
+                });
+            });
+            match choice {
+                Some(true) => self.editor.recover_autosave(),
+                Some(false) => self.editor.discard_autosave(),
+                None => self.confirm = Some(c),
+            }
+            return;
+        }
         let mut action: Option<&str> = None;
         egui::Window::new("Unsaved changes").collapsible(false).resizable(false).show(ctx, |ui| {
             ui.label("This song has unsaved changes.");

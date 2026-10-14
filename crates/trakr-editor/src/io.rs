@@ -44,6 +44,7 @@ impl Editor {
     }
 
     pub fn new_song(&mut self) {
+        self.clear_autosave(); // the discarded document's autosave
         self.replace_song(Song::default(), None);
         self.status = "new song".into();
     }
@@ -51,6 +52,7 @@ impl Editor {
     pub fn open(&mut self, path: &Path) {
         match load_song(path) {
             Ok((song, save_path)) => {
+                self.clear_autosave(); // the document being replaced
                 let is_xrns = path.extension().is_some_and(|e| e.eq_ignore_ascii_case("xrns"));
                 let warnings = if is_xrns {
                     load_song_report(path).map(|(_, w)| w).unwrap_or_default()
@@ -58,6 +60,7 @@ impl Editor {
                     Vec::new()
                 };
                 self.replace_song(song, Some(save_path));
+                self.remember_recent(path);
                 self.status = if warnings.is_empty() {
                     format!("opened {}", path.display())
                 } else {
@@ -86,8 +89,10 @@ impl Editor {
         match trakr_format::save_path(&song, &path) {
             Ok(()) => {
                 self.status = format!("saved {}", path.display());
-                self.path = Some(path);
+                self.path = Some(path.clone());
                 self.dirty = false;
+                self.clear_autosave();
+                self.remember_recent(&path);
             }
             Err(e) => self.status = format!("save failed: {e}"),
         }

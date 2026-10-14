@@ -33,6 +33,8 @@ fn main() -> Result<()> {
         }
     };
     let mut editor = trakr_editor::Editor::new(song, path, handle);
+    editor.set_config_dir(trakr_editor::default_config_dir());
+    editor.load_prefs();
     editor.set_recorder_factory(Box::new(|| {
         Ok(Box::new(trakr_engine::audio::start_input()?) as Box<dyn trakr_editor::InputRecorder>)
     }));

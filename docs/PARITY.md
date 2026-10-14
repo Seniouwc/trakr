@@ -86,11 +86,12 @@ Compiled from memory of Renoise 3.x behavior. Verify each item against the offic
 - [~] `.xrns` import: metadata, tracks, patterns, notes, effects, sequence, and instruments with decoded sample audio (volume, pan, transpose/finetune, loops, key mapping; warnings for anything skipped). Element names and the `SampleData/` layout are from memory and tested only against synthetic fixtures. Missing: instrument envelopes, filters, devices, automation, phrases, groups, sends
 - [ ] `.xrns` export; `.xrni` and `.xrnt` import/export; track DSP presets; theme files
 - [ ] MOD, S3M, XM, IT import
-- [ ] Autosave, backup, crash recovery, recent files
+- [x] Autosave (every 60 s while there is unsaved work, beside the project or in the config dir), crash recovery prompt, recent files menu
+- [ ] Backups of previous saves
 
 ## Application
 - [~] TUI pattern editor (single pattern view, cursor, edit mode)
 - [ ] TUI views: sequencer/matrix, mixer, instrument editor, sample editor, automation editor, plugin browser, disk browser, settings, help
 - [ ] Configurable keymap (Renoise-compatible preset), themes, mouse support, command palette
-- [ ] Preferences storage, session restore
+- [~] Preferences storage (octave, edit step, follow, recent files, autosave interval in `~/.config/trakr/prefs.json`); window layout and session restore are not saved
 - [ ] Optional GUI frontend reusing core/engine

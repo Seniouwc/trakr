@@ -1,4 +1,5 @@
 use super::*;
+use std::path::PathBuf;
 use trakr_core::NOTE_EMPTY;
 
 fn key(c: char) -> KeyEvent {
@@ -566,4 +567,72 @@ fn groups_sends_and_index_bookkeeping() {
     assert!(app.song.tracks[0].sends.is_empty());
     app.undo();
     assert_eq!(app.song.tracks[0].sends.len(), 1);
+}
+
+fn temp_dir(name: &str) -> PathBuf {
+    let d = std::env::temp_dir().join(format!("trakr_test_{name}_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&d);
+    std::fs::create_dir_all(&d).unwrap();
+    d
+}
+
+#[test]
+fn prefs_and_recent_files_roundtrip() {
+    let dir = temp_dir("prefs");
+    let mut app = ed();
+    app.set_config_dir(Some(dir.join("cfg")));
+    app.octave = 6;
+    app.edit_step = 4;
+    app.follow = false;
+    let song_path = dir.join("a.trkr");
+    app.save_as(song_path.clone());
+    assert_eq!(app.recent_files(), std::slice::from_ref(&song_path));
+    app.save_prefs();
+    let mut fresh = ed();
+    fresh.set_config_dir(Some(dir.join("cfg")));
+    fresh.load_prefs();
+    assert_eq!((fresh.octave, fresh.edit_step, fresh.follow), (6, 4, false));
+    assert_eq!(fresh.recent_files(), &[song_path]);
+    // corrupt prefs are ignored, not fatal
+    std::fs::write(dir.join("cfg/prefs.json"), "not json").unwrap();
+    let mut again = ed();
+    again.set_config_dir(Some(dir.join("cfg")));
+    again.load_prefs();
+    assert_eq!(again.octave, 4);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn autosave_is_written_recovered_and_cleared() {
+    let dir = temp_dir("autosave");
+    let path = dir.join("song.trkr");
+    let mut app = ed();
+    app.save_as(path.clone());
+    app.set_autosave_interval(std::time::Duration::from_millis(1));
+    assert!(!app.recovery_available());
+    app.edit_mode = true;
+    put(&mut app, 3, 40);
+    std::thread::sleep(std::time::Duration::from_millis(5));
+    app.tick();
+    let auto = app.autosave_path().unwrap();
+    assert!(auto.exists(), "autosave should exist after an edit");
+    // a "crash": a fresh editor opening the same project sees the newer autosave
+    let mut after_crash = ed();
+    after_crash.open(&path);
+    assert!(after_crash.recovery_available());
+    assert_eq!(note_at(&after_crash, 0, 3), NOTE_EMPTY);
+    after_crash.recover_autosave();
+    assert_eq!(note_at(&after_crash, 0, 3), 40);
+    assert!(after_crash.dirty);
+    // saving clears the autosave
+    after_crash.save();
+    assert!(!auto.exists());
+    assert!(!after_crash.recovery_available());
+    // untouched songs never autosave
+    let mut clean = ed();
+    clean.open(&path);
+    clean.set_autosave_interval(std::time::Duration::from_millis(1));
+    clean.tick();
+    assert!(!clean.autosave_path().unwrap().exists());
+    let _ = std::fs::remove_dir_all(dir);
 }
