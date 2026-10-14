@@ -325,6 +325,7 @@ impl Device for Cabinet {
         let cpk = Coeffs::peak(self.fs, pk_f, 1.0, pk_g);
         let csh = Coeffs::low_shelf(self.fs, 200.0, sh_g);
         for fr in buf.chunks_exact_mut(2) {
+            #[allow(clippy::needless_range_loop)]
             for ch in 0..2 {
                 let x = fr[ch];
                 let y = self.hp[ch].process(&chp, x);
@@ -354,6 +355,7 @@ impl Device for DcOffset {
         let off = p(params, 0, 0.0).clamp(-1.0, 1.0);
         let remove = p(params, 1, 0.0) >= 0.5;
         for fr in buf.chunks_exact_mut(2) {
+            #[allow(clippy::needless_range_loop)]
             for ch in 0..2 {
                 let x = fr[ch];
                 let y = if remove {
