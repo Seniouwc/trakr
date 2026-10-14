@@ -385,6 +385,15 @@ impl Default for InstrumentFilter {
     }
 }
 
+/// Send an instrument's notes to the MIDI output port instead of (or besides) playing its samples.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MidiOut {
+    /// 0..=15 (shown to users as 1..=16).
+    pub channel: u8,
+    /// Program change sent before the first note of a channel, if set.
+    pub program: Option<u8>,
+}
+
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct Instrument {
     pub name: String,
@@ -412,6 +421,8 @@ pub struct Instrument {
     pub phrases: Vec<Arc<Phrase>>,
     #[serde(default)]
     pub phrase_mode: PhraseMode,
+    #[serde(default)]
+    pub midi_out: Option<MidiOut>,
 }
 
 impl Instrument {
@@ -429,6 +440,7 @@ impl Instrument {
             interpolation: Interpolation::Cubic,
             phrases: Vec::new(),
             phrase_mode: PhraseMode::Off,
+            midi_out: None,
         }
     }
 

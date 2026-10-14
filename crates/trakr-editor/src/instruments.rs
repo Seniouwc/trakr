@@ -95,6 +95,11 @@ impl Editor {
         self.sync();
     }
 
+    /// Route the selected instrument's notes to MIDI output (`None` plays samples only).
+    pub fn instrument_set_midi(&mut self, midi: Option<trakr_core::MidiOut>) {
+        self.edit_instrument("inst_midi", |i| i.midi_out = midi);
+    }
+
     pub fn current_instrument(&self) -> Option<&Instrument> {
         self.song.instruments.get(self.instrument as usize)
     }

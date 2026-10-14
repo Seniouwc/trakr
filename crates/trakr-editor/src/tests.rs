@@ -1052,3 +1052,62 @@ fn phrase_entry_needs_edit_mode_and_remove_works() {
     assert!(e.song.instruments[0].phrases.is_empty());
     e.phrase_key(key('z')); // nothing selected: must not panic
 }
+
+struct MockOut(std::sync::Arc<std::sync::Mutex<Vec<Vec<u8>>>>);
+
+struct MockSink(std::sync::Arc<std::sync::Mutex<Vec<Vec<u8>>>>);
+
+impl MidiSink for MockSink {
+    fn send(&mut self, bytes: &[u8]) {
+        self.0.lock().unwrap().push(bytes.to_vec());
+    }
+    fn port_name(&self) -> &str {
+        "mock out"
+    }
+}
+
+impl MidiBackend for MockOut {
+    fn ports(&mut self) -> Vec<String> {
+        Vec::new()
+    }
+    fn open(&mut self, _port: usize) -> anyhow::Result<Box<dyn MidiInput>> {
+        anyhow::bail!("no input")
+    }
+    fn out_ports(&mut self) -> Vec<String> {
+        vec!["mock out".into()]
+    }
+    fn open_out(&mut self, _port: usize) -> anyhow::Result<Box<dyn MidiSink>> {
+        Ok(Box::new(MockSink(self.0.clone())))
+    }
+}
+
+#[test]
+fn midi_output_carries_instrument_notes_and_clock_and_can_reconnect() {
+    let log = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let (mut engine, handle) = trakr_engine::create(44_100);
+    let mut e = Editor::new(Song::demo(), None, Some(handle));
+    e.set_midi_backend(Box::new(MockOut(log.clone())));
+    assert_eq!(e.midi_out_ports(), vec!["mock out".to_string()]);
+    e.instrument_set_midi(Some(trakr_core::MidiOut { channel: 5, program: None }));
+    e.set_midi_clock_out(true);
+    e.midi_out_connect(0);
+    assert_eq!(e.midi_out_port_name(), Some("mock out"));
+    e.do_action(Action::PlaySong);
+    let mut buf = vec![0.0f32; 2048 * 2];
+    for _ in 0..40 {
+        engine.render(&mut buf);
+    }
+    std::thread::sleep(std::time::Duration::from_millis(200));
+    e.midi_out_disconnect();
+    assert_eq!(e.midi_out_port_name(), None);
+    {
+        let got = log.lock().unwrap();
+        assert!(got.iter().any(|m| m[0] == 0x95 && m[2] > 0), "note on, channel 6: {got:?}");
+        assert!(got.iter().any(|m| m == &[0xFA]), "start");
+        assert!(got.iter().filter(|m| m.as_slice() == [0xF8]).count() > 10, "clock");
+    }
+    // the source went back to the engine handle, so connecting again works
+    e.midi_out_connect(0);
+    assert_eq!(e.midi_out_port_name(), Some("mock out"));
+    e.midi_out_disconnect();
+}

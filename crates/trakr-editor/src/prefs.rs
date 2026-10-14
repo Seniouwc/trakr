@@ -24,6 +24,10 @@ pub struct Prefs {
     pub ui_scale: f32,
     /// Pattern grid font size in points.
     pub font_size: f32,
+    /// Send MIDI timing clock and start/stop to the output port.
+    pub midi_clock_out: bool,
+    /// Delay applied to MIDI output so it lines up with the audio device's latency.
+    pub midi_latency_ms: u32,
 }
 
 impl Default for Prefs {
@@ -38,6 +42,8 @@ impl Default for Prefs {
             theme: "dark".into(),
             ui_scale: 1.0,
             font_size: 15.0,
+            midi_clock_out: false,
+            midi_latency_ms: 30,
         }
     }
 }

@@ -169,6 +169,7 @@ impl GuiApp {
                     ui.radio_value(&mut self.dock, crate::Dock::Mixer, "Mixer");
                     ui.radio_value(&mut self.dock, crate::Dock::Devices, "Track devices");
                     ui.radio_value(&mut self.dock, crate::Dock::Automation, "Automation");
+                    ui.radio_value(&mut self.dock, crate::Dock::Phrases, "Phrases");
                     ui.radio_value(&mut self.dock, crate::Dock::Hidden, "Hide bottom panel");
                 });
                 ui.menu_button("Play", |ui| {
@@ -176,6 +177,39 @@ impl GuiApp {
                         self.item(ui, a);
                     }
                     ui.separator();
+                    ui.menu_button("MIDI output", |ui| {
+                        let current = self.editor.midi_out_port_name().map(str::to_owned);
+                        if !self.editor.has_midi() {
+                            ui.weak("MIDI is not available");
+                        }
+                        let ports = self.editor.midi_out_ports();
+                        if ports.is_empty() && self.editor.has_midi() {
+                            ui.weak("No MIDI output devices found");
+                        }
+                        for (i, name) in ports.iter().enumerate() {
+                            if ui.radio(current.as_deref() == Some(name.as_str()), name).clicked() {
+                                self.editor.midi_out_connect(i);
+                                ui.close_menu();
+                            }
+                        }
+                        if current.is_some() && ui.button("Disconnect").clicked() {
+                            self.editor.midi_out_disconnect();
+                            ui.close_menu();
+                        }
+                        ui.separator();
+                        let mut clock = self.editor.prefs.midi_clock_out;
+                        if ui.checkbox(&mut clock, "Send clock and start/stop").changed() {
+                            self.editor.set_midi_clock_out(clock);
+                        }
+                        let mut latency = self.editor.prefs.midi_latency_ms;
+                        ui.horizontal(|ui| {
+                            ui.label("Latency");
+                            if ui.add(egui::DragValue::new(&mut latency).range(0..=500).suffix(" ms")).changed() {
+                                self.editor.prefs.midi_latency_ms = latency;
+                            }
+                        });
+                        ui.weak("Instruments with MIDI output on (Instrument panel) send their notes here. Reconnect after changing latency.");
+                    });
                     ui.menu_button("MIDI input", |ui| {
                         let current = self.editor.midi_port_name().map(str::to_owned);
                         if !self.editor.has_midi() {

@@ -3949,6 +3949,7 @@ dependencies = [
  "cpal",
  "rtrb",
  "trakr-core",
+ "trakr-midi",
 ]
 
 [[package]]

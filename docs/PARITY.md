@@ -46,7 +46,8 @@ Compiled from memory of Renoise 3.x behavior. Verify each item against the offic
 - [~] Instrument volume, pan and pitch envelopes (points, sustain hold, GUI editor) work; cutoff/resonance/drive, LFOs, key/velocity tracking, stepper, random, envelope loops and fade-out do not
 - [~] Instrument filter (LP/HP/BP/Notch, cutoff, resonance, cutoff envelope) works; more filter types, drive, and a per-instrument FX chain do not
 - [ ] Macros (instrument macros) and MIDI input properties
-- [ ] Plugin instruments (VST/CLAP/LV2) and MIDI instrument routing; instrument bank/XRNI import/export
+- [~] MIDI instrument routing works: an instrument can send its notes (channel, optional program change, velocity from the volume column, note-off from OFF/next note/stop) to the MIDI output port, with or without its samples; not yet CC/pitch-bend lanes or per-note properties
+- [ ] Plugin instruments (VST/CLAP/LV2); instrument bank/XRNI import/export
 - [ ] Sample/instrument disk browser, favorites
 
 - [x] Record from audio input (cpal) into a new instrument; render song to sample or WAV (offline)
@@ -73,7 +74,8 @@ Compiled from memory of Renoise 3.x behavior. Verify each item against the offic
 - [ ] Out-of-process sandboxing, crash recovery, plugin scan cache, blocklist
 
 ## IO, control, scripting
-- [~] MIDI input works (midir): notes play and record (velocity to the volume column), CC7/CC10 set cursor-track volume/pan, start/continue/stop control the transport, device picker in Play > MIDI input. Missing: MIDI output, clock slave/master, pitch bend, program change, MIDI mapping of arbitrary parameters, per-instrument MIDI routing, channel filtering
+- [x] MIDI output and clock master: Play > MIDI output picks a port, sends 24 ppqn timing clock plus start/stop with the transport (optional), latency setting aligns it with the audio device; timing is stamped per frame by the engine and delivered by a helper thread (jitter about a millisecond, not hardware-locked)
+- [~] MIDI input works (midir): notes play and record (velocity to the volume column), CC7/CC10 set cursor-track volume/pan, start/continue/stop control the transport, device picker in Play > MIDI input. Missing: clock slave (external sync), pitch bend, MIDI mapping of arbitrary parameters, channel filtering
 - [ ] OSC server and client
 - [ ] Lua scripting API with tool/menu entries (mlua), API surface equivalent to the official one
 - [ ] Audio backends: ALSA (cpal, working), JACK, PipeWire native; device selection and buffer size UI

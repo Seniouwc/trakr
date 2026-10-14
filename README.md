@@ -23,7 +23,7 @@ An open source tracker DAW written in Rust, with a native window (egui) and a te
 - Phrases: per-instrument mini patterns with their own speed, triggered and transposed by a single note
 - Group and send tracks with nested routing and pre/post-fader feeds
 - A synthesized showcase song opens by default so there is something to play and edit straight away
-- MIDI keyboard input (play and record notes, CC volume/pan, transport)
+- MIDI keyboard input (play and record notes, CC volume/pan, transport); MIDI output per instrument and MIDI clock/start/stop master
 - Mixer with per-track volume, pan, mute, solo, level meters; song loop range
 - 20 track devices (filters, EQs, dynamics, delay, reverb, modulation and distortion effects, plus LFO and envelope-follower modulators that drive any other device's parameter), instrument filter with cutoff envelope, and pattern automation of any device parameter
 - Real-time engine with sequencer, voices and mixer (cpal audio output)

@@ -12,11 +12,12 @@ mod voice;
 
 pub use devices::Device;
 
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
 use trakr_core::{
     AutoTarget, EffectCmd, MuteState, Phrase, Song, EMPTY, MAX_NOTE_COLUMNS, NOTE_EMPTY, NOTE_OFF,
 };
+use trakr_midi::MidiOutMsg;
 use voice::{TriggerOpts, Voice};
 
 const MAX_VOICES: usize = 128;
@@ -31,6 +32,10 @@ const MAX_OVERRIDES: usize = 256;
 const MAX_MOD_DEVS: usize = 32;
 /// Modulators applied per track and block.
 const MAX_MODS: usize = 8;
+/// Messages waiting for the MIDI output thread.
+const MIDI_QUEUE: usize = 4096;
+/// MIDI notes sounding at once.
+const MAX_MIDI_NOTES: usize = 128;
 /// Phrases playing at once.
 const MAX_PHRASE_RUNS: usize = 32;
 /// Voice column ids at and above this belong to phrase playback (one block of columns per trigger column).
@@ -43,6 +48,15 @@ pub enum Garbage {
     Song(Arc<Song>),
     Chain(Vec<Box<dyn Device>>),
     Phrase(Arc<Phrase>),
+}
+
+/// A note sent to the MIDI output that has not been released yet.
+#[derive(Clone, Copy)]
+struct MidiNote {
+    track: usize,
+    column: usize,
+    channel: u8,
+    note: u8,
 }
 
 /// A parameter value forced by pattern automation for the current block.
@@ -116,6 +130,11 @@ pub enum Command {
         track: usize,
         note: u8,
     },
+    /// Turn MIDI output on or off, and whether to send timing clock plus start/stop while playing.
+    SetMidiOut {
+        enabled: bool,
+        clock: bool,
+    },
     /// Audition one phrase of an instrument, whatever the instrument's phrase mode.
     PlayPhrase {
         track: usize,
@@ -143,6 +162,8 @@ pub struct SharedPos {
     pub playing: AtomicBool,
     pub seq_pos: AtomicU32,
     pub line: AtomicU32,
+    /// Frames rendered since the engine started (timestamps MIDI output).
+    frames: AtomicU64,
     /// Per-track peak of the most recent render call, as f32 bits.
     meters: Vec<AtomicU32>,
     master: [AtomicU32; 2],
@@ -154,6 +175,7 @@ impl Default for SharedPos {
             playing: AtomicBool::new(false),
             seq_pos: AtomicU32::new(0),
             line: AtomicU32::new(0),
+            frames: AtomicU64::new(0),
             meters: (0..MAX_METER_TRACKS).map(|_| AtomicU32::new(0)).collect(),
             master: [AtomicU32::new(0), AtomicU32::new(0)],
         }
@@ -189,6 +211,35 @@ pub struct EngineHandle {
     garbage: rtrb::Consumer<Garbage>,
     pub pos: Arc<SharedPos>,
     pub sample_rate: u32,
+    /// Messages for MIDI output. Hand it to a `trakr_midi::pump` thread; `None` while one has it.
+    pub midi_out: Option<MidiOutSource>,
+}
+
+/// The consumer side of the engine's MIDI output queue.
+pub struct MidiOutSource {
+    rx: rtrb::Consumer<(u64, MidiOutMsg)>,
+    pos: Arc<SharedPos>,
+}
+
+impl trakr_midi::pump::Source for MidiOutSource {
+    fn poll(&mut self) -> Option<(u64, MidiOutMsg)> {
+        self.rx.pop().ok()
+    }
+
+    fn frames_rendered(&self) -> u64 {
+        self.pos.frames.load(Ordering::Acquire)
+    }
+
+    fn into_any(self: Box<Self>) -> Box<dyn std::any::Any> {
+        self
+    }
+}
+
+impl MidiOutSource {
+    /// Recover a source handed back by `trakr_midi::pump::Pump::stop`.
+    pub fn from_boxed(src: Box<dyn trakr_midi::pump::Source>) -> Option<Self> {
+        src.into_any().downcast::<Self>().ok().map(|b| *b)
+    }
 }
 
 impl EngineHandle {
@@ -207,6 +258,7 @@ pub fn create(sample_rate: u32) -> (Engine, EngineHandle) {
     voice::init_tables();
     let (tx, rx) = rtrb::RingBuffer::new(QUEUE_CAP);
     let (gtx, grx) = rtrb::RingBuffer::new(QUEUE_CAP);
+    let (mtx, mrx) = rtrb::RingBuffer::new(MIDI_QUEUE);
     let pos = Arc::new(SharedPos::default());
     let song = Arc::new(Song::default());
     let engine = Engine {
@@ -225,6 +277,14 @@ pub fn create(sample_rate: u32) -> (Engine, EngineHandle) {
         voices: Vec::with_capacity(MAX_VOICES),
         events: Vec::with_capacity(MAX_EVENTS),
         phrase_runs: Vec::with_capacity(MAX_PHRASE_RUNS),
+        midi_tx: mtx,
+        midi_on: false,
+        midi_clock: false,
+        midi_running: false,
+        midi_clock_due: 0.0,
+        midi_notes: Vec::with_capacity(MAX_MIDI_NOTES),
+        midi_program: [0xFF; 16],
+        now_frames: 0,
         pending_break: None,
         stop_at_end: false,
         tick: 0,
@@ -243,7 +303,8 @@ pub fn create(sample_rate: u32) -> (Engine, EngineHandle) {
         meter_acc: [0.0; MAX_TRACKS],
         master_acc: [0.0; 2],
     };
-    (engine, EngineHandle { tx, garbage: grx, pos, sample_rate })
+    let midi_out = Some(MidiOutSource { rx: mrx, pos: pos.clone() });
+    (engine, EngineHandle { tx, garbage: grx, pos, sample_rate, midi_out })
 }
 
 pub struct Engine {
@@ -262,6 +323,16 @@ pub struct Engine {
     voices: Vec<Voice>,
     events: Vec<Event>,
     phrase_runs: Vec<PhraseRun>,
+    midi_tx: rtrb::Producer<(u64, MidiOutMsg)>,
+    midi_on: bool,
+    midi_clock: bool,
+    /// Whether start was sent (transport state as the MIDI output last saw it).
+    midi_running: bool,
+    midi_clock_due: f64,
+    midi_notes: Vec<MidiNote>,
+    /// Last program change sent per channel (0xFF = none).
+    midi_program: [u8; 16],
+    now_frames: u64,
     /// Line to jump to in the next pattern slot (ZB command).
     pending_break: Option<u16>,
     stop_at_end: bool,
@@ -309,6 +380,7 @@ impl Engine {
         }
         self.pos.master[0].store(self.master_acc[0].to_bits(), Ordering::Relaxed);
         self.pos.master[1].store(self.master_acc[1].to_bits(), Ordering::Relaxed);
+        self.pos.frames.store(self.now_frames, Ordering::Release);
     }
 
     /// Sequence, trigger and mix voices into per-track buses for up to `BLOCK` frames, then mix down.
@@ -318,6 +390,7 @@ impl Engine {
         self.update_automation();
         let mut done = 0;
         while done < frames {
+            self.midi_transport();
             if self.playing && self.frames_to_line <= 0.0 {
                 self.trigger_line();
                 self.playing_seq = self.seq_pos;
@@ -343,6 +416,9 @@ impl Engine {
             }
             for r in &self.phrase_runs {
                 chunk = chunk.min((r.frames_to_line.ceil() as usize).max(1));
+            }
+            if self.midi_on && self.midi_clock && self.playing {
+                chunk = chunk.min((self.midi_clock_due.ceil() as usize).max(1));
             }
             for v in &mut self.voices {
                 let t = v.track.min(MAX_TRACKS - 1);
@@ -376,6 +452,8 @@ impl Engine {
             for r in &mut self.phrase_runs {
                 r.frames_to_line -= chunk as f64;
             }
+            self.midi_clock_due -= chunk as f64;
+            self.now_frames += chunk as u64;
             done += chunk;
         }
         self.mix_down(out, frames);
@@ -657,6 +735,7 @@ impl Engine {
                         self.start_phrase(e.track, e.column, inst, phrase, note, vol, pan)
                     }
                     EventKind::Release => {
+                        self.release_midi(|n| n.track == e.track && n.column == e.column);
                         for v in self.voices.iter_mut().filter(|v| v.track == e.track && v.column == e.column)
                         {
                             v.release();
@@ -750,7 +829,23 @@ impl Engine {
                     for v in self.voices.iter_mut().filter(|v| v.track == track) {
                         v.release();
                     }
+                    self.release_midi(|n| n.track == track);
                     self.stop_phrase(track, LIVE_COL);
+                }
+                Command::SetMidiOut { enabled, clock } => {
+                    if self.midi_on && !enabled {
+                        self.release_midi(|_| true);
+                    }
+                    self.midi_on = enabled;
+                    self.midi_clock = clock;
+                    self.midi_running = self.playing && enabled && self.midi_running;
+                    if enabled && self.playing && !self.midi_running {
+                        self.midi_running = true;
+                        if clock {
+                            self.midi_emit(MidiOutMsg::Start);
+                        }
+                    }
+                    self.midi_clock_due = 0.0;
                 }
                 Command::PlayPhrase { track, instrument, phrase, note } => {
                     self.start_phrase(track, LIVE_COL, instrument, phrase, note, 1.0, 0.0);
@@ -783,6 +878,11 @@ impl Engine {
     ) {
         let song = self.song.clone(); // refcount bump only
         let Some(instrument) = song.instruments.get(inst as usize) else { return };
+        if let Some(m) = instrument.midi_out {
+            if song.tracks.get(track).map_or(true, |t| t.mute == MuteState::Active) {
+                self.midi_note_on(track, column, m, note, vol);
+            }
+        }
         let velocity = (vol.clamp(0.0, 1.0) * 127.0).round() as u8;
         let Some(sample) = instrument.sample_for_velocity(note, velocity) else { return };
         if song.tracks.get(track).is_some_and(|t| t.mute == MuteState::Off) {
@@ -801,6 +901,76 @@ impl Engine {
             self.voices.remove(0);
         }
         self.voices.push(Voice::new(track, column, instrument, sample, note, vol, pan, opts));
+    }
+
+    fn midi_emit(&mut self, msg: MidiOutMsg) {
+        if self.midi_on {
+            let _ = self.midi_tx.push((self.now_frames, msg));
+        }
+    }
+
+    /// Follow the transport: start/stop messages, timing clock, and no hanging notes after a stop.
+    fn midi_transport(&mut self) {
+        if !self.midi_on {
+            return;
+        }
+        if self.playing != self.midi_running {
+            self.midi_running = self.playing;
+            if self.playing {
+                self.midi_clock_due = 0.0;
+                if self.midi_clock {
+                    self.midi_emit(MidiOutMsg::Start);
+                }
+            } else {
+                self.release_midi(|_| true);
+                if self.midi_clock {
+                    self.midi_emit(MidiOutMsg::Stop);
+                }
+            }
+        }
+        if self.playing && self.midi_clock {
+            // 24 clocks per beat; a beat lasts 60 / bpm seconds.
+            let interval = self.sample_rate as f64 * 60.0 / self.bpm.max(1.0) as f64 / 24.0;
+            while self.midi_clock_due <= 0.0 {
+                self.midi_emit(MidiOutMsg::Clock);
+                self.midi_clock_due += interval.max(1.0);
+            }
+        }
+    }
+
+    /// Send note-off for every sounding MIDI note that `which` selects.
+    fn release_midi(&mut self, which: impl Fn(&MidiNote) -> bool) {
+        let mut i = 0;
+        while i < self.midi_notes.len() {
+            if which(&self.midi_notes[i]) {
+                let n = self.midi_notes.swap_remove(i);
+                self.midi_emit(MidiOutMsg::NoteOff { channel: n.channel, note: n.note });
+            } else {
+                i += 1;
+            }
+        }
+    }
+
+    fn midi_note_on(&mut self, track: usize, column: usize, m: trakr_core::MidiOut, note: u8, vol: f32) {
+        if !self.midi_on {
+            return;
+        }
+        let channel = m.channel & 15;
+        self.release_midi(|n| n.track == track && n.column == column);
+        if let Some(program) = m.program {
+            if self.midi_program[channel as usize] != program {
+                self.midi_program[channel as usize] = program;
+                self.midi_emit(MidiOutMsg::Program { channel, program });
+            }
+        }
+        if self.midi_notes.len() >= MAX_MIDI_NOTES {
+            let n = self.midi_notes.remove(0);
+            self.midi_emit(MidiOutMsg::NoteOff { channel: n.channel, note: n.note });
+        }
+        let velocity = (vol.clamp(0.0, 1.0) * 127.0).round().clamp(1.0, 127.0) as u8;
+        let note = note.min(127);
+        self.midi_notes.push(MidiNote { track, column, channel, note });
+        self.midi_emit(MidiOutMsg::NoteOn { channel, note, velocity });
     }
 
     fn retire_run(&mut self, run: PhraseRun) {
@@ -828,6 +998,7 @@ impl Engine {
         };
         let run = self.phrase_runs.remove(i);
         let base = Self::phrase_voice_base(run.col);
+        self.release_midi(|n| n.track == track && (base..base + MAX_NOTE_COLUMNS).contains(&n.column));
         for v in self
             .voices
             .iter_mut()
@@ -994,6 +1165,7 @@ impl Engine {
                     if at > 0.0 {
                         self.schedule(at, ti, ci, EventKind::Release);
                     } else {
+                        self.release_midi(|n| n.track == ti && n.column == ci);
                         for v in self.voices.iter_mut().filter(|v| v.track == ti && v.column == ci) {
                             v.release();
                         }
@@ -1322,6 +1494,109 @@ mod sequencer_tests {
         });
         let out = render(song, 4000);
         assert_eq!(onsets(&out), vec![0, 3000]);
+    }
+
+    /// Render with MIDI output on and collect what the engine queued.
+    fn render_midi(song: Song, frames: usize, clock: bool) -> (Vec<f32>, Vec<(u64, MidiOutMsg)>) {
+        use trakr_midi::pump::Source;
+        let (mut engine, mut h) = create(RATE);
+        h.send(Command::SetSong(Arc::new(song)));
+        h.send(Command::SetMidiOut { enabled: true, clock });
+        h.send(Command::Play { seq_pos: 0, line: 0, loop_pattern: false });
+        let mut out = vec![0.0; frames * 2];
+        engine.render(&mut out);
+        let mut src = h.midi_out.take().unwrap();
+        let mut msgs = Vec::new();
+        while let Some(m) = src.poll() {
+            msgs.push(m);
+        }
+        assert_eq!(src.frames_rendered(), frames as u64);
+        (out.chunks_exact(2).map(|f| f[0].max(f[1])).collect(), msgs)
+    }
+
+    #[test]
+    fn midi_instrument_sends_notes_with_velocity_and_releases_them() {
+        let mut song = song_with(vec![1.0; 100], LoopMode::Off);
+        song.instruments[0].midi_out = Some(trakr_core::MidiOut { channel: 3, program: Some(12) });
+        put(&mut song, 0, |l| {
+            note(&mut l.notes[0]);
+            l.notes[0].volume = 0x40;
+        });
+        put(&mut song, 1, |l| l.notes[0].note = NOTE_OFF);
+        let (audio, msgs) = render_midi(song, 3000, false);
+        assert_eq!(
+            msgs,
+            vec![
+                (0, MidiOutMsg::Program { channel: 3, program: 12 }),
+                (0, MidiOutMsg::NoteOn { channel: 3, note: 48, velocity: 64 }),
+                (1000, MidiOutMsg::NoteOff { channel: 3, note: 48 }),
+            ]
+        );
+        assert!(audio.iter().any(|s| s.abs() > 0.0), "the instrument's sample still plays");
+    }
+
+    #[test]
+    fn a_new_note_in_the_column_ends_the_previous_midi_note_and_stop_releases_all() {
+        let mut song = song_with(vec![1.0; 100], LoopMode::Off);
+        song.instruments[0].midi_out = Some(trakr_core::MidiOut::default());
+        put(&mut song, 0, |l| note(&mut l.notes[0]));
+        put(&mut song, 1, |l| {
+            note(&mut l.notes[0]);
+            l.notes[0].note = 50;
+        });
+        let (_, msgs) = render_midi(song, 1500, false);
+        let kinds: Vec<_> = msgs.iter().map(|m| (m.0, m.1)).collect();
+        assert_eq!(
+            kinds,
+            vec![
+                (0, MidiOutMsg::NoteOn { channel: 0, note: 48, velocity: 127 }),
+                (1000, MidiOutMsg::NoteOff { channel: 0, note: 48 }),
+                (1000, MidiOutMsg::NoteOn { channel: 0, note: 50, velocity: 127 }),
+            ]
+        );
+    }
+
+    #[test]
+    fn midi_clock_runs_24_per_beat_between_start_and_stop() {
+        // BPM 60: one beat per second, so 24 clocks per 1000 frames.
+        let song = song_with(vec![0.0; 10], LoopMode::Off);
+        let (mut engine, mut h) = create(RATE);
+        h.send(Command::SetSong(Arc::new(song)));
+        h.send(Command::SetMidiOut { enabled: true, clock: true });
+        h.send(Command::Play { seq_pos: 0, line: 0, loop_pattern: false });
+        let mut out = vec![0.0; 2000 * 2];
+        engine.render(&mut out);
+        h.send(Command::Stop);
+        engine.render(&mut out[..200]);
+        use trakr_midi::pump::Source;
+        let mut src = h.midi_out.take().unwrap();
+        let mut msgs = Vec::new();
+        while let Some(m) = src.poll() {
+            msgs.push(m);
+        }
+        assert_eq!(msgs.first(), Some(&(0, MidiOutMsg::Start)));
+        assert_eq!(msgs.last().map(|m| m.1), Some(MidiOutMsg::Stop));
+        let clocks: Vec<u64> = msgs.iter().filter(|m| m.1 == MidiOutMsg::Clock).map(|m| m.0).collect();
+        assert_eq!(clocks.len(), 48, "two beats of clock"); // frames 0..2000
+        let step = clocks[1] - clocks[0];
+        assert!((41..=42).contains(&step), "spacing {step}");
+    }
+
+    #[test]
+    fn midi_is_silent_unless_enabled_and_muted_tracks_stay_quiet() {
+        let mut song = song_with(vec![1.0; 100], LoopMode::Off);
+        song.instruments[0].midi_out = Some(trakr_core::MidiOut::default());
+        put(&mut song, 0, |l| note(&mut l.notes[0]));
+        let (mut engine, mut h) = create(RATE);
+        h.send(Command::SetSong(Arc::new(song.clone())));
+        h.send(Command::Play { seq_pos: 0, line: 0, loop_pattern: false });
+        let mut out = vec![0.0; 1000 * 2];
+        engine.render(&mut out);
+        use trakr_midi::pump::Source;
+        assert!(h.midi_out.as_mut().unwrap().poll().is_none(), "disabled output queues nothing");
+        song.tracks[0].mute = MuteState::Muted;
+        let (_, msgs) = render_midi(song, 1000, true);
+        assert!(msgs.iter().all(|m| !matches!(m.1, MidiOutMsg::NoteOn { .. })), "{msgs:?}");
     }
 
     #[test]
@@ -2103,6 +2378,12 @@ mod device_tests {
             };
             inst.nna =
                 *rng.pick(&[trakr_core::Nna::Cut, trakr_core::Nna::NoteOff, trakr_core::Nna::Continue]);
+            if rng.below(3) == 0 {
+                inst.midi_out = Some(trakr_core::MidiOut {
+                    channel: rng.below(40) as u8,
+                    program: if rng.below(2) == 0 { Some(rng.below(200) as u8) } else { None },
+                });
+            }
             if rng.below(2) == 0 {
                 inst.phrase_mode = trakr_core::PhraseMode::Keymap;
                 for _ in 0..1 + rng.below(3) {
@@ -2184,6 +2465,7 @@ mod device_tests {
             for (track, chain) in chains.into_iter().enumerate() {
                 h.send(Command::SetChain { track, chain });
             }
+            h.send(Command::SetMidiOut { enabled: rng.below(2) == 0, clock: rng.below(2) == 0 });
             h.send(Command::Play { seq_pos: 0, line: 0, loop_pattern: rng.below(2) == 0 });
             // buffer sizes a real driver might use, including odd ones
             for _ in 0..(rate as usize / 256) {

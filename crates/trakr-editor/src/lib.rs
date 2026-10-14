@@ -18,7 +18,7 @@ pub use keys::{KeyCode, KeyEvent};
 pub use ops::{Cell, Clipboard};
 pub use prefs::{default_config_dir, Prefs};
 pub use trakr_engine::InputRecorder;
-pub use trakr_midi::{MidiBackend, MidiEvent, MidiInput};
+pub use trakr_midi::{MidiBackend, MidiEvent, MidiInput, MidiOutMsg, MidiSink};
 pub use trakr_sample::WavFormat;
 
 /// Opens the audio input on demand; supplied by the binary.
@@ -148,6 +148,7 @@ pub struct Editor {
     midi_backend: Option<Box<dyn trakr_midi::MidiBackend>>,
     midi_in: Option<Box<dyn trakr_midi::MidiInput>>,
     midi_buf: Vec<trakr_midi::MidiEvent>,
+    midi_pump: Option<trakr_midi::pump::Pump>,
     config_dir: Option<PathBuf>,
     pub prefs: Prefs,
     keymap: Vec<(KeyEvent, Action)>,
@@ -231,6 +232,7 @@ impl Editor {
             midi_backend: None,
             midi_in: None,
             midi_buf: Vec::new(),
+            midi_pump: None,
             config_dir: None,
             prefs: Prefs::default(),
             keymap: Vec::new(),

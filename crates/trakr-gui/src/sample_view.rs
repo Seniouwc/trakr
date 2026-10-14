@@ -131,6 +131,32 @@ impl GuiApp {
             if nna != before {
                 self.editor.edit_instrument("nna", |i| i.nna = nna);
             }
+            let midi = self.editor.current_instrument().and_then(|i| i.midi_out);
+            let mut on = midi.is_some();
+            if ui
+                .checkbox(&mut on, "MIDI out")
+                .on_hover_text("Send this instrument's notes to the MIDI output port (Play > MIDI output)")
+                .changed()
+            {
+                self.editor.instrument_set_midi(on.then(trakr_core::MidiOut::default));
+            }
+            if let Some(m) = midi {
+                let mut ch = m.channel as u32 + 1;
+                ui.label("Ch");
+                if ui.add(egui::DragValue::new(&mut ch).range(1..=16)).changed() {
+                    self.editor.instrument_set_midi(Some(trakr_core::MidiOut { channel: ch as u8 - 1, ..m }));
+                }
+                let mut prog_on = m.program.is_some();
+                let mut prog = m.program.unwrap_or(0) as u32;
+                let a = ui.checkbox(&mut prog_on, "Prog").changed();
+                let b = prog_on && ui.add(egui::DragValue::new(&mut prog).range(0..=127)).changed();
+                if a || b {
+                    self.editor.instrument_set_midi(Some(trakr_core::MidiOut {
+                        program: prog_on.then_some(prog as u8),
+                        ..m
+                    }));
+                }
+            }
             let mut interp = self
                 .editor
                 .current_instrument()
