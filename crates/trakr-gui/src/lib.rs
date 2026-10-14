@@ -6,17 +6,14 @@ mod grid;
 mod input;
 mod menus;
 mod panels;
+mod sample_view;
 
 use dialogs::{Confirm, FileDialog};
 use eframe::egui;
-use std::path::PathBuf;
-use trakr_core::Song;
 use trakr_editor::Editor;
-use trakr_engine::EngineHandle;
 
-/// Run the GUI until the window closes. `engine` is `None` when no audio device is available.
-pub fn run(song: Song, path: Option<PathBuf>, engine: Option<EngineHandle>) -> anyhow::Result<()> {
-    let editor = Editor::new(song, path, engine);
+/// Run the GUI until the window closes.
+pub fn run(editor: Editor) -> anyhow::Result<()> {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default().with_inner_size([1280.0, 780.0]).with_title("trakr"),
         ..Default::default()
@@ -43,6 +40,13 @@ pub(crate) struct GuiApp {
     /// Selected frame range in the sample view.
     pub sample_sel: Option<(usize, usize)>,
     pub sample_drag: Option<usize>,
+    /// Visible frame window (start, length) in the waveform; `None` = whole sample.
+    pub wave_view: Option<(usize, usize)>,
+    pub wav_format: trakr_editor::WavFormat,
+    pub gain_db: f32,
+    pub pitch_st: f32,
+    pub resample_hz: u32,
+    pub slice_parts: u32,
     pub title: String,
 }
 
@@ -58,6 +62,12 @@ impl GuiApp {
             show_about: false,
             sample_sel: None,
             sample_drag: None,
+            wave_view: None,
+            wav_format: trakr_editor::WavFormat::Pcm16,
+            gain_db: 0.0,
+            pitch_st: 0.0,
+            resample_hz: 44_100,
+            slice_parts: 8,
             title: String::new(),
         }
     }

@@ -16,6 +16,7 @@ impl Editor {
                 let song = self.song_mut();
                 song.instruments.push(inst);
                 self.instrument = (self.song.instruments.len() - 1).min(0xFE) as u8;
+                self.sample = 0;
                 self.status = format!("imported {name}");
                 self.sync();
             }

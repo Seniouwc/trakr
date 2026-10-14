@@ -50,7 +50,7 @@ Dependency direction: core <- engine/format/xrns <- editor <- tui/gui <- trakr. 
 
 - UI to engine sync sends an `Arc<Song>` snapshot on every edit (`Editor::sync`), cheap because `Song.patterns` are `Arc<Pattern>` (an edit clones only the touched pattern). Undo is snapshot-based (`Snapshot`, 500 deep). Incremental edit commands would need dense or preallocated pattern storage in the engine (BTreeMap inserts allocate); not done.
 - Engine ignores: volume/panning column commands, per-tick effects (slides, vibrato, arpeggio), NNA modes, envelopes, filters, DSP devices, automation, solo. Implemented: delay column, `ZT ZL ZB 0S 0B 0C 0Q 0R`, all loop modes, track mute.
-- No song loop range. Sample editing ops exist (normalize/reverse/fade/trim/mono); no slices, no resampling on import.
+- No song loop range. Sample editing lives in `trakr-core::Sample` (range ops, slices, resample) with undo via `Editor::edit_sample`; no resampling on import, no sample view in the TUI. Recording goes through `trakr_engine::InputRecorder` (cpal impl behind the `audio` feature, injected by the binary via `Editor::set_recorder_factory`).
 - TUI keymap is mine, not Renoise's, apart from the tracker-style piano layout, F1/F2 octave, backtick note-off. Terminals cannot report key release or distinguish left/right modifiers; design around that.
 
 ## Conventions

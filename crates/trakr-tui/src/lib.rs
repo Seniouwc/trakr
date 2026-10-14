@@ -3,11 +3,8 @@
 mod ui;
 
 use ratatui::crossterm::event::{self, Event, KeyCode as CK, KeyEvent as CKE, KeyEventKind, KeyModifiers};
-use std::path::PathBuf;
 use std::time::Duration;
-use trakr_core::Song;
 use trakr_editor::{Editor, KeyCode, KeyEvent};
-use trakr_engine::EngineHandle;
 
 fn translate(k: CKE) -> Option<KeyEvent> {
     let code = match k.code {
@@ -37,9 +34,8 @@ fn translate(k: CKE) -> Option<KeyEvent> {
     })
 }
 
-/// Run the TUI until the user quits. `engine` is `None` when no audio device is available.
-pub fn run(song: Song, path: Option<PathBuf>, engine: Option<EngineHandle>) -> anyhow::Result<()> {
-    let mut app = Editor::new(song, path, engine);
+/// Run the TUI until the user quits.
+pub fn run(mut app: Editor) -> anyhow::Result<()> {
     let mut terminal = ratatui::init();
     let result = (|| -> anyhow::Result<()> {
         while !app.quit {

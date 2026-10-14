@@ -32,7 +32,11 @@ fn main() -> Result<()> {
             (None, None)
         }
     };
-    let result = if tui { trakr_tui::run(song, path, handle) } else { trakr_gui::run(song, path, handle) };
+    let mut editor = trakr_editor::Editor::new(song, path, handle);
+    editor.set_recorder_factory(Box::new(|| {
+        Ok(Box::new(trakr_engine::audio::start_input()?) as Box<dyn trakr_editor::InputRecorder>)
+    }));
+    let result = if tui { trakr_tui::run(editor) } else { trakr_gui::run(editor) };
     drop(audio);
     result
 }

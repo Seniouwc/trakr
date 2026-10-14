@@ -97,6 +97,53 @@ fn decode(src: Box<dyn MediaSource>, ext: Option<&str>, name: String) -> Result<
     Ok(Sample::new(name, rate, channels as u8, data))
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WavFormat {
+    Pcm16,
+    Pcm24,
+    Float32,
+}
+
+/// Encode frames `a..b` of `s` as a RIFF/WAVE file.
+pub fn encode_wav(s: &Sample, a: usize, b: usize, format: WavFormat) -> Vec<u8> {
+    let data = s.copy_range(a, b);
+    let (tag, bits): (u16, u16) = match format {
+        WavFormat::Pcm16 => (1, 16),
+        WavFormat::Pcm24 => (1, 24),
+        WavFormat::Float32 => (3, 32),
+    };
+    let bytes_per = (bits / 8) as usize;
+    let data_len = (data.len() * bytes_per) as u32;
+    let ch = s.channels as u16;
+    let mut v = Vec::with_capacity(44 + data_len as usize);
+    v.extend(b"RIFF");
+    v.extend((36 + data_len).to_le_bytes());
+    v.extend(b"WAVEfmt ");
+    v.extend(16u32.to_le_bytes());
+    v.extend(tag.to_le_bytes());
+    v.extend(ch.to_le_bytes());
+    v.extend(s.sample_rate.to_le_bytes());
+    v.extend((s.sample_rate * ch as u32 * bytes_per as u32).to_le_bytes());
+    v.extend((ch * bytes_per as u16).to_le_bytes());
+    v.extend(bits.to_le_bytes());
+    v.extend(b"data");
+    v.extend(data_len.to_le_bytes());
+    for x in data {
+        let x = x.clamp(-1.0, 1.0);
+        match format {
+            WavFormat::Pcm16 => v.extend(((x * 32767.0).round() as i16).to_le_bytes()),
+            WavFormat::Pcm24 => v.extend(&((x * 8_388_607.0).round() as i32).to_le_bytes()[..3]),
+            WavFormat::Float32 => v.extend(x.to_le_bytes()),
+        }
+    }
+    v
+}
+
+pub fn write_wav(path: &Path, s: &Sample, a: usize, b: usize, format: WavFormat) -> Result<(), SampleError> {
+    std::fs::write(path, encode_wav(s, a, b, format))?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -142,5 +189,20 @@ mod tests {
     #[test]
     fn garbage_is_an_error() {
         assert!(decode_bytes(vec![1, 2, 3, 4, 5, 6, 7, 8], None, "x").is_err());
+    }
+
+    #[test]
+    fn wav_roundtrip_all_formats() {
+        let src = Sample::new("t", 32_000, 2, vec![0.0, 0.5, -0.5, 1.0, 0.25, -1.0]);
+        for fmt in [WavFormat::Pcm16, WavFormat::Pcm24, WavFormat::Float32] {
+            let back = decode_bytes(encode_wav(&src, 0, 3, fmt), Some("wav"), "x").unwrap();
+            assert_eq!((back.sample_rate, back.channels, back.frames()), (32_000, 2, 3), "{fmt:?}");
+            for (a, b) in src.data.iter().zip(back.data.iter()) {
+                assert!((a - b).abs() < 1e-3, "{fmt:?}: {a} vs {b}");
+            }
+        }
+        // sub-range export
+        let part = decode_bytes(encode_wav(&src, 1, 2, WavFormat::Pcm16), Some("wav"), "x").unwrap();
+        assert_eq!(part.frames(), 1);
     }
 }

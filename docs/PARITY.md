@@ -38,23 +38,25 @@ Compiled from memory of Renoise 3.x behavior. Verify each item against the offic
 ## Samples and instruments
 - [~] Sample playback with linear interpolation; forward, reverse and ping-pong loops
 - [x] Import WAV, AIFF, FLAC, OGG, MP3 (symphonia); RX2/REX not required initially
-- [ ] Reverse and ping-pong loop, loop release, one-shot, sustain loop
+- [~] Reverse and ping-pong loops work; loop release, one-shot, sustain loop do not
 - [ ] Interpolation modes (none, linear, cubic, sinc), oversampling
-- [ ] Sample editor: waveform, selection, cut/copy/paste, fades, normalize, DC offset, reverse, crop, silence, resample, bit-depth/dither on export
-- [ ] Slicing and slice markers, beat-sync (repitch/time-stretch), auto-seek, transient detection
-- [ ] Key zones and velocity zones, layers, per-sample volume/pan/tune/NNA/mute-group
+- [~] Sample editor (GUI): zoomable waveform, selection, cut/copy/paste/delete/crop, silence, fades, gain, normalize, invert, DC removal, reverse, mono/stereo, tape pitch shift, resample, WAV export (16/24/32f). Missing: loop crossfade, dither, spectrum view, draw-in-waveform editing, TUI sample view
+- [~] Slice markers (manual, shift-click, even split) and split-to-keys work; beat-sync, time-stretch, transient detection do not
+- [~] Key zones (per-sample key range) and per-sample volume/pan/tune work; velocity zones, layers, NNA, mute-groups do not
 - [ ] Instrument volume/pan/pitch/cutoff/resonance/drive modulation sets (envelopes, LFOs, key/velocity tracking, stepper, random)
 - [ ] Instrument filters (types per manual), per-instrument FX chain (sample FX chain)
 - [ ] Macros (instrument macros) and MIDI input properties
 - [ ] Plugin instruments (VST/CLAP/LV2) and MIDI instrument routing; instrument bank/XRNI import/export
 - [ ] Sample/instrument disk browser, favorites
 
+- [x] Record from audio input (cpal) into a new instrument; render song to sample or WAV (offline)
+
 ## Mixer and DSP
 - [~] Track volume and panning applied in mix
 - [ ] Pre/post mixer split, track width, track delay (ms compensation)
 - [ ] Master track with its own DSP chain
 - [ ] Send tracks and `#Send` device routing, group tracks, routing to arbitrary tracks, sidechain
-- [ ] Track mute, solo, off (with proper latency/CPU behavior), mixer view with meters and peak hold
+- [~] Track mute works in the engine (voices keep running silently); solo, off, mixer view and meters do not
 - [ ] Plugin delay compensation
 - [ ] Native devices (verify against manual): EQ (5/10 band, mixer EQ), filters (analog, digital, notch, scream), gainer, stereo expander, compressor, gate, limiter, bus compressor, maximizer, exciter, delay, multitap, reverb, chorus, flanger, phaser, ring mod, distortion, cabinet sim, convolver, repeater, DC offset, LFO, envelope follower, hydra, key tracker, velocity tracker, formula, meta mixer, doofer, #Line Input, #Multiband Send, #Send, #Sidechain, signal follower
 

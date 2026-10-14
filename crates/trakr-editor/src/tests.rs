@@ -219,3 +219,98 @@ fn edit_sample_is_undoable() {
     app.undo();
     assert_eq!(app.song.instruments[0].samples[0].data[1000], before);
 }
+
+struct FakeInput {
+    chunks: Vec<Vec<f32>>,
+}
+
+impl InputRecorder for FakeInput {
+    fn sample_rate(&self) -> u32 {
+        8000
+    }
+    fn channels(&self) -> u8 {
+        1
+    }
+    fn drain(&mut self, out: &mut Vec<f32>) {
+        if !self.chunks.is_empty() {
+            out.extend(self.chunks.remove(0));
+        }
+    }
+}
+
+fn recording_editor() -> Editor {
+    let mut app = Editor::new(Song::default(), None, None);
+    app.set_recorder_factory(Box::new(|| {
+        Ok(Box::new(FakeInput { chunks: vec![vec![0.1; 100], vec![-0.5; 100]] }) as Box<dyn InputRecorder>)
+    }));
+    app
+}
+
+#[test]
+fn record_creates_an_instrument() {
+    let mut app = recording_editor();
+    assert!(app.can_record() && !app.is_recording());
+    app.on_key(KeyEvent::ctrl('r'));
+    assert!(app.is_recording());
+    app.tick();
+    assert!(app.rec_peak < 0.2);
+    app.tick();
+    assert!((app.rec_peak - 0.5).abs() < 1e-6);
+    app.on_key(KeyEvent::ctrl('r'));
+    assert!(!app.is_recording());
+    assert_eq!(app.song.instruments.len(), 1);
+    let s = &app.song.instruments[0].samples[0];
+    assert_eq!((s.sample_rate, s.channels, s.frames()), (8000, 1, 200));
+    app.undo();
+    assert!(app.song.instruments.is_empty());
+}
+
+#[test]
+fn record_without_input_explains() {
+    let mut app = ed();
+    app.do_action(Action::RecordToggle);
+    assert!(!app.is_recording());
+    assert!(app.status.contains("no audio input"));
+}
+
+#[test]
+fn sample_clipboard_and_slices() {
+    let mut app = Editor::new(Song::demo(), None, None);
+    let n = app.current_sample().unwrap().frames();
+    app.sample_copy(0, 100);
+    app.sample_paste(n);
+    assert_eq!(app.current_sample().unwrap().frames(), n + 100);
+    app.sample_cut(0, 50);
+    assert_eq!(app.current_sample().unwrap().frames(), n + 50);
+    app.sample_crop(0, 1000);
+    assert_eq!(app.current_sample().unwrap().frames(), 1000);
+    app.edit_sample(0, |s| s.slice_evenly(4));
+    app.sample_split_slices();
+    let inst = app.current_instrument().unwrap();
+    assert_eq!(inst.samples.len(), 4);
+    assert_eq!(inst.samples[3].key_range, (51, 51));
+    // playing C-4+3 selects the 4th slice
+    assert!(inst.sample_for(51).is_some_and(|s| s.name.ends_with("04")));
+    app.undo();
+    assert_eq!(app.current_instrument().unwrap().samples.len(), 1);
+}
+
+#[test]
+fn render_to_sample_bounces_the_song() {
+    let mut app = Editor::new(Song::demo(), None, None);
+    app.render_to_sample();
+    assert_eq!(app.song.instruments.len(), 2);
+    let s = app.current_sample().unwrap();
+    assert_eq!((s.channels, s.sample_rate), (2, 44_100));
+    assert!(s.peak(0, s.frames()) > 0.1);
+}
+
+#[test]
+fn export_sample_writes_a_readable_wav() {
+    let mut app = Editor::new(Song::demo(), None, None);
+    let path = std::env::temp_dir().join("trakr_export_test.wav");
+    app.export_sample(&path, 0, 0, WavFormat::Pcm16);
+    let back = trakr_sample::decode_file(&path).unwrap();
+    assert_eq!(back.frames(), app.current_sample().unwrap().frames());
+    let _ = std::fs::remove_file(path);
+}

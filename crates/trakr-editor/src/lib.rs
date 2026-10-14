@@ -6,11 +6,17 @@ mod instruments;
 mod io;
 mod keys;
 mod ops;
+mod sampling;
 
 pub use action::Action;
 pub use io::load_song;
 pub use keys::{KeyCode, KeyEvent};
 pub use ops::{Cell, Clipboard};
+pub use trakr_engine::InputRecorder;
+pub use trakr_sample::WavFormat;
+
+/// Opens the audio input on demand; supplied by the binary.
+pub type RecorderFactory = Box<dyn FnMut() -> anyhow::Result<Box<dyn InputRecorder>>>;
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -104,6 +110,14 @@ pub struct Editor {
     pub dirty: bool,
     pub quit: bool,
     pub clipboard: Option<Clipboard>,
+    /// Selected sample within the selected instrument.
+    pub sample: usize,
+    sample_clip: Option<(Vec<f32>, u8)>,
+    recorder: Option<Box<dyn InputRecorder>>,
+    recorder_factory: Option<RecorderFactory>,
+    rec_data: Vec<f32>,
+    /// Recent input peak (0..1), for a level meter.
+    pub rec_peak: f32,
     /// Selection anchor as (flattened column, line); the other corner is the cursor.
     anchor: Option<(usize, u16)>,
     undo: Vec<Snapshot>,
@@ -171,6 +185,12 @@ impl Editor {
             dirty: false,
             quit: false,
             clipboard: None,
+            sample: 0,
+            sample_clip: None,
+            recorder: None,
+            recorder_factory: None,
+            rec_data: Vec::new(),
+            rec_peak: 0.0,
             anchor: None,
             undo: Vec::new(),
             redo: Vec::new(),
@@ -241,6 +261,7 @@ impl Editor {
     /// Call regularly (every frame): retries a failed sync, frees engine garbage, follows the playhead.
     pub fn tick(&mut self) {
         self.flush_sync();
+        self.record_poll();
         if let Some(e) = &mut self.engine {
             e.collect_garbage();
         }

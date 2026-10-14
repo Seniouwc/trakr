@@ -60,6 +60,8 @@ pub enum Action {
     InstrumentPrev,
     InstrumentNext,
     InstrumentRemove,
+    RecordToggle,
+    RenderToSample,
 }
 
 impl Action {
@@ -114,6 +116,8 @@ impl Action {
             InstrumentPrev => "Previous instrument",
             InstrumentNext => "Next instrument",
             InstrumentRemove => "Remove instrument",
+            RecordToggle => "Record sample from input",
+            RenderToSample => "Render song to sample",
         }
     }
 
@@ -152,6 +156,7 @@ impl Action {
             StepUp => "F4",
             InstrumentPrev => "F9",
             InstrumentNext => "F10",
+            RecordToggle => "Ctrl-R",
             _ => "",
         }
     }
@@ -171,6 +176,7 @@ impl Action {
                 KeyCode::Char('c') => Copy,
                 KeyCode::Char('v') => Paste,
                 KeyCode::Char('a') => SelectAll,
+                KeyCode::Char('r') => RecordToggle,
                 KeyCode::Up => SeqPrev,
                 KeyCode::Down => SeqNext,
                 _ => return None,

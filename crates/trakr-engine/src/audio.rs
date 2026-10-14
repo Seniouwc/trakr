@@ -1,6 +1,6 @@
 //! cpal output backend (feature `audio`).
 
-use crate::{create, Engine, EngineHandle};
+use crate::{create, Engine, EngineHandle, InputRecorder};
 use anyhow::{anyhow, Result};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 
@@ -56,4 +56,80 @@ fn fill(engine: &mut Engine, scratch: &mut Vec<f32>, data: &mut [f32], channels:
             }
         }
     }
+}
+
+/// Live capture from the default input device. Keep it alive while recording.
+pub struct CpalRecorder {
+    _stream: cpal::Stream,
+    rx: rtrb::Consumer<f32>,
+    rate: u32,
+    channels: u8,
+    pub device_name: String,
+}
+
+impl InputRecorder for CpalRecorder {
+    fn sample_rate(&self) -> u32 {
+        self.rate
+    }
+    fn channels(&self) -> u8 {
+        self.channels
+    }
+    fn drain(&mut self, out: &mut Vec<f32>) {
+        while let Ok(v) = self.rx.pop() {
+            out.push(v);
+        }
+    }
+}
+
+/// Open the default input device and start capturing (mono or stereo; extra channels are dropped).
+pub fn start_input() -> Result<CpalRecorder> {
+    let host = cpal::default_host();
+    let device = host.default_input_device().ok_or_else(|| anyhow!("no default audio input device"))?;
+    let supported = device.default_input_config()?;
+    let format = supported.sample_format();
+    let config: cpal::StreamConfig = supported.into();
+    let rate = config.sample_rate;
+    let src_ch = (config.channels as usize).max(1);
+    let channels = src_ch.min(2);
+    // Ten seconds of headroom; the UI drains every frame, so this only fills if the UI stalls.
+    let (tx, rx) = rtrb::RingBuffer::new(rate as usize * channels * 10);
+
+    let stream = match format {
+        cpal::SampleFormat::F32 => input_stream::<f32>(&device, &config, tx, src_ch, channels, |s| s)?,
+        cpal::SampleFormat::I16 => {
+            input_stream::<i16>(&device, &config, tx, src_ch, channels, |s| s as f32 / 32768.0)?
+        }
+        cpal::SampleFormat::U16 => {
+            input_stream::<u16>(&device, &config, tx, src_ch, channels, |s| (s as f32 - 32768.0) / 32768.0)?
+        }
+        cpal::SampleFormat::I32 => {
+            input_stream::<i32>(&device, &config, tx, src_ch, channels, |s| s as f32 / 2_147_483_648.0)?
+        }
+        other => return Err(anyhow!("unsupported input sample format {other:?}")),
+    };
+    stream.play()?;
+    let name = device.description().map(|d| d.name().to_string()).unwrap_or_else(|_| "unknown".into());
+    Ok(CpalRecorder { _stream: stream, rx, rate, channels: channels as u8, device_name: name })
+}
+
+fn input_stream<T: cpal::SizedSample + Send + 'static>(
+    device: &cpal::Device,
+    config: &cpal::StreamConfig,
+    mut tx: rtrb::Producer<f32>,
+    src_ch: usize,
+    channels: usize,
+    to_f32: fn(T) -> f32,
+) -> Result<cpal::Stream> {
+    Ok(device.build_input_stream(
+        config,
+        move |data: &[T], _| {
+            for frame in data.chunks_exact(src_ch) {
+                for &s in &frame[..channels] {
+                    let _ = tx.push(to_f32(s)); // dropping on overflow keeps the callback wait-free
+                }
+            }
+        },
+        |err| eprintln!("audio input error: {err}"),
+        None,
+    )?)
 }

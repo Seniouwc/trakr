@@ -9,6 +9,9 @@ pub enum FileMode {
     Open,
     SaveAs,
     ImportSample,
+    AddSample,
+    ExportSample,
+    ExportSong,
 }
 
 pub struct FileDialog {
@@ -30,6 +33,8 @@ impl FileDialog {
             FileMode::SaveAs => {
                 start.and_then(|p| p.file_name()).map_or("song.trkr".into(), |n| n.to_string_lossy().into())
             }
+            FileMode::ExportSample => "sample.wav".into(),
+            FileMode::ExportSong => "song.wav".into(),
             _ => String::new(),
         };
         let mut d = Self { mode, dir, name, entries: vec![], error: String::new() };
@@ -42,7 +47,10 @@ impl FileDialog {
         let ext = ext.as_deref().unwrap_or("");
         match self.mode {
             FileMode::Open | FileMode::SaveAs => matches!(ext, "trkr" | "xrns"),
-            FileMode::ImportSample => matches!(ext, "wav" | "flac" | "ogg" | "mp3" | "aif" | "aiff"),
+            FileMode::ImportSample | FileMode::AddSample => {
+                matches!(ext, "wav" | "flac" | "ogg" | "mp3" | "aif" | "aiff")
+            }
+            FileMode::ExportSample | FileMode::ExportSong => ext == "wav",
         }
     }
 
@@ -114,7 +122,10 @@ impl GuiApp {
         let title = match d.mode {
             FileMode::Open => "Open song (.trkr, .xrns)",
             FileMode::SaveAs => "Save song as",
-            FileMode::ImportSample => "Import sample (wav, flac, ogg, mp3, aiff)",
+            FileMode::ImportSample => "Import sample as new instrument (wav, flac, ogg, mp3, aiff)",
+            FileMode::AddSample => "Add sample file to the selected instrument",
+            FileMode::ExportSample => "Export sample as WAV",
+            FileMode::ExportSong => "Export song as WAV",
         };
         let mut keep = true;
         let mut chosen: Option<PathBuf> = None;
@@ -158,7 +169,10 @@ impl GuiApp {
                 ui.colored_label(egui::Color32::LIGHT_RED, &d.error);
             }
             ui.horizontal(|ui| {
-                let verb = if d.mode == FileMode::SaveAs { "Save" } else { "Open" };
+                let verb = match d.mode {
+                    FileMode::SaveAs | FileMode::ExportSample | FileMode::ExportSong => "Save",
+                    _ => "Open",
+                };
                 if ui.button(verb).clicked() && !d.name.is_empty() {
                     chosen = Some(d.dir.join(&d.name));
                 }
@@ -184,13 +198,32 @@ impl GuiApp {
                     self.editor.save_as(path);
                     keep = false;
                 }
-                FileMode::ImportSample => {
+                FileMode::ImportSample | FileMode::AddSample => {
                     if path.is_file() {
-                        self.editor.import_sample(&path);
+                        if d.mode == FileMode::AddSample {
+                            self.editor.import_sample_into_instrument(&path);
+                        } else {
+                            self.editor.import_sample(&path);
+                        }
+                        self.sample_sel = None;
+                        self.wave_view = None;
                         keep = false;
                     } else {
                         d.error = "file does not exist".into();
                     }
+                }
+                FileMode::ExportSample | FileMode::ExportSong => {
+                    if path.extension().is_none() {
+                        path.set_extension("wav");
+                    }
+                    let fmt = self.wav_format;
+                    if d.mode == FileMode::ExportSong {
+                        self.editor.export_song(&path, fmt);
+                    } else {
+                        let (a, b) = self.sample_sel.unwrap_or((0, 0));
+                        self.editor.export_sample(&path, a, b, fmt);
+                    }
+                    keep = false;
                 }
             }
         }

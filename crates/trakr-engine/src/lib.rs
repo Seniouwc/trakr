@@ -41,6 +41,8 @@ pub enum Command {
         loop_pattern: bool,
     },
     Stop,
+    /// When true, playback stops (voices keep ringing out) once the sequence ends instead of looping.
+    SetStopAtEnd(bool),
     /// Live/preview note, outside the sequencer.
     NoteOn {
         track: usize,
@@ -52,6 +54,16 @@ pub enum Command {
         track: usize,
         note: u8,
     },
+}
+
+/// A live audio input (microphone, line in) that can be drained from the UI thread.
+/// The cpal-backed implementation lives in `audio` (feature `audio`).
+pub trait InputRecorder {
+    fn sample_rate(&self) -> u32;
+    /// 1 or 2.
+    fn channels(&self) -> u8;
+    /// Append everything captured since the last call (interleaved f32) to `out`.
+    fn drain(&mut self, out: &mut Vec<f32>);
 }
 
 /// Playback position published by the audio thread.
@@ -113,6 +125,7 @@ pub fn create(sample_rate: u32) -> (Engine, EngineHandle) {
         voices: Vec::with_capacity(MAX_VOICES),
         events: Vec::with_capacity(MAX_EVENTS),
         pending_break: None,
+        stop_at_end: false,
     };
     (engine, EngineHandle { tx, garbage: grx, pos, sample_rate })
 }
@@ -134,6 +147,7 @@ pub struct Engine {
     events: Vec<Event>,
     /// Line to jump to in the next pattern slot (ZB command).
     pending_break: Option<u16>,
+    stop_at_end: bool,
 }
 
 impl Engine {
@@ -204,6 +218,11 @@ impl Engine {
         }
     }
 
+    /// True when nothing is playing, ringing out or scheduled.
+    pub fn is_idle(&self) -> bool {
+        !self.playing && self.voices.is_empty() && self.events.is_empty()
+    }
+
     fn drain_commands(&mut self) {
         while let Ok(cmd) = self.rx.pop() {
             match cmd {
@@ -240,6 +259,7 @@ impl Engine {
                     self.events.clear();
                     self.pending_break = None;
                 }
+                Command::SetStopAtEnd(v) => self.stop_at_end = v,
                 Command::NoteOn { track, instrument, note, volume } => {
                     self.note_on(track, usize::MAX, instrument, note, volume, 0.0, TriggerOpts::default());
                 }
@@ -368,7 +388,10 @@ impl Engine {
             if !self.loop_pattern {
                 self.seq_pos += 1;
                 if self.seq_pos >= self.song.sequence.len() {
-                    self.seq_pos = 0; // TODO: song loop range / stop at end
+                    self.seq_pos = 0; // TODO: song loop range
+                    if self.stop_at_end {
+                        self.playing = false;
+                    }
                 }
             }
             if let Some(l) = brk {
@@ -377,6 +400,31 @@ impl Engine {
             }
         }
     }
+}
+
+/// Render `song` once through the sequence (plus ring-out) to interleaved stereo f32, offline.
+/// Stops at the end of the song, when everything has decayed, or after `max_seconds`.
+pub fn render_song(song: Arc<Song>, sample_rate: u32, max_seconds: f32) -> Vec<f32> {
+    let (mut engine, mut handle) = create(sample_rate);
+    handle.send(Command::SetSong(song));
+    handle.send(Command::SetStopAtEnd(true));
+    handle.send(Command::Play { seq_pos: 0, line: 0, loop_pattern: false });
+    let max_frames = (max_seconds * sample_rate as f32) as usize;
+    let mut out: Vec<f32> = Vec::new();
+    let mut block = vec![0.0f32; 1024 * 2];
+    while out.len() / 2 < max_frames {
+        engine.render(&mut block);
+        out.extend_from_slice(&block);
+        handle.collect_garbage();
+        if engine.is_idle() {
+            break;
+        }
+    }
+    // Drop the silent tail left by the final block.
+    while out.len() >= 2 && out[out.len() - 2..].iter().all(|s| s.abs() < 1e-5) {
+        out.truncate(out.len() - 2);
+    }
+    out
 }
 
 #[cfg(test)]
@@ -393,6 +441,15 @@ mod tests {
         let peak = buf.iter().fold(0.0f32, |m, s| m.max(s.abs()));
         assert!(peak > 0.1, "peak was {peak}");
         assert!(handle.pos.get().0);
+    }
+
+    #[test]
+    fn render_song_stops_at_the_end() {
+        let song = Arc::new(Song::demo()); // 64 lines at 120 BPM / LPB 4 = 8 seconds
+        let out = render_song(song, 8_000, 30.0);
+        let secs = out.len() as f32 / 2.0 / 8_000.0;
+        assert!(secs > 7.0 && secs < 10.0, "rendered {secs}s");
+        assert!(out.iter().any(|s| s.abs() > 0.1));
     }
 
     #[test]

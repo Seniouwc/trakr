@@ -54,6 +54,8 @@ pub const ALL_ACTIONS: &[Action] = &[
     InstrumentPrev,
     InstrumentNext,
     InstrumentRemove,
+    RecordToggle,
+    RenderToSample,
 ];
 
 impl GuiApp {
@@ -94,6 +96,10 @@ impl GuiApp {
                     ui.separator();
                     if ui.button("Import sample...").clicked() {
                         self.open_dialog(FileMode::ImportSample);
+                        ui.close_menu();
+                    }
+                    if ui.button("Export song as WAV...").clicked() {
+                        self.open_dialog(FileMode::ExportSong);
                         ui.close_menu();
                     }
                     ui.separator();
@@ -153,10 +159,17 @@ impl GuiApp {
                     }
                 });
                 ui.menu_button("Instrument", |ui| {
-                    if ui.button("Import sample...").clicked() {
+                    if ui.button("Import sample as new instrument...").clicked() {
                         self.open_dialog(FileMode::ImportSample);
                         ui.close_menu();
                     }
+                    if ui.button("Add sample file to this instrument...").clicked() {
+                        self.open_dialog(FileMode::AddSample);
+                        ui.close_menu();
+                    }
+                    self.item(ui, RecordToggle);
+                    self.item(ui, RenderToSample);
+                    ui.separator();
                     if ui.button("New empty instrument").clicked() {
                         self.editor.instrument_add_empty();
                         ui.close_menu();
@@ -223,6 +236,32 @@ impl GuiApp {
                 ui.label("Step");
                 if ui.add(egui::DragValue::new(&mut step).range(0..=64)).changed() {
                     ed.edit_step = step as u16;
+                }
+                ui.separator();
+                let recording = ed.is_recording();
+                let rec = egui::Button::new(
+                    egui::RichText::new(if recording { "Stop rec" } else { "Rec" }).color(if recording {
+                        egui::Color32::WHITE
+                    } else {
+                        egui::Color32::LIGHT_RED
+                    }),
+                )
+                .fill(if recording {
+                    egui::Color32::from_rgb(170, 30, 30)
+                } else {
+                    egui::Color32::TRANSPARENT
+                });
+                let tip = if ed.can_record() {
+                    "Record a sample from the audio input (Ctrl-R)"
+                } else {
+                    "No audio input available"
+                };
+                if ui.add_enabled(ed.can_record(), rec).on_hover_text(tip).clicked() {
+                    ed.record_toggle();
+                }
+                if recording {
+                    ui.add(egui::ProgressBar::new(ed.rec_peak.min(1.0)).desired_width(70.0));
+                    ui.monospace(format!("{:.1}s", ed.record_seconds()));
                 }
                 let (playing, seq, line) = ed.playhead();
                 ui.separator();

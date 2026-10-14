@@ -15,7 +15,8 @@ An open source tracker DAW written in Rust, with a native window (egui) and a te
 - Pattern editor with note, instrument, volume, panning, delay and effect columns
 - Undo/redo, block selection, copy/cut/paste, transpose, reverse, interpolate
 - Sequence editing (insert, clone, delete, reorder), pattern length, add/remove tracks and columns
-- Sample import (WAV, AIFF, FLAC, OGG, MP3), sample editing, forward/reverse/ping-pong loops
+- Sample import (WAV, AIFF, FLAC, OGG, MP3), recording from your audio input (Ctrl-R), zoomable waveform editor (cut/copy/paste, fades, gain, normalize, reverse, pitch/resample, slices, key zones), WAV export
+- Render the song to a sample or a WAV file; forward/reverse/ping-pong loops
 - Delay column and timing effects (sample offset, backwards, cut, delay, retrigger)
 - Real-time engine with sequencer, voices and mixer (cpal audio output)
 - Native `.trkr` project format (zip of `song.json` and raw sample data)
