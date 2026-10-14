@@ -64,7 +64,7 @@ const fn pstep(name: &'static str, min: f32, max: f32, default: f32) -> ParamInf
 }
 
 /// Ids of devices that modulate another device's parameter instead of (only) shaping audio.
-pub const MODULATORS: [&str; 2] = ["native.lfo", "native.follower"];
+pub const MODULATORS: [&str; 3] = ["native.lfo", "native.follower", "native.hydra"];
 
 pub const FILTER_MODES: [&str; 4] = ["Low-pass", "High-pass", "Band-pass", "Notch"];
 
@@ -234,6 +234,7 @@ pub const DEVICES: &[DeviceInfo] = &[
             plog("Rate", 0.05, 20.0, 1.0, "Hz"),
             p("Depth", -1.0, 1.0, 0.5, ""),
             p("Phase", 0.0, 1.0, 0.0, ""),
+            pstep("Sync (0 off/Hz, 1: 4 beats ... 6: 1/32, 7-8: triplets)", 0.0, 8.0, 0.0),
         ],
     },
     DeviceInfo {
@@ -246,6 +247,100 @@ pub const DEVICES: &[DeviceInfo] = &[
             plog("Release", 5.0, 2000.0, 150.0, "ms"),
             p("Sensitivity", 0.1, 16.0, 4.0, ""),
             p("Depth", -1.0, 1.0, 0.5, ""),
+        ],
+    },
+    DeviceInfo {
+        id: "native.sidechain",
+        name: "Sidechain compressor",
+        params: &[
+            pstep("Source track (0 = own signal)", 0.0, 64.0, 0.0),
+            p("Threshold", -60.0, 0.0, -24.0, "dB"),
+            plog("Ratio", 1.0, 20.0, 4.0, ":1"),
+            plog("Attack", 0.1, 200.0, 5.0, "ms"),
+            plog("Release", 5.0, 2000.0, 150.0, "ms"),
+            p("Makeup", 0.0, 24.0, 0.0, "dB"),
+            p("Mix", 0.0, 1.0, 1.0, ""),
+        ],
+    },
+    DeviceInfo {
+        id: "native.buscomp",
+        name: "Bus compressor",
+        params: &[
+            p("Threshold", -40.0, 0.0, -18.0, "dB"),
+            plog("Ratio", 1.0, 10.0, 2.0, ":1"),
+            plog("Attack", 0.1, 100.0, 10.0, "ms"),
+            plog("Release", 20.0, 1200.0, 200.0, "ms"),
+            p("Knee", 0.0, 24.0, 6.0, "dB"),
+            p("Makeup", 0.0, 24.0, 0.0, "dB"),
+            p("Mix", 0.0, 1.0, 1.0, ""),
+        ],
+    },
+    DeviceInfo {
+        id: "native.multiband",
+        name: "Multiband compressor",
+        params: &[
+            plog("Crossover 1", 40.0, 2000.0, 200.0, "Hz"),
+            plog("Crossover 2", 400.0, 16_000.0, 2500.0, "Hz"),
+            p("Low threshold", -60.0, 0.0, -24.0, "dB"),
+            p("Mid threshold", -60.0, 0.0, -24.0, "dB"),
+            p("High threshold", -60.0, 0.0, -24.0, "dB"),
+            plog("Ratio", 1.0, 20.0, 3.0, ":1"),
+            plog("Attack", 0.1, 200.0, 10.0, "ms"),
+            plog("Release", 5.0, 2000.0, 150.0, "ms"),
+            p("Makeup", 0.0, 24.0, 0.0, "dB"),
+        ],
+    },
+    DeviceInfo {
+        id: "native.multitap",
+        name: "Multitap delay",
+        params: &[
+            plog("Tap 1 time", 10.0, 1500.0, 150.0, "ms"),
+            plog("Tap 2 time", 10.0, 1500.0, 300.0, "ms"),
+            plog("Tap 3 time", 10.0, 1500.0, 450.0, "ms"),
+            p("Tap 1 level", 0.0, 1.0, 0.6, ""),
+            p("Tap 2 level", 0.0, 1.0, 0.4, ""),
+            p("Tap 3 level", 0.0, 1.0, 0.25, ""),
+            p("Feedback", 0.0, 0.85, 0.2, ""),
+            p("Mix", 0.0, 1.0, 0.4, ""),
+        ],
+    },
+    DeviceInfo {
+        id: "native.repeater",
+        name: "Repeater",
+        params: &[
+            plog("Slice length", 5.0, 1000.0, 250.0, "ms"),
+            pstep("Hold (automate this)", 0.0, 1.0, 0.0),
+            p("Mix", 0.0, 1.0, 1.0, ""),
+        ],
+    },
+    DeviceInfo {
+        id: "native.cabinet",
+        name: "Cabinet",
+        params: &[
+            pstep("Type (0 combo, 1 stack, 2 small, 3 radio)", 0.0, 3.0, 0.0),
+            p("Mix", 0.0, 1.0, 1.0, ""),
+        ],
+    },
+    DeviceInfo {
+        id: "native.dcoffset",
+        name: "DC offset",
+        params: &[p("Offset", -1.0, 1.0, 0.0, ""), pstep("Remove DC first", 0.0, 1.0, 0.0)],
+    },
+    DeviceInfo {
+        id: "native.hydra",
+        name: "Hydra (modulator)",
+        params: &[
+            pstep("Shape (0 sine, 1 tri, 2 saw, 3 square, 4 random)", 0.0, 4.0, 0.0),
+            plog("Rate", 0.05, 20.0, 1.0, "Hz"),
+            pstep("Target 1 device (0 off, 1-8 slot)", 0.0, 8.0, 0.0),
+            pstep("Target 1 parameter", 0.0, 15.0, 0.0),
+            p("Target 1 depth", -1.0, 1.0, 0.5, ""),
+            pstep("Target 2 device (0 off, 1-8 slot)", 0.0, 8.0, 0.0),
+            pstep("Target 2 parameter", 0.0, 15.0, 0.0),
+            p("Target 2 depth", -1.0, 1.0, 0.5, ""),
+            pstep("Target 3 device (0 off, 1-8 slot)", 0.0, 8.0, 0.0),
+            pstep("Target 3 parameter", 0.0, 15.0, 0.0),
+            p("Target 3 depth", -1.0, 1.0, 0.5, ""),
         ],
     },
     DeviceInfo {

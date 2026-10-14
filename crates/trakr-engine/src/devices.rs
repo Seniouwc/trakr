@@ -15,6 +15,15 @@ pub trait Device: Send {
     fn modulation(&self) -> Option<f32> {
         None
     }
+
+    /// Like `process`, with another track's signal as a side input (sidechain). Devices that do not
+    /// use one ignore it.
+    fn process_sc(&mut self, params: &[f32], buf: &mut [f32], _sidechain: Option<&[f32]>) {
+        self.process(params, buf);
+    }
+
+    /// Called before each block so tempo-synced devices know the song tempo.
+    fn set_tempo(&mut self, _bpm: f32) {}
 }
 
 /// Build a device for a catalogue id at the engine's sample rate.
@@ -38,10 +47,10 @@ pub fn create(id: &str, rate: u32) -> Option<Box<dyn Device>> {
         "native.bitcrusher" => Box::new(BitCrusher { held: [0.0; 2], count: 0.0 }),
         "native.width" => Box::new(Width),
         "native.autopan" => Box::new(AutoPan { phase: 0.0, fs }),
-        "native.lfo" => Box::new(Lfo { phase: 0.0, held: 0.0, rng: 0x9E37_79B9, value: 0.0, fs }),
+        "native.lfo" => Box::new(Lfo { phase: 0.0, held: 0.0, rng: 0x9E37_79B9, value: 0.0, fs, bpm: 120.0 }),
         "native.follower" => Box::new(Follower { env: 0.0, value: 0.0, fs }),
         "native.exciter" => Box::new(Exciter { hp: [Biquad::default(); 2], fs }),
-        _ => return None,
+        _ => return crate::devices_more::create(id, fs),
     })
 }
 
@@ -713,6 +722,7 @@ struct Lfo {
     rng: u32,
     value: f32,
     fs: f32,
+    bpm: f32,
 }
 
 impl Device for Lfo {
@@ -722,7 +732,13 @@ impl Device for Lfo {
 
     fn process(&mut self, params: &[f32], buf: &mut [f32]) {
         let shape = p(params, 2, 0.0).round() as i32;
-        let rate = p(params, 3, 1.0).clamp(0.05, 20.0);
+        let mut rate = p(params, 3, 1.0).clamp(0.05, 20.0);
+        // tempo sync: how many beats one cycle lasts
+        const BEATS: [f32; 9] = [0.0, 4.0, 2.0, 1.0, 0.5, 0.25, 0.125, 1.0 / 3.0, 1.0 / 6.0];
+        let sync = p(params, 6, 0.0).round().clamp(0.0, 8.0) as usize;
+        if sync > 0 {
+            rate = (self.bpm.clamp(20.0, 999.0) / 60.0 / BEATS[sync]).clamp(0.05, 60.0);
+        }
         let depth = p(params, 4, 0.5).clamp(-1.0, 1.0);
         let offset = p(params, 5, 0.0).clamp(0.0, 1.0);
         let before = self.phase;
@@ -750,6 +766,12 @@ impl Device for Lfo {
 
     fn modulation(&self) -> Option<f32> {
         Some(self.value)
+    }
+
+    fn set_tempo(&mut self, bpm: f32) {
+        if bpm.is_finite() {
+            self.bpm = bpm;
+        }
     }
 }
 

@@ -7,6 +7,7 @@
 #[cfg(feature = "audio")]
 pub mod audio;
 pub mod devices;
+mod devices_more;
 mod dsp;
 mod voice;
 
@@ -46,7 +47,7 @@ const MAX_OVERRIDES: usize = 256;
 /// Chain slots per track whose modulation output is kept (and that modulators can target).
 const MAX_MOD_DEVS: usize = 32;
 /// Modulators applied per track and block.
-const MAX_MODS: usize = 8;
+const MAX_MODS: usize = 12;
 /// Messages waiting for the MIDI output thread.
 const MIDI_QUEUE: usize = 4096;
 /// MIDI notes sounding at once.
@@ -334,6 +335,7 @@ pub fn create(sample_rate: u32) -> (Engine, EngineHandle) {
         fader_prev: [-1.0; MAX_TRACKS],
         overrides: Vec::with_capacity(MAX_OVERRIDES),
         mod_out: vec![0.0; MAX_TRACKS * MAX_MOD_DEVS],
+        sc_buf: vec![0.0; BLOCK * 2],
         playing_seq: 0,
         playing_line: 0,
         meter_acc: [0.0; MAX_TRACKS],
@@ -394,6 +396,8 @@ pub struct Engine {
     overrides: Vec<Override>,
     /// Last control value of each chain slot's modulator (applied one block later).
     mod_out: Vec<f32>,
+    /// Copy of the key track's signal for a sidechain device.
+    sc_buf: Vec<f32>,
     playing_seq: usize,
     playing_line: u16,
     meter_acc: [f32; MAX_TRACKS],
@@ -731,13 +735,28 @@ impl Engine {
             {
                 continue;
             }
+            let amount = self.mod_out[t * MAX_MOD_DEVS + m];
+            let amount = if amount.is_finite() { amount } else { 0.0 };
+            if spec.id == "native.hydra" {
+                // three targets sharing one oscillator, each with its own depth
+                for k in 0..3 {
+                    let target = spec.param(2 + 3 * k).clamp(0.0, 8.0).round() as usize;
+                    if target == 0 || nmods == MAX_MODS {
+                        continue;
+                    }
+                    let param = spec.param(3 + 3 * k).clamp(0.0, 15.0).round() as usize;
+                    let depth = spec.param(4 + 3 * k).clamp(-1.0, 1.0);
+                    mods[nmods] = (target - 1, param, amount * depth);
+                    nmods += 1;
+                }
+                continue;
+            }
             let target = spec.param(0).clamp(0.0, 8.0).round() as usize;
             if target == 0 || nmods == MAX_MODS {
                 continue;
             }
             let param = spec.param(1).clamp(0.0, 15.0).round() as usize;
-            let amount = self.mod_out[t * MAX_MOD_DEVS + m];
-            mods[nmods] = (target - 1, param, if amount.is_finite() { amount } else { 0.0 });
+            mods[nmods] = (target - 1, param, amount);
             nmods += 1;
         }
         for d in 0..self.chains[t].len() {
@@ -777,7 +796,25 @@ impl Engine {
                 }
             }
             let buf = &mut self.track_bufs[base..base + frames * 2];
-            self.chains[t][d].process(&params[..n], buf);
+            self.chains[t][d].set_tempo(self.bpm);
+            if spec.id == "native.sidechain" {
+                // another track's raw mix as the key signal (silence if it made no sound this block)
+                let src = params[0].round().clamp(0.0, MAX_TRACKS as f32) as usize;
+                let use_key = src >= 1 && src - 1 != t;
+                if use_key {
+                    if self.track_used[src - 1] {
+                        let sb = (src - 1) * BLOCK * 2;
+                        self.sc_buf[..frames * 2].copy_from_slice(&self.track_bufs[sb..sb + frames * 2]);
+                    } else {
+                        self.sc_buf[..frames * 2].fill(0.0);
+                    }
+                }
+                let sc = use_key.then(|| &self.sc_buf[..frames * 2]);
+                let buf = &mut self.track_bufs[base..base + frames * 2];
+                self.chains[t][d].process_sc(&params[..n], buf, sc);
+            } else {
+                self.chains[t][d].process(&params[..n], buf);
+            }
             if d < MAX_MOD_DEVS {
                 self.mod_out[t * MAX_MOD_DEVS + d] = self.chains[t][d].modulation().unwrap_or(0.0);
             }
@@ -2482,6 +2519,50 @@ mod device_tests {
         let bright = tone(0.0, 48, 0x80, 0.0);
         let soft = tone(0.0, 48, 0x20, 3.0);
         assert!(soft <= bright + 1e-6);
+    }
+
+    #[test]
+    fn sidechain_compressor_ducks_a_track_with_another_tracks_signal() {
+        // track 1: steady tone from line 0; track 2 (muted): a loud burst from line 1 acting as the key
+        let mut song = song_with(vec![0.0; 10]);
+        let mut tone = Instrument::new("tone");
+        let mut ts = Sample::new("tone", RATE, 1, sine(220.0, 3.0, 0.5));
+        ts.loop_mode = LoopMode::Forward;
+        tone.samples.push(ts);
+        let mut kick = Instrument::new("kick");
+        kick.samples.push(Sample::new("kick", RATE, 1, vec![0.9; 3000]));
+        song.instruments = vec![tone, kick];
+        let pat = Arc::make_mut(&mut song.patterns[0]);
+        let n = &mut pat.line_mut(0, 0).notes[0];
+        n.note = 48;
+        n.instrument = 0;
+        let n = &mut pat.line_mut(1, 1).notes[0];
+        n.note = 48;
+        n.instrument = 1;
+        song.tracks[1].mute = MuteState::Muted;
+        device(&mut song, "native.sidechain", &[(0, 2.0), (1, -30.0), (2, 20.0), (3, 0.1), (4, 5.0)]);
+        let out = render(song, 50_000);
+        let before = peak(&out[30_000..44_000]);
+        let during = peak(&out[45_000..46_800]);
+        assert!(before > 0.4, "{before}");
+        assert!(during < before * 0.2, "ducked while the key plays: {during} vs {before}");
+    }
+
+    #[test]
+    fn hydra_drives_several_parameters_from_one_oscillator() {
+        let mut song = song_with(sine(220.0, 2.0, 0.5));
+        // square hydra: slot 2's gain follows it at full depth, and so does slot 3's (the latter inverted)
+        device(
+            &mut song,
+            "native.hydra",
+            &[(0, 3.0), (1, 2.0), (2, 2.0), (3, 0.0), (4, 1.0), (5, 3.0), (6, 0.0), (7, -1.0)],
+        );
+        device(&mut song, "native.gainer", &[]);
+        device(&mut song, "native.gainer", &[]);
+        let out = render(song, 40_000);
+        let a = peak(&out[2000..9000]);
+        let b = peak(&out[13_000..20_000]);
+        assert!(a > 3.0 * b || b > 3.0 * a, "the two halves differ: {a} {b}");
     }
 
     #[test]

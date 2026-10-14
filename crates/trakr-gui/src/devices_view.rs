@@ -144,7 +144,7 @@ impl GuiApp {
                         }
                     });
                 }
-                if info.is_some_and(|i| trakr_core::MODULATORS.contains(&i.id)) {
+                if info.is_some_and(|i| trakr_core::MODULATORS.contains(&i.id) && i.id != "native.hydra") {
                     let slot = spec.param(0).round() as usize;
                     let text = if slot == 0 {
                         "Not routed: set Target device to the slot of the device to modulate".to_string()
