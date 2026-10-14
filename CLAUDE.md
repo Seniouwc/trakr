@@ -53,6 +53,12 @@ Dependency direction: core <- engine/format/xrns <- editor <- tui/gui <- trakr. 
 - No song loop range. Sample editing lives in `trakr-core::Sample` (range ops, slices, resample) with undo via `Editor::edit_sample`; no resampling on import, no sample view in the TUI. Recording goes through `trakr_engine::InputRecorder` (cpal impl behind the `audio` feature, injected by the binary via `Editor::set_recorder_factory`).
 - TUI keymap is mine, not Renoise's, apart from the tracker-style piano layout, F1/F2 octave, backtick note-off. Terminals cannot report key release or distinguish left/right modifiers; design around that.
 
+## GUI notes
+
+- `trakr-gui` has synthetic-input tests (`crates/trakr-gui/src/tests.rs`) that run real egui frames: use them for any input or layout change. They caught a freeze: never call `Response` methods (`clicked()`, `drag_started()`, ...) or `ctx.input` inside `ctx.memory_mut`/`ui.memory_mut` closures; the context lock is not reentrant.
+- `ctx.wants_keyboard_input()` is true whenever any widget has focus (including the pattern grid), so it cannot gate editor keys. `GuiApp::text_editing` (IME output of the previous frame) does.
+- Live GUI check without a display: `xvfb-run` + `openbox` + `xdotool` against `cargo run -p trakr-gui --example demo` (needs a window manager for focus).
+
 ## Conventions
 
 - Rust 2021, `cargo fmt` (max_width 110), clippy clean.

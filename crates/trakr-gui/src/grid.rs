@@ -39,8 +39,10 @@ impl GuiApp {
 
         // Keep keyboard focus on the grid (Tab and arrows must reach the editor, not egui's focus system).
         let id = resp.id;
+        // Compute these first: Response methods lock the context, and so does `memory_mut`.
+        let took_pointer = resp.clicked() || resp.drag_started();
         ui.memory_mut(|m| {
-            if m.focused().is_none() || resp.clicked() || resp.drag_started() {
+            if m.focused().is_none() || took_pointer {
                 m.request_focus(id);
             }
             m.set_focus_lock_filter(
@@ -267,6 +269,18 @@ impl GuiApp {
                 }
             }
             (cols, header_hits, top)
+        };
+
+        self.grid_info = crate::GridInfo {
+            area,
+            char_w: cw,
+            row_h: rh,
+            cursor_row_y: area.top()
+                + (((area.height() / rh) as usize).saturating_sub(1).max(1) / 2 + 1) as f32 * rh,
+            cols: cols
+                .iter()
+                .map(|c| (c.track, c.col, c.x, if c.col < c.notes { NOTE_COL_W } else { FX_COL_W }))
+                .collect(),
         };
 
         // Mouse: build a click description from the hit position.

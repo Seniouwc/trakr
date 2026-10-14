@@ -10,6 +10,8 @@ mod menus;
 mod mixer;
 mod panels;
 mod sample_view;
+#[cfg(test)]
+mod tests;
 
 use dialogs::{Confirm, FileDialog};
 use eframe::egui;
@@ -76,6 +78,9 @@ pub(crate) struct GuiApp {
     pub auto_target: Option<(usize, trakr_core::AutoTarget)>,
     pub auto_drag: Option<usize>,
     pub title: String,
+    /// A text field had keyboard focus at the end of the last frame.
+    pub text_editing: bool,
+    pub grid_info: GridInfo,
 }
 
 impl GuiApp {
@@ -111,14 +116,52 @@ impl GuiApp {
             auto_target: None,
             auto_drag: None,
             title: String::new(),
+            text_editing: false,
+            grid_info: GridInfo {
+                area: egui::Rect::NOTHING,
+                char_w: 8.0,
+                row_h: 16.0,
+                cursor_row_y: 0.0,
+                cols: Vec::new(),
+            },
         }
     }
 }
 
 impl eframe::App for GuiApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        if !ctx.wants_keyboard_input() && self.dialog.is_none() && self.confirm.is_none() {
-            for k in input::collect_keys(ctx) {
+        self.frame(ctx);
+    }
+}
+
+/// Where the pattern grid was drawn last frame (for tests and hit-testing helpers).
+#[derive(Clone, Debug)]
+pub struct GridInfo {
+    pub area: egui::Rect,
+    pub char_w: f32,
+    pub row_h: f32,
+    /// Top of the row the cursor sits on.
+    pub cursor_row_y: f32,
+    /// (track, column within track, left x, width in characters) of every drawn column.
+    pub cols: Vec<(usize, usize, f32, usize)>,
+}
+
+impl GuiApp {
+    /// One UI frame. Kept separate from `eframe::App::update` so tests can drive it with synthetic input.
+    pub(crate) fn frame(&mut self, ctx: &egui::Context) {
+        // Keys go to the editor unless a text field is being edited (egui reports focus on the pattern
+        // grid itself as "wants keyboard input", so that flag cannot be used).
+        if !self.text_editing && self.dialog.is_none() && self.confirm.is_none() {
+            let keys = input::collect_keys(ctx);
+            if !keys.is_empty() {
+                // Keep arrows and Tab from moving egui's widget focus: the grid takes focus back.
+                ctx.memory_mut(|m| {
+                    if let Some(id) = m.focused() {
+                        m.surrender_focus(id);
+                    }
+                });
+            }
+            for k in keys {
                 self.editor.on_key(k);
             }
         }
@@ -147,6 +190,7 @@ impl eframe::App for GuiApp {
         self.side_panel(ctx);
         egui::CentralPanel::default().show(ctx, |ui| self.pattern_view(ui));
         self.show_dialogs(ctx);
+        self.text_editing = ctx.output(|o| o.ime.is_some());
     }
 }
 
