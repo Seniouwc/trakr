@@ -10,8 +10,7 @@ pub fn load_song(path: &Path) -> Result<(Song, PathBuf)> {
     let ext = path.extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase);
     match ext.as_deref() {
         Some("xrns") => {
-            let song =
-                trakr_xrns::import_path(path).with_context(|| format!("importing {}", path.display()))?;
+            let (song, _) = load_song_report(path)?;
             Ok((song, path.with_extension("trkr")))
         }
         Some("trkr") => {
@@ -21,6 +20,13 @@ pub fn load_song(path: &Path) -> Result<(Song, PathBuf)> {
         }
         _ => anyhow::bail!("unknown file type: {} (expected .trkr or .xrns)", path.display()),
     }
+}
+
+/// Like [`load_song`] but also returns what an `.xrns` import had to skip.
+pub fn load_song_report(path: &Path) -> Result<(Song, Vec<String>)> {
+    let (song, warnings) =
+        trakr_xrns::import_path_with_report(path).with_context(|| format!("importing {}", path.display()))?;
+    Ok((song, warnings))
 }
 
 impl Editor {
@@ -45,8 +51,23 @@ impl Editor {
     pub fn open(&mut self, path: &Path) {
         match load_song(path) {
             Ok((song, save_path)) => {
+                let is_xrns = path.extension().is_some_and(|e| e.eq_ignore_ascii_case("xrns"));
+                let warnings = if is_xrns {
+                    load_song_report(path).map(|(_, w)| w).unwrap_or_default()
+                } else {
+                    Vec::new()
+                };
                 self.replace_song(song, Some(save_path));
-                self.status = format!("opened {}", path.display());
+                self.status = if warnings.is_empty() {
+                    format!("opened {}", path.display())
+                } else {
+                    format!(
+                        "opened {} with {} warnings, first: {}",
+                        path.display(),
+                        warnings.len(),
+                        warnings[0]
+                    )
+                };
             }
             Err(e) => self.status = format!("open failed: {e:#}"),
         }

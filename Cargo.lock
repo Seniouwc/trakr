@@ -4004,8 +4004,10 @@ name = "trakr-xrns"
 version = "0.0.1"
 dependencies = [
  "roxmltree",
+ "serde_json",
  "thiserror 2.0.21",
  "trakr-core",
+ "trakr-sample",
  "zip",
 ]
 

@@ -58,7 +58,7 @@ Compiled from memory of Renoise 3.x behavior. Verify each item against the offic
 - [ ] Send tracks and `#Send` device routing, group tracks, routing to arbitrary tracks, sidechain
 - [x] Track mute, solo and off, mixer view with per-track and master meters and peak hold
 - [ ] Plugin delay compensation
-- [~] Native devices: Gainer, Filter (LP/HP/BP/Notch), 3-band EQ, Delay (with ping-pong), Reverb (Freeverb topology), Chorus/flanger, Distortion, Compressor, with GUI cards, bypass, reorder, undo. Still missing (verify against manual): multiband EQ, scream/analog filters, stereo expander, gate, limiter, bus compressor, maximizer, exciter, multitap, phaser, ring mod, cabinet sim, convolver, repeater, DC offset, LFO, envelope follower, hydra, key/velocity tracker, formula, meta mixer, doofer, #Line Input, #Multiband Send, #Send, #Sidechain, signal follower
+- [~] Native devices (18): Gainer, Filter, 3-band EQ, 10-band EQ, Ladder filter (24 dB), Gate, Compressor, Limiter, Delay (ping-pong), Reverb, Chorus/flanger, Phaser, Distortion, Bit crusher, Ring modulator, Stereo width, Tremolo/auto-pan, Exciter; GUI cards, bypass, reorder, undo, automation. Still missing (verify against manual): scream/analog filter models, stereo expander variants, bus compressor, maximizer, multitap, cabinet sim, convolver, repeater, DC offset, LFO, envelope follower, hydra, key/velocity tracker, formula, meta mixer, doofer, #Line Input, #Multiband Send, #Send, #Sidechain, signal follower
 
 ## Automation and modulation
 - [x] Per-pattern automation lanes for track volume/pan and any native device parameter (breakpoint curves, GUI editor, playhead)
@@ -83,7 +83,7 @@ Compiled from memory of Renoise 3.x behavior. Verify each item against the offic
 - [ ] Offline render to WAV/FLAC/OGG/MP3: whole song, selection, single track, per-track stems, per-pattern, with bit depth/dither options
 - [ ] Sample-accurate loop export
 - [~] Native `.trkr` project save/load
-- [~] `.xrns` import (metadata, tracks, patterns, notes, effects, sequence); missing instruments, samples, devices, automation, phrases, groups, sends
+- [~] `.xrns` import: metadata, tracks, patterns, notes, effects, sequence, and instruments with decoded sample audio (volume, pan, transpose/finetune, loops, key mapping; warnings for anything skipped). Element names and the `SampleData/` layout are from memory and tested only against synthetic fixtures. Missing: instrument envelopes, filters, devices, automation, phrases, groups, sends
 - [ ] `.xrns` export; `.xrni` and `.xrnt` import/export; track DSP presets; theme files
 - [ ] MOD, S3M, XM, IT import
 - [ ] Autosave, backup, crash recovery, recent files
