@@ -12,16 +12,27 @@ pub trait Device: Send {
 pub fn create(id: &str, rate: u32) -> Option<Box<dyn Device>> {
     let fs = rate as f32;
     Some(match id {
-        "native.gainer" => Box::new(Gainer { gain: 1.0, fs }),
+        "native.gainer" => Box::new(Gainer { gain: 1.0, fs, primed: false }),
         "native.filter" => Box::new(FilterDev { l: Biquad::default(), r: Biquad::default(), fs }),
         "native.eq" => Box::new(Eq { bands: [[Biquad::default(); 2]; 3], fs }),
         "native.delay" => Box::new(Delay::new(fs)),
         "native.reverb" => Box::new(Reverb::new(fs)),
         "native.chorus" => Box::new(Chorus::new(fs)),
-        "native.distortion" => Box::new(Distortion { gain: 1.0, fs }),
+        "native.distortion" => Box::new(Distortion { gain: 1.0, fs, primed: false }),
         "native.compressor" => Box::new(Compressor { env_db: -90.0, fs }),
         _ => return None,
     })
+}
+
+/// Like [`create`], but unknown ids become a pass-through so chain indices always match the song's device list.
+pub fn create_or_passthrough(id: &str, rate: u32) -> Box<dyn Device> {
+    create(id, rate).unwrap_or_else(|| Box::new(Passthrough))
+}
+
+struct Passthrough;
+
+impl Device for Passthrough {
+    fn process(&mut self, _params: &[f32], _buf: &mut [f32]) {}
 }
 
 fn p(params: &[f32], i: usize, default: f32) -> f32 {
@@ -33,6 +44,7 @@ fn p(params: &[f32], i: usize, default: f32) -> f32 {
 struct Gainer {
     gain: f32,
     fs: f32,
+    primed: bool,
 }
 
 impl Device for Gainer {
@@ -41,6 +53,10 @@ impl Device for Gainer {
         let target = if p(params, 0, 0.0) <= -59.9 { 0.0 } else { target };
         let pan = p(params, 1, 0.0).clamp(-1.0, 1.0);
         let (pl, pr) = ((1.0 - pan).min(1.0), (1.0 + pan).min(1.0));
+        if !self.primed {
+            self.gain = target; // start at the set gain instead of gliding in from unity
+            self.primed = true;
+        }
         let k = smooth_coeff(self.fs, 0.005);
         for f in buf.chunks_exact_mut(2) {
             self.gain += (target - self.gain) * k;
@@ -215,7 +231,9 @@ impl Device for Reverb {
         for fr in buf.chunks_exact_mut(2) {
             let input = (fr[0] + fr[1]) * 0.015;
             let mut out = [0.0f32; 2];
-            for (o, (combs, allpass)) in out.iter_mut().zip(self.combs.iter_mut().zip(self.allpass.iter_mut())) {
+            for (o, (combs, allpass)) in
+                out.iter_mut().zip(self.combs.iter_mut().zip(self.allpass.iter_mut()))
+            {
                 let mut acc = 0.0;
                 for c in combs.iter_mut() {
                     acc += c.tick(input, feedback, damp);
@@ -276,12 +294,17 @@ impl Device for Chorus {
 struct Distortion {
     gain: f32,
     fs: f32,
+    primed: bool,
 }
 
 impl Device for Distortion {
     fn process(&mut self, params: &[f32], buf: &mut [f32]) {
         let drive = db_to_gain(p(params, 0, 12.0));
         let (mix, out) = (p(params, 1, 1.0), db_to_gain(p(params, 2, -6.0)));
+        if !self.primed {
+            self.gain = drive;
+            self.primed = true;
+        }
         let k = smooth_coeff(self.fs, 0.01);
         for fr in buf.chunks_exact_mut(2) {
             self.gain += (drive - self.gain) * k;

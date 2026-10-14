@@ -735,11 +735,11 @@ impl Engine {
     }
 }
 
-/// Build every track's device chain from the song's device list (unknown ids are skipped).
+/// Build every track's device chain from the song's device list (unknown ids become pass-throughs).
 pub fn build_chains(song: &Song, sample_rate: u32) -> Vec<Vec<Box<dyn Device>>> {
     song.tracks
         .iter()
-        .map(|t| t.devices.iter().filter_map(|d| devices::create(&d.id, sample_rate)).collect())
+        .map(|t| t.devices.iter().map(|d| devices::create_or_passthrough(&d.id, sample_rate)).collect())
         .collect()
 }
 

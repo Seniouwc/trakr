@@ -5,6 +5,7 @@ mod action;
 mod instruments;
 mod io;
 mod keys;
+mod mixer_ops;
 mod ops;
 mod sampling;
 
@@ -125,6 +126,8 @@ pub struct Editor {
     needs_sync: bool,
     /// Key of the last coalescable edit (e.g. dragging a tempo field); cleared by any other checkpoint.
     last_key: Option<&'static str>,
+    /// Device ids last sent to the engine per track, so only changed chains are rebuilt.
+    sent_chains: Vec<Vec<String>>,
 }
 
 fn piano_key(c: char) -> Option<u8> {
@@ -196,6 +199,7 @@ impl Editor {
             redo: Vec::new(),
             needs_sync: false,
             last_key: None,
+            sent_chains: Vec::new(),
         };
         app.sync();
         app.dirty = false;
@@ -249,12 +253,17 @@ impl Editor {
         if !self.needs_sync {
             return;
         }
+        if self.engine.is_none() {
+            self.needs_sync = false;
+            return;
+        }
+        if !self.sync_chains() {
+            return; // queue full: retry from tick()
+        }
         if let Some(e) = &mut self.engine {
             if e.send(Command::SetSong(self.song.clone())) {
                 self.needs_sync = false;
             }
-        } else {
-            self.needs_sync = false;
         }
     }
 
@@ -270,6 +279,27 @@ impl Editor {
             self.seq_pos = seq;
             self.cursor.line = line.min(self.lines_in_pattern().saturating_sub(1));
         }
+    }
+
+    /// Rebuild the engine's device chain for every track whose device list changed. Returns false if
+    /// the command queue was full (nothing is lost: the diff is recomputed on the next call).
+    fn sync_chains(&mut self) -> bool {
+        let Some(e) = &mut self.engine else { return true };
+        let rate = e.sample_rate;
+        let tracks = self.song.tracks.len().min(trakr_engine::MAX_METER_TRACKS);
+        self.sent_chains.resize(self.sent_chains.len().max(tracks), Vec::new());
+        for t in 0..tracks {
+            let ids: Vec<String> = self.song.tracks[t].devices.iter().map(|d| d.id.clone()).collect();
+            if self.sent_chains[t] == ids {
+                continue;
+            }
+            let chain = ids.iter().map(|id| trakr_engine::devices::create_or_passthrough(id, rate)).collect();
+            if !e.send(Command::SetChain { track: t, chain }) {
+                return false;
+            }
+            self.sent_chains[t] = ids;
+        }
+        true
     }
 
     fn send(&mut self, cmd: Command) {

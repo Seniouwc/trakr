@@ -371,3 +371,63 @@ fn edit_instrument_envelope_is_undoable() {
     app.undo();
     assert!(!app.current_instrument().unwrap().volume_env.enabled);
 }
+
+fn engine_editor() -> (trakr_engine::Engine, Editor) {
+    let (engine, handle) = trakr_engine::create(44_100);
+    (engine, Editor::new(Song::demo(), None, Some(handle)))
+}
+
+fn render_peak(engine: &mut trakr_engine::Engine, ed: &mut Editor, frames: usize) -> f32 {
+    ed.tick();
+    let mut out = vec![0.0; frames * 2];
+    for chunk in out.chunks_mut(512) {
+        engine.render(chunk);
+    }
+    out.iter().fold(0.0f32, |m, s| m.max(s.abs()))
+}
+
+#[test]
+fn devices_reach_the_engine_and_undo() {
+    let (mut engine, mut app) = engine_editor();
+    assert!(app.device_add(0, "native.gainer"));
+    app.device_set_param(0, 0, 0, -60.0);
+    app.do_action(Action::PlaySong);
+    assert!(render_peak(&mut engine, &mut app, 20_000) < 0.01, "gainer at -60 dB should silence the demo");
+    app.undo(); // the param change
+    app.undo(); // the device itself
+    assert!(app.song.tracks[0].devices.is_empty());
+    assert!(render_peak(&mut engine, &mut app, 20_000) > 0.1, "chain should be gone after undo");
+}
+
+#[test]
+fn device_ops_and_automation_lanes() {
+    let mut app = ed();
+    assert!(!app.device_add(0, "nope"));
+    app.device_add(0, "native.filter");
+    app.device_add(0, "native.delay");
+    app.device_move(0, 0, 1);
+    assert_eq!(app.song.tracks[0].devices[0].id, "native.delay");
+    app.device_toggle_bypass(0, 0);
+    assert!(app.song.tracks[0].devices[0].bypass);
+    app.device_set_param(0, 1, 1, 99_999.0); // clamped to the catalogue range
+    assert_eq!(app.song.tracks[0].devices[1].params[1], 20_000.0);
+
+    use trakr_core::AutoTarget;
+    let target = AutoTarget::Device { device: 1, param: 1 };
+    app.automation_edit("auto", 0, target, |a| {
+        a.set_point(0.0, 0.1);
+        a.set_point(8.0, 0.9);
+    });
+    assert_eq!(app.automation_lane(0, target).unwrap().points.len(), 2);
+    app.automation_edit("auto2", 0, target, |a| a.points.clear());
+    assert!(app.automation_lane(0, target).is_none());
+    // lanes follow their device when an earlier device is removed
+    app.automation_edit("auto3", 0, target, |a| {
+        a.set_point(0.0, 0.5);
+    });
+    app.device_remove(0, 0);
+    let shifted = AutoTarget::Device { device: 0, param: 1 };
+    assert!(app.automation_lane(0, shifted).is_some());
+    app.undo();
+    assert!(app.automation_lane(0, target).is_some());
+}
