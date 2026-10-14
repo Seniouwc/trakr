@@ -1,7 +1,8 @@
 //! Sample panel: instrument and sample properties, editing operations, recording and a zoomable waveform.
 
 use crate::dialogs::FileMode;
-use crate::GuiApp;
+use crate::envelopes::EnvKind;
+use crate::{GuiApp, SampleTab};
 use eframe::egui::{self, Color32, PointerButton, Pos2, Rect, Sense, Stroke, Vec2};
 use trakr_core::{LoopMode, Sample};
 use trakr_editor::WavFormat;
@@ -48,19 +49,35 @@ fn secs(frames: usize, rate: u32) -> String {
 }
 
 impl GuiApp {
-    pub fn sample_panel(&mut self, ctx: &egui::Context) {
-        egui::TopBottomPanel::bottom("sample").resizable(true).default_height(330.0).show(ctx, |ui| {
-            egui::ScrollArea::vertical().id_salt("sample_scroll").auto_shrink([false, false]).show(ui, |ui| {
-                self.instrument_row(ui);
-                let Some(info) = self.editor.current_sample().map(Info::of) else {
-                    ui.weak("No sample here. Use Import/Add file, or record from your input with Rec (Ctrl-R).");
+    pub fn sample_ui(&mut self, ui: &mut egui::Ui) {
+        egui::ScrollArea::vertical().id_salt("sample_scroll").auto_shrink([false, false]).show(ui, |ui| {
+            self.instrument_row(ui);
+            if self.editor.current_instrument().is_some() {
+                ui.horizontal(|ui| {
+                    ui.selectable_value(&mut self.sample_tab, SampleTab::Sample, "Sample");
+                    for k in [EnvKind::Volume, EnvKind::Pan, EnvKind::Pitch] {
+                        let on = self.editor.current_instrument().is_some_and(|i| match k {
+                            EnvKind::Volume => i.volume_env.enabled,
+                            EnvKind::Pan => i.pan_env.enabled,
+                            EnvKind::Pitch => i.pitch_env.enabled,
+                        });
+                        let label = format!("{} env{}", k.label(), if on { " *" } else { "" });
+                        ui.selectable_value(&mut self.sample_tab, SampleTab::Env(k), label);
+                    }
+                });
+                if let SampleTab::Env(k) = self.sample_tab {
+                    self.envelope_editor(ui, k);
                     return;
-                };
-                self.sample_list_row(ui);
-                self.sample_props_rows(ui, &info);
-                self.sample_edit_rows(ui, &info);
-                self.waveform(ui, &info);
-            });
+                }
+            }
+            let Some(info) = self.editor.current_sample().map(Info::of) else {
+                ui.weak("No sample here. Use Import/Add file, or record from your input with Rec (Ctrl-R).");
+                return;
+            };
+            self.sample_list_row(ui);
+            self.sample_props_rows(ui, &info);
+            self.sample_edit_rows(ui, &info);
+            self.waveform(ui, &info);
         });
     }
 

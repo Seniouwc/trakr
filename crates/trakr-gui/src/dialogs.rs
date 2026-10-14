@@ -275,6 +275,20 @@ impl GuiApp {
                 ui.label("Turn on edit mode with Space. The keys Z S X D C V G B H N J M play the lower octave, Q 2 W 3 E R 5 T 6 Y 7 U the upper octave. ` writes a note-off. In the volume, pan, delay and effect fields, type hex digits.");
                 ui.label("Click any cell to place the cursor; drag to select a block, or hold Shift with the arrow keys.");
                 ui.separator();
+                ui.heading("Effect commands");
+                ui.label("Type the two-character id and a hex amount in an effect column, or in the small slot beside a note. Slides, fades and LFOs start on the line they appear on.");
+                egui::Grid::new("fx").striped(true).show(ui, |ui| {
+                    for (id, name, desc) in trakr_core::effects::EFFECTS {
+                        ui.monospace(*id);
+                        ui.label(*name);
+                        ui.label(*desc);
+                        ui.end_row();
+                    }
+                });
+                ui.separator();
+                ui.heading("Fading notes");
+                ui.label("Select lines and use Block > Fade in/out to ramp the volume column, or put 0I (fade in) / 0O (fade out) on the note's line. Volume values on empty lines change the sounding note.");
+                ui.separator();
                 ui.heading("Shortcuts");
                 egui::Grid::new("keys").striped(true).show(ui, |ui| {
                     for a in menus::ALL_ACTIONS {

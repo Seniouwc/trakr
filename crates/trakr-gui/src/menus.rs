@@ -56,6 +56,12 @@ pub const ALL_ACTIONS: &[Action] = &[
     InstrumentRemove,
     RecordToggle,
     RenderToSample,
+    FadeInBlock,
+    FadeOutBlock,
+    TrackSolo,
+    LoopStart,
+    LoopEnd,
+    LoopClear,
 ];
 
 impl GuiApp {
@@ -123,7 +129,7 @@ impl GuiApp {
                         self.item(ui, a);
                     }
                     ui.separator();
-                    for a in [Reverse, Interpolate] {
+                    for a in [Reverse, Interpolate, FadeInBlock, FadeOutBlock] {
                         self.item(ui, a);
                     }
                     ui.separator();
@@ -140,6 +146,10 @@ impl GuiApp {
                         self.item(ui, a);
                     }
                     ui.separator();
+                    for a in [LoopStart, LoopEnd, LoopClear] {
+                        self.item(ui, a);
+                    }
+                    ui.separator();
                     ui.menu_button("Set length", |ui| {
                         for n in [16u16, 32, 48, 64, 96, 128, 192, 256, 512] {
                             if ui.button(format!("{n} lines")).clicked() {
@@ -150,7 +160,7 @@ impl GuiApp {
                     });
                 });
                 ui.menu_button("Track", |ui| {
-                    for a in [TrackAdd, TrackRemove, TrackMute] {
+                    for a in [TrackAdd, TrackRemove, TrackMute, TrackSolo] {
                         self.item(ui, a);
                     }
                     ui.separator();
@@ -177,6 +187,11 @@ impl GuiApp {
                     for a in [InstrumentRemove, InstrumentPrev, InstrumentNext] {
                         self.item(ui, a);
                     }
+                });
+                ui.menu_button("View", |ui| {
+                    ui.radio_value(&mut self.dock, crate::Dock::Instrument, "Instrument / sample editor");
+                    ui.radio_value(&mut self.dock, crate::Dock::Mixer, "Mixer");
+                    ui.radio_value(&mut self.dock, crate::Dock::Hidden, "Hide bottom panel");
                 });
                 ui.menu_button("Play", |ui| {
                     for a in [PlaySong, PlayPattern, PlayFromCursor, Stop, ToggleFollow] {

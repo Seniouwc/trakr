@@ -104,7 +104,7 @@ impl Voice {
                 frames as f64 - 1.0
             };
         }
-        let v = Self {
+        Self {
             track,
             column,
             data: s.data.clone(),
@@ -150,8 +150,7 @@ impl Voice {
             ctr: 0,
             snap: true,
             fresh_fx: false,
-        };
-        v
+        }
     }
 
     pub fn release(&mut self) {
@@ -279,8 +278,7 @@ impl Voice {
         let dt = control_block(rate) as f32 / rate as f32;
         self.vib_phase = (self.vib_phase + self.vib.0 * 0.5 * dt).fract();
         self.trem_phase = (self.trem_phase + self.trem.0 * 0.5 * dt).fract();
-        self.trem_gain =
-            1.0 - self.trem.1 * (0.5 + 0.5 * (self.trem_phase * std::f32::consts::TAU).sin());
+        self.trem_gain = 1.0 - self.trem.1 * (0.5 + 0.5 * (self.trem_phase * std::f32::consts::TAU).sin());
         let mut semis = self.semis + self.arp_offset;
         if self.vib.1 > 0.0 {
             semis += self.vib.1 * (self.vib_phase * std::f32::consts::TAU).sin();

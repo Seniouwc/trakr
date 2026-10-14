@@ -27,6 +27,7 @@ enum Click {
     Cell { track: usize, col: usize, sub: usize, line: u16 },
     Header { track: usize },
     Mute { track: usize },
+    Solo { track: usize },
 }
 
 impl GuiApp {
@@ -105,6 +106,15 @@ impl GuiApp {
                         "M",
                         font.clone(),
                         Color32::LIGHT_RED,
+                    );
+                }
+                if tr.solo {
+                    painter.text(
+                        Pos2::new(rect.right() - 2.0 * cw, area.top()),
+                        Align2::LEFT_TOP,
+                        "S",
+                        font.clone(),
+                        Color32::YELLOW,
                     );
                 }
                 header_hits.push((t, x, w));
@@ -231,6 +241,8 @@ impl GuiApp {
                 let &(track, x, w) = header_hits.iter().find(|(_, x, w)| pos.x >= *x && pos.x < x + w)?;
                 return Some(if pos.x >= x + w - 2.0 * cw {
                     Click::Mute { track }
+                } else if pos.x >= x + w - 4.0 * cw {
+                    Click::Solo { track }
                 } else {
                     Click::Header { track }
                 });
@@ -262,12 +274,8 @@ impl GuiApp {
                         let line = self.editor.cursor.line;
                         self.editor.set_cursor(track, 0, 0, line);
                     }
-                    Some(Click::Mute { track }) => {
-                        let (c, line) = (self.editor.cursor, self.editor.cursor.line);
-                        self.editor.set_cursor(track, 0, 0, line);
-                        self.editor.do_action(Action::TrackMute);
-                        self.editor.set_cursor(c.track, c.col, c.sub, c.line);
-                    }
+                    Some(Click::Mute { track }) => self.editor.track_toggle_mute_at(track),
+                    Some(Click::Solo { track }) => self.editor.track_toggle_solo(track),
                     None => {}
                 }
             }

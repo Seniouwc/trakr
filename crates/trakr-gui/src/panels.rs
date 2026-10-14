@@ -22,6 +22,9 @@ impl GuiApp {
                 ("Del", Action::SeqDelete, "Remove this slot"),
                 ("Up", Action::SeqMoveUp, "Move slot up"),
                 ("Down", Action::SeqMoveDown, "Move slot down"),
+                ("[", Action::LoopStart, "Loop range starts at this slot"),
+                ("]", Action::LoopEnd, "Loop range ends at this slot"),
+                ("x", Action::LoopClear, "Clear the loop range"),
             ] {
                 if ui.small_button(label).on_hover_text(tip).clicked() {
                     self.run_action(a);
@@ -39,7 +42,12 @@ impl GuiApp {
                     let p = &self.editor.song.patterns[pi];
                     let name = if p.name.is_empty() { String::new() } else { format!(" {}", p.name) };
                     let marker = if playing && play_seq == slot { ">" } else { " " };
-                    let text = format!("{marker}{slot:02X}  P{pi:02X}  {:3}{name}", p.number_of_lines);
+                    let in_loop = self.editor.loop_range().is_some_and(|(a, b)| (a..=b).contains(&slot));
+                    let text = format!(
+                        "{marker}{}{slot:02X}  P{pi:02X}  {:3}{name}",
+                        if in_loop { "|" } else { " " },
+                        p.number_of_lines
+                    );
                     let sel = slot == self.editor.seq_pos;
                     let r = ui.selectable_label(sel, egui::RichText::new(text).monospace());
                     if r.clicked() {

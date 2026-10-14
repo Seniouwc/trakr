@@ -880,7 +880,8 @@ mod sequencer_tests {
     #[test]
     fn volume_envelope_with_sustain_and_release() {
         let mut song = hold_song();
-        Arc::make_mut(&mut song.instruments[0].volume_env).clone_from(&trakr_core::Envelope::adsr(0.1, 0.1, 0.5, 0.2));
+        Arc::make_mut(&mut song.instruments[0].volume_env)
+            .clone_from(&trakr_core::Envelope::adsr(0.1, 0.1, 0.5, 0.2));
         put(&mut song, 0, |l| note(&mut l.notes[0]));
         put(&mut song, 1, |l| l.notes[0].note = NOTE_OFF);
         let out = render(song, 1500);
@@ -893,9 +894,8 @@ mod sequencer_tests {
     #[test]
     fn pitch_envelope_bends_the_note() {
         let mut song = ramp_song();
-        let mut env = trakr_core::Envelope::default();
-        env.enabled = true;
-        env.points = vec![(0.0, 0.5), (0.5, 1.0)]; // 0 -> +12 semitones over half a second
+        // 0 -> +12 semitones over half a second
+        let env = trakr_core::Envelope { enabled: true, points: vec![(0.0, 0.5), (0.5, 1.0)], sustain: None };
         *Arc::make_mut(&mut song.instruments[0].pitch_env) = env;
         put(&mut song, 0, |l| note(&mut l.notes[0]));
         let out = render(song, 600);

@@ -17,7 +17,12 @@ impl Envelope {
     pub fn adsr(attack: f32, decay: f32, sustain_level: f32, release: f32) -> Self {
         Self {
             enabled: true,
-            points: vec![(0.0, 0.0), (attack, 1.0), (attack + decay, sustain_level), (attack + decay + release, 0.0)],
+            points: vec![
+                (0.0, 0.0),
+                (attack, 1.0),
+                (attack + decay, sustain_level),
+                (attack + decay + release, 0.0),
+            ],
             sustain: Some(2),
         }
     }

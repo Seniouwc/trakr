@@ -2,9 +2,11 @@
 //! `KeyEvent`/`Action` and draws; behavior lives in the editor.
 
 mod dialogs;
+mod envelopes;
 mod grid;
 mod input;
 mod menus;
+mod mixer;
 mod panels;
 mod sample_view;
 
@@ -29,6 +31,20 @@ pub fn run(editor: Editor) -> anyhow::Result<()> {
     .map_err(|e| anyhow::anyhow!("{e}"))
 }
 
+/// What the bottom dock shows.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Dock {
+    Instrument,
+    Mixer,
+    Hidden,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum SampleTab {
+    Sample,
+    Env(envelopes::EnvKind),
+}
+
 pub(crate) struct GuiApp {
     pub editor: Editor,
     pub dialog: Option<FileDialog>,
@@ -47,6 +63,12 @@ pub(crate) struct GuiApp {
     pub pitch_st: f32,
     pub resample_hz: u32,
     pub slice_parts: u32,
+    pub dock: Dock,
+    pub meter_hold: Vec<f32>,
+    pub sample_tab: SampleTab,
+    pub env_sel: Option<usize>,
+    pub env_drag: Option<usize>,
+    pub env_span: f32,
     pub title: String,
 }
 
@@ -68,6 +90,12 @@ impl GuiApp {
             pitch_st: 0.0,
             resample_hz: 44_100,
             slice_parts: 8,
+            dock: Dock::Instrument,
+            meter_hold: Vec::new(),
+            sample_tab: SampleTab::Sample,
+            env_sel: None,
+            env_drag: None,
+            env_span: 2.0,
             title: String::new(),
         }
     }
@@ -101,8 +129,8 @@ impl eframe::App for GuiApp {
         self.menu_bar(ctx);
         self.transport_bar(ctx);
         self.status_bar(ctx);
+        self.dock_panel(ctx);
         self.side_panel(ctx);
-        self.sample_panel(ctx);
         egui::CentralPanel::default().show(ctx, |ui| self.pattern_view(ui));
         self.show_dialogs(ctx);
     }
@@ -116,5 +144,29 @@ impl GuiApp {
             self.allow_close = true;
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         }
+    }
+}
+
+impl GuiApp {
+    /// Bottom dock with tabs (tabs sit above the dock), so the pattern editor keeps most of the window.
+    fn dock_panel(&mut self, ctx: &egui::Context) {
+        if self.dock != Dock::Hidden {
+            egui::TopBottomPanel::bottom("dock")
+                .resizable(true)
+                .default_height(240.0)
+                .height_range(120.0..=600.0)
+                .show(ctx, |ui| match self.dock {
+                    Dock::Instrument => self.sample_ui(ui),
+                    Dock::Mixer => self.mixer_ui(ui),
+                    Dock::Hidden => {}
+                });
+        }
+        egui::TopBottomPanel::bottom("dock_tabs").resizable(false).exact_height(26.0).show(ctx, |ui| {
+            ui.horizontal(|ui| {
+                ui.selectable_value(&mut self.dock, Dock::Instrument, "Instrument / sample");
+                ui.selectable_value(&mut self.dock, Dock::Mixer, "Mixer");
+                ui.selectable_value(&mut self.dock, Dock::Hidden, "Hide");
+            });
+        });
     }
 }

@@ -9,7 +9,7 @@ Compiled from memory of Renoise 3.x behavior. Verify each item against the offic
 - [~] Sequence editor: insert, clone, delete, reorder, pick pattern per slot work; section markers and pattern matrix do not
 - [~] Pattern length 1..512 editing and pattern names work; resize with content scaling does not
 - [~] Sub-line delay column works (1/256 line); tick-quantized timing exists only for the effects `0Q`, `0C`, `0R`; per-tick voice processing (slides, vibrato) does not
-- [ ] Song loop range / pattern loop / block loop
+- [~] Song loop range (slot range) and pattern loop work; block loop does not
 - [~] Follow playback, play from cursor, play pattern, stop work; play block, panic do not
 - [ ] Song comments, metadata, tags
 - [ ] Groove / shuffle, global BPM/LPB automation via Zxx commands
@@ -29,9 +29,9 @@ Compiled from memory of Renoise 3.x behavior. Verify each item against the offic
 - [ ] Phrase editor and phrase playback (per-instrument phrases, keymapping, program/loop modes)
 
 ## Volume, panning, and effect commands
-- [ ] Volume column: 00-80 volume, special commands (verify list: Gxx glide, Uxx/Dxx slide, Ixx/Oxx fade, Axx/Bxx? etc.)
-- [ ] Panning column: 00-80 plus special commands
-- [~] Per-note effects implemented: `0S` sample offset, `0B` backwards, `0C` cut after xx ticks, `0Q` delay xx ticks, `0R` retrigger every xx ticks (effect column or the per-note slot). Command ids are trakr's own and unverified against Renoise. Still missing (verify full list against manual): arpeggio, pitch slide up/down, glide to note, volume slide, cut, delay, retrigger, sample offset, backwards, vibrato, tremolo, auto pan, envelope control, track volume/pan/width
+- [~] Volume column: 00-80 sets the note volume, and on lines without a note it changes the sounding note (usable as a per-line volume envelope; Block > Fade in/out writes a ramp). Special volume-column commands (glide, slide, fade letters) do not exist
+- [~] Panning column: 00-80 works the same way (on notes and on running notes); special commands do not
+- [~] Per-note effects implemented (effect column = whole track, per-note slot = that column; ids are trakr's own and unverified against Renoise, see `trakr_core::effects::EFFECTS`): `0S` sample offset, `0B` backwards, `0C` cut, `0Q` delay, `0R` retrigger, `0U`/`0D` pitch slide, `0G` glide, `0V` vibrato, `0T` tremolo, `0A` arpeggio, `0W` volume slide, `0I`/`0O` fade in/out. Still missing: envelope control, track volume/pan/width commands, auto pan, effects on delayed notes
 - [~] Global Z-commands: ZT (BPM), ZL (LPB), ZB (pattern break to line xx in the next slot) work; delay, ghost-note, and the rest do not
 - [ ] Effect commands as device parameter targets (`Xnn` style device addressing, verify)
 
@@ -43,7 +43,7 @@ Compiled from memory of Renoise 3.x behavior. Verify each item against the offic
 - [~] Sample editor (GUI): zoomable waveform, selection, cut/copy/paste/delete/crop, silence, fades, gain, normalize, invert, DC removal, reverse, mono/stereo, tape pitch shift, resample, WAV export (16/24/32f). Missing: loop crossfade, dither, spectrum view, draw-in-waveform editing, TUI sample view
 - [~] Slice markers (manual, shift-click, even split) and split-to-keys work; beat-sync, time-stretch, transient detection do not
 - [~] Key zones (per-sample key range) and per-sample volume/pan/tune work; velocity zones, layers, NNA, mute-groups do not
-- [ ] Instrument volume/pan/pitch/cutoff/resonance/drive modulation sets (envelopes, LFOs, key/velocity tracking, stepper, random)
+- [~] Instrument volume, pan and pitch envelopes (points, sustain hold, GUI editor) work; cutoff/resonance/drive, LFOs, key/velocity tracking, stepper, random, envelope loops and fade-out do not
 - [ ] Instrument filters (types per manual), per-instrument FX chain (sample FX chain)
 - [ ] Macros (instrument macros) and MIDI input properties
 - [ ] Plugin instruments (VST/CLAP/LV2) and MIDI instrument routing; instrument bank/XRNI import/export
@@ -52,11 +52,11 @@ Compiled from memory of Renoise 3.x behavior. Verify each item against the offic
 - [x] Record from audio input (cpal) into a new instrument; render song to sample or WAV (offline)
 
 ## Mixer and DSP
-- [~] Track volume and panning applied in mix
+- [~] Track volume and panning applied in mix; master track volume applied (master DSP chain not yet)
 - [ ] Pre/post mixer split, track width, track delay (ms compensation)
 - [ ] Master track with its own DSP chain
 - [ ] Send tracks and `#Send` device routing, group tracks, routing to arbitrary tracks, sidechain
-- [~] Track mute works in the engine (voices keep running silently); solo, off, mixer view and meters do not
+- [x] Track mute, solo and off, mixer view with per-track and master meters and peak hold
 - [ ] Plugin delay compensation
 - [ ] Native devices (verify against manual): EQ (5/10 band, mixer EQ), filters (analog, digital, notch, scream), gainer, stereo expander, compressor, gate, limiter, bus compressor, maximizer, exciter, delay, multitap, reverb, chorus, flanger, phaser, ring mod, distortion, cabinet sim, convolver, repeater, DC offset, LFO, envelope follower, hydra, key tracker, velocity tracker, formula, meta mixer, doofer, #Line Input, #Multiband Send, #Send, #Sidechain, signal follower
 
