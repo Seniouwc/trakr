@@ -155,11 +155,11 @@ impl Device for Multiband {
         let atk = smooth_coeff(self.fs, p(params, 6, 10.0).max(0.1) * 0.001);
         let rel = smooth_coeff(self.fs, p(params, 7, 150.0).max(5.0) * 0.001);
         let makeup = db_to_gain(p(params, 8, 0.0));
-        let c1 = Coeffs::lowpass(self.fs, x1, 0.7071);
+        let c1 = Coeffs::lowpass(self.fs, x1, std::f32::consts::FRAC_1_SQRT_2);
         let x2 = x2.min(self.fs * 0.45);
-        let c2 = Coeffs::lowpass(self.fs, x2, 0.7071);
-        let h1 = Coeffs::highpass(self.fs, x1, 0.7071);
-        let h2 = Coeffs::highpass(self.fs, x2, 0.7071);
+        let c2 = Coeffs::lowpass(self.fs, x2, std::f32::consts::FRAC_1_SQRT_2);
+        let h1 = Coeffs::highpass(self.fs, x1, std::f32::consts::FRAC_1_SQRT_2);
+        let h2 = Coeffs::highpass(self.fs, x2, std::f32::consts::FRAC_1_SQRT_2);
         for fr in buf.chunks_exact_mut(2) {
             let mut bands = [[0.0f32; 2]; 3];
             for ch in 0..2 {
