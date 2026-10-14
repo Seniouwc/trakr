@@ -113,6 +113,89 @@ pub const DEVICES: &[DeviceInfo] = &[
             p("Makeup", 0.0, 24.0, 0.0, "dB"),
         ],
     },
+    DeviceInfo {
+        id: "native.eq10",
+        name: "10-band EQ",
+        params: &[
+            p("31 Hz", -18.0, 18.0, 0.0, "dB"),
+            p("62 Hz", -18.0, 18.0, 0.0, "dB"),
+            p("125 Hz", -18.0, 18.0, 0.0, "dB"),
+            p("250 Hz", -18.0, 18.0, 0.0, "dB"),
+            p("500 Hz", -18.0, 18.0, 0.0, "dB"),
+            p("1 kHz", -18.0, 18.0, 0.0, "dB"),
+            p("2 kHz", -18.0, 18.0, 0.0, "dB"),
+            p("4 kHz", -18.0, 18.0, 0.0, "dB"),
+            p("8 kHz", -18.0, 18.0, 0.0, "dB"),
+            p("16 kHz", -18.0, 18.0, 0.0, "dB"),
+        ],
+    },
+    DeviceInfo {
+        id: "native.ladder",
+        name: "Ladder filter (24 dB)",
+        params: &[
+            plog("Cutoff", 20.0, 20_000.0, 2000.0, "Hz"),
+            p("Resonance", 0.0, 1.0, 0.3, ""),
+            p("Drive", 0.0, 24.0, 0.0, "dB"),
+        ],
+    },
+    DeviceInfo {
+        id: "native.gate",
+        name: "Gate",
+        params: &[
+            p("Threshold", -80.0, 0.0, -50.0, "dB"),
+            plog("Attack", 0.1, 50.0, 1.0, "ms"),
+            plog("Release", 5.0, 1000.0, 100.0, "ms"),
+            p("Range", 0.0, 80.0, 60.0, "dB"),
+        ],
+    },
+    DeviceInfo {
+        id: "native.limiter",
+        name: "Limiter",
+        params: &[
+            p("Input gain", 0.0, 24.0, 0.0, "dB"),
+            p("Ceiling", -24.0, 0.0, -1.0, "dB"),
+            plog("Release", 10.0, 1000.0, 80.0, "ms"),
+        ],
+    },
+    DeviceInfo {
+        id: "native.phaser",
+        name: "Phaser",
+        params: &[
+            plog("Rate", 0.05, 5.0, 0.4, "Hz"),
+            p("Depth", 0.0, 1.0, 0.7, ""),
+            p("Feedback", -0.9, 0.9, 0.5, ""),
+            p("Mix", 0.0, 1.0, 0.5, ""),
+        ],
+    },
+    DeviceInfo {
+        id: "native.ringmod",
+        name: "Ring modulator",
+        params: &[plog("Frequency", 1.0, 5000.0, 440.0, "Hz"), p("Mix", 0.0, 1.0, 1.0, "")],
+    },
+    DeviceInfo {
+        id: "native.bitcrusher",
+        name: "Bit crusher",
+        params: &[
+            pstep("Bits", 1.0, 16.0, 8.0),
+            plog("Rate reduction", 1.0, 64.0, 1.0, "x"),
+            p("Mix", 0.0, 1.0, 1.0, ""),
+        ],
+    },
+    DeviceInfo { id: "native.width", name: "Stereo width", params: &[p("Width", 0.0, 2.0, 1.0, "")] },
+    DeviceInfo {
+        id: "native.autopan",
+        name: "Tremolo / auto-pan",
+        params: &[
+            plog("Rate", 0.05, 20.0, 2.0, "Hz"),
+            p("Depth", 0.0, 1.0, 0.5, ""),
+            pstep("Mode (0 tremolo, 1 auto-pan)", 0.0, 1.0, 0.0),
+        ],
+    },
+    DeviceInfo {
+        id: "native.exciter",
+        name: "Exciter",
+        params: &[plog("Frequency", 1000.0, 10_000.0, 3000.0, "Hz"), p("Amount", 0.0, 1.0, 0.3, "")],
+    },
 ];
 
 pub fn device_info(id: &str) -> Option<&'static DeviceInfo> {

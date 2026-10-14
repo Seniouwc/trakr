@@ -20,6 +20,16 @@ pub fn create(id: &str, rate: u32) -> Option<Box<dyn Device>> {
         "native.chorus" => Box::new(Chorus::new(fs)),
         "native.distortion" => Box::new(Distortion { gain: 1.0, fs, primed: false }),
         "native.compressor" => Box::new(Compressor { env_db: -90.0, fs }),
+        "native.eq10" => Box::new(Eq10 { bands: [[Biquad::default(); 2]; 10], fs }),
+        "native.ladder" => Box::new(Ladder { stage: [[0.0; 4]; 2], fs }),
+        "native.gate" => Box::new(Gate { env_db: -120.0, gain: 1.0, fs }),
+        "native.limiter" => Box::new(Limiter::new(fs)),
+        "native.phaser" => Box::new(Phaser { stages: [[0.0; 4]; 2], fb: [0.0; 2], phase: 0.0, fs }),
+        "native.ringmod" => Box::new(RingMod { phase: 0.0, fs }),
+        "native.bitcrusher" => Box::new(BitCrusher { held: [0.0; 2], count: 0.0 }),
+        "native.width" => Box::new(Width),
+        "native.autopan" => Box::new(AutoPan { phase: 0.0, fs }),
+        "native.exciter" => Box::new(Exciter { hp: [Biquad::default(); 2], fs }),
         _ => return None,
     })
 }
@@ -339,5 +349,453 @@ impl Device for Compressor {
             fr[0] *= g;
             fr[1] *= g;
         }
+    }
+}
+
+// ---- 10-band EQ ----------------------------------------------------------------------------
+
+const EQ10_FREQS: [f32; 10] = [31.0, 62.0, 125.0, 250.0, 500.0, 1000.0, 2000.0, 4000.0, 8000.0, 16_000.0];
+
+struct Eq10 {
+    bands: [[Biquad; 2]; 10],
+    fs: f32,
+}
+
+impl Device for Eq10 {
+    fn process(&mut self, params: &[f32], buf: &mut [f32]) {
+        let mut cs = [Coeffs::PASS; 10];
+        let mut active = [false; 10];
+        for (i, c) in cs.iter_mut().enumerate() {
+            let g = p(params, i, 0.0);
+            if g.abs() > 0.01 {
+                *c = Coeffs::peak(self.fs, EQ10_FREQS[i], 1.4, g);
+                active[i] = true;
+            }
+        }
+        for fr in buf.chunks_exact_mut(2) {
+            for i in 0..10 {
+                if active[i] {
+                    fr[0] = self.bands[i][0].process(&cs[i], fr[0]);
+                    fr[1] = self.bands[i][1].process(&cs[i], fr[1]);
+                }
+            }
+        }
+    }
+}
+
+// ---- 24 dB ladder filter --------------------------------------------------------------------
+
+struct Ladder {
+    stage: [[f32; 4]; 2],
+    fs: f32,
+}
+
+impl Device for Ladder {
+    fn process(&mut self, params: &[f32], buf: &mut [f32]) {
+        let cutoff = p(params, 0, 2000.0).clamp(20.0, self.fs * 0.45);
+        let k = p(params, 1, 0.3).clamp(0.0, 1.0) * 3.9; // 4.0 would self-oscillate
+        let drive = db_to_gain(p(params, 2, 0.0));
+        let g = 1.0 - (-std::f32::consts::TAU * cutoff / self.fs).exp();
+        for fr in buf.chunks_exact_mut(2) {
+            for (ch, s) in self.stage.iter_mut().enumerate() {
+                let x = (fr[ch] * drive - k * s[3]).tanh();
+                s[0] += g * (x - s[0]);
+                s[1] += g * (s[0] - s[1]);
+                s[2] += g * (s[1] - s[2]);
+                s[3] += g * (s[2] - s[3]);
+                // Make-up for the passband loss the feedback causes, and undo the drive boost.
+                fr[ch] = s[3] * (1.0 + k * 0.25) / drive.max(1.0).sqrt();
+            }
+        }
+    }
+}
+
+// ---- gate -----------------------------------------------------------------------------------
+
+struct Gate {
+    env_db: f32,
+    gain: f32,
+    fs: f32,
+}
+
+impl Device for Gate {
+    fn process(&mut self, params: &[f32], buf: &mut [f32]) {
+        let thr = p(params, 0, -50.0);
+        let open = smooth_coeff(self.fs, p(params, 1, 1.0) * 0.001);
+        let close = smooth_coeff(self.fs, p(params, 2, 100.0) * 0.001);
+        let floor = db_to_gain(-p(params, 3, 60.0));
+        let det = smooth_coeff(self.fs, 0.002);
+        for fr in buf.chunks_exact_mut(2) {
+            let level = gain_to_db(fr[0].abs().max(fr[1].abs()));
+            let k = if level > self.env_db { 1.0 } else { det };
+            self.env_db += (level - self.env_db) * k;
+            let target = if self.env_db > thr { 1.0 } else { floor };
+            let k = if target > self.gain { open } else { close };
+            self.gain += (target - self.gain) * k;
+            fr[0] *= self.gain;
+            fr[1] *= self.gain;
+        }
+    }
+}
+
+// ---- lookahead limiter ----------------------------------------------------------------------
+
+struct Limiter {
+    l: DelayLine,
+    r: DelayLine,
+    look: usize,
+    gain: f32,
+    fs: f32,
+}
+
+impl Limiter {
+    fn new(fs: f32) -> Self {
+        let look = ((fs * 0.002) as usize).max(8);
+        Self { l: DelayLine::new(look + 4), r: DelayLine::new(look + 4), look, gain: 1.0, fs }
+    }
+}
+
+impl Device for Limiter {
+    fn process(&mut self, params: &[f32], buf: &mut [f32]) {
+        let pre = db_to_gain(p(params, 0, 0.0));
+        let ceiling = db_to_gain(p(params, 1, -1.0));
+        let rel = 1.0 / (self.fs * p(params, 2, 80.0) * 0.001).max(1.0);
+        let slope = 1.0 / self.look as f32; // reaches any needed gain before the delayed peak arrives
+        for fr in buf.chunks_exact_mut(2) {
+            let (a, b) = (fr[0] * pre, fr[1] * pre);
+            let peak = a.abs().max(b.abs());
+            let need = if peak > ceiling { ceiling / peak } else { 1.0 };
+            if need < self.gain {
+                self.gain = (self.gain - slope).max(need);
+            } else {
+                self.gain = (self.gain + rel).min(need.max(self.gain)).min(1.0);
+            }
+            self.l.write(a);
+            self.r.write(b);
+            fr[0] = self.l.read(self.look as f32) * self.gain;
+            fr[1] = self.r.read(self.look as f32) * self.gain;
+        }
+    }
+}
+
+// ---- phaser ---------------------------------------------------------------------------------
+
+struct Phaser {
+    /// Per channel: four first-order all-pass states.
+    stages: [[f32; 4]; 2],
+    fb: [f32; 2],
+    phase: f32,
+    fs: f32,
+}
+
+impl Device for Phaser {
+    #[allow(clippy::needless_range_loop)] // index is shared by several per-channel arrays
+    fn process(&mut self, params: &[f32], buf: &mut [f32]) {
+        let (rate, depth, fb, mix) =
+            (p(params, 0, 0.4), p(params, 1, 0.7), p(params, 2, 0.5), p(params, 3, 0.5));
+        let inc = rate / self.fs;
+        for fr in buf.chunks_exact_mut(2) {
+            self.phase = (self.phase + inc).fract();
+            // Sweep the notch frequencies exponentially between 200 Hz and 3.2 kHz.
+            let lfo = 0.5 + 0.5 * sine_phase(self.phase);
+            let f = 200.0 * 16f32.powf(lfo * depth);
+            let t = (std::f32::consts::PI * f / self.fs).tan();
+            let a = (t - 1.0) / (t + 1.0);
+            for ch in 0..2 {
+                let dry = fr[ch];
+                let mut x = dry + self.fb[ch] * fb;
+                for z in &mut self.stages[ch] {
+                    let y = a * x + *z;
+                    *z = x - a * y;
+                    x = y;
+                }
+                self.fb[ch] = x;
+                fr[ch] = dry * (1.0 - mix * 0.5) + x * mix * 0.5;
+            }
+        }
+    }
+}
+
+// ---- ring modulator -------------------------------------------------------------------------
+
+struct RingMod {
+    phase: f32,
+    fs: f32,
+}
+
+impl Device for RingMod {
+    fn process(&mut self, params: &[f32], buf: &mut [f32]) {
+        let (freq, mix) = (p(params, 0, 440.0), p(params, 1, 1.0));
+        let inc = freq / self.fs;
+        for fr in buf.chunks_exact_mut(2) {
+            self.phase = (self.phase + inc).fract();
+            let m = sine_phase(self.phase);
+            fr[0] = fr[0] * (1.0 - mix) + fr[0] * m * mix;
+            fr[1] = fr[1] * (1.0 - mix) + fr[1] * m * mix;
+        }
+    }
+}
+
+// ---- bit crusher ----------------------------------------------------------------------------
+
+struct BitCrusher {
+    held: [f32; 2],
+    count: f32,
+}
+
+impl Device for BitCrusher {
+    fn process(&mut self, params: &[f32], buf: &mut [f32]) {
+        let bits = p(params, 0, 8.0).round().clamp(1.0, 16.0);
+        let reduce = p(params, 1, 1.0).max(1.0);
+        let mix = p(params, 2, 1.0);
+        // Mid-rise quantizer: n bits give 2^n levels.
+        let levels = 2f32.powf(bits);
+        let quant = |x: f32| ((x.clamp(-1.0, 0.9999) * levels * 0.5).floor() + 0.5) * 2.0 / levels;
+        for fr in buf.chunks_exact_mut(2) {
+            if self.count <= 0.0 {
+                self.held = [quant(fr[0]), quant(fr[1])];
+                self.count += reduce;
+            }
+            self.count -= 1.0;
+            fr[0] = fr[0] * (1.0 - mix) + self.held[0] * mix;
+            fr[1] = fr[1] * (1.0 - mix) + self.held[1] * mix;
+        }
+    }
+}
+
+// ---- stereo width ---------------------------------------------------------------------------
+
+struct Width;
+
+impl Device for Width {
+    fn process(&mut self, params: &[f32], buf: &mut [f32]) {
+        let width = p(params, 0, 1.0).clamp(0.0, 2.0);
+        for fr in buf.chunks_exact_mut(2) {
+            let (mid, side) = ((fr[0] + fr[1]) * 0.5, (fr[0] - fr[1]) * 0.5 * width);
+            fr[0] = mid + side;
+            fr[1] = mid - side;
+        }
+    }
+}
+
+// ---- tremolo / auto-pan ---------------------------------------------------------------------
+
+struct AutoPan {
+    phase: f32,
+    fs: f32,
+}
+
+impl Device for AutoPan {
+    fn process(&mut self, params: &[f32], buf: &mut [f32]) {
+        let (rate, depth, pan_mode) =
+            (p(params, 0, 2.0), p(params, 1, 0.5).clamp(0.0, 1.0), p(params, 2, 0.0) >= 0.5);
+        let inc = rate / self.fs;
+        for fr in buf.chunks_exact_mut(2) {
+            self.phase = (self.phase + inc).fract();
+            let lfo = sine_phase(self.phase); // -1..1
+            if pan_mode {
+                // Equal-ish power swing between the channels.
+                fr[0] *= 1.0 - depth * (0.5 + 0.5 * lfo);
+                fr[1] *= 1.0 - depth * (0.5 - 0.5 * lfo);
+            } else {
+                let g = 1.0 - depth * (0.5 + 0.5 * lfo);
+                fr[0] *= g;
+                fr[1] *= g;
+            }
+        }
+    }
+}
+
+// ---- exciter --------------------------------------------------------------------------------
+
+struct Exciter {
+    hp: [Biquad; 2],
+    fs: f32,
+}
+
+impl Device for Exciter {
+    #[allow(clippy::needless_range_loop)] // index is shared by several per-channel arrays
+    fn process(&mut self, params: &[f32], buf: &mut [f32]) {
+        let (freq, amount) = (p(params, 0, 3000.0), p(params, 1, 0.3));
+        let c = Coeffs::highpass(self.fs, freq, 0.707);
+        for fr in buf.chunks_exact_mut(2) {
+            for ch in 0..2 {
+                let hi = self.hp[ch].process(&c, fr[ch]);
+                // Saturate the high band to create new harmonics, then blend it back in.
+                fr[ch] += (hi * 6.0).tanh() * amount * 0.5;
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use trakr_core::device_info;
+
+    const FS: u32 = 44_100;
+
+    fn params(id: &str, set: &[(usize, f32)]) -> Vec<f32> {
+        let mut p = device_info(id).unwrap().defaults();
+        for &(i, v) in set {
+            p[i] = v;
+        }
+        p
+    }
+
+    /// Run `secs` of a stereo signal (`gen(i) -> (l, r)`) through a device in 256-frame blocks.
+    fn run(id: &str, set: &[(usize, f32)], secs: f32, gen: impl Fn(usize) -> (f32, f32)) -> Vec<(f32, f32)> {
+        let mut dev = create(id, FS).unwrap();
+        let p = params(id, set);
+        let n = (FS as f32 * secs) as usize;
+        let mut out = Vec::with_capacity(n);
+        let mut i = 0;
+        while i < n {
+            let m = (n - i).min(256);
+            let mut buf: Vec<f32> = (i..i + m)
+                .flat_map(|k| {
+                    let (l, r) = gen(k);
+                    [l, r]
+                })
+                .collect();
+            dev.process(&p, &mut buf);
+            out.extend(buf.chunks_exact(2).map(|f| (f[0], f[1])));
+            i += m;
+        }
+        out
+    }
+
+    fn sine(freq: f32, amp: f32) -> impl Fn(usize) -> (f32, f32) {
+        move |i| {
+            let v = (i as f32 / FS as f32 * freq * std::f32::consts::TAU).sin() * amp;
+            (v, v)
+        }
+    }
+
+    fn peak(v: &[(f32, f32)]) -> f32 {
+        v.iter().fold(0.0f32, |m, s| m.max(s.0.abs()).max(s.1.abs()))
+    }
+
+    #[test]
+    fn every_catalogue_device_can_be_built_and_stays_finite() {
+        for d in trakr_core::DEVICES {
+            let out = run(d.id, &[], 0.3, sine(300.0, 0.7));
+            assert!(out.iter().all(|s| s.0.is_finite() && s.1.is_finite()), "{} produced NaN/inf", d.id);
+            assert!(peak(&out) < 8.0, "{} blew up: {}", d.id, peak(&out));
+            // extreme settings must stay finite too
+            let extreme: Vec<(usize, f32)> = d.params.iter().enumerate().map(|(i, p)| (i, p.max)).collect();
+            let out = run(d.id, &extreme, 0.2, sine(5000.0, 1.0));
+            assert!(out.iter().all(|s| s.0.is_finite() && s.1.is_finite()), "{} extreme NaN", d.id);
+            let low: Vec<(usize, f32)> = d.params.iter().enumerate().map(|(i, p)| (i, p.min)).collect();
+            let out = run(d.id, &low, 0.2, sine(50.0, 1.0));
+            assert!(out.iter().all(|s| s.0.is_finite() && s.1.is_finite()), "{} minimum NaN", d.id);
+        }
+    }
+
+    #[test]
+    fn eq10_boosts_its_band() {
+        let out = run("native.eq10", &[(5, 12.0)], 0.5, sine(1000.0, 0.2));
+        let p = peak(&out[10_000..]);
+        assert!((p / 0.2 - 3.98).abs() < 0.4, "gain {}", p / 0.2);
+        let flat = run("native.eq10", &[], 0.3, sine(1000.0, 0.2));
+        assert!((peak(&flat[5000..]) - 0.2).abs() < 0.01);
+    }
+
+    #[test]
+    fn ladder_is_a_steep_low_pass() {
+        let low = run("native.ladder", &[(0, 500.0), (1, 0.0)], 0.5, sine(100.0, 0.5));
+        let high = run("native.ladder", &[(0, 500.0), (1, 0.0)], 0.5, sine(4000.0, 0.5));
+        assert!(peak(&low[10_000..]) > 0.3, "passband {}", peak(&low[10_000..]));
+        assert!(peak(&high[10_000..]) < 0.01, "stopband {}", peak(&high[10_000..]));
+        // resonance lifts the region around the cutoff
+        let flat = run("native.ladder", &[(0, 500.0), (1, 0.0)], 0.5, sine(500.0, 0.2));
+        let reso = run("native.ladder", &[(0, 500.0), (1, 0.9)], 0.5, sine(500.0, 0.2));
+        assert!(peak(&reso[10_000..]) > peak(&flat[10_000..]) * 1.5);
+    }
+
+    #[test]
+    fn gate_closes_on_quiet_signals() {
+        let loud = run("native.gate", &[(0, -30.0)], 0.4, sine(200.0, 0.5));
+        assert!(peak(&loud[10_000..]) > 0.45, "open gate attenuated: {}", peak(&loud[10_000..]));
+        let quiet = run("native.gate", &[(0, -30.0), (3, 60.0)], 0.6, sine(200.0, 0.005));
+        assert!(peak(&quiet[20_000..]) < 0.0005, "closed gate leaked: {}", peak(&quiet[20_000..]));
+    }
+
+    #[test]
+    fn limiter_holds_the_ceiling() {
+        // -6 dB ceiling = 0.501; feed a full-scale burst after silence
+        let out = run("native.limiter", &[(1, -6.0206)], 0.5, |i| {
+            let v = if i > 4000 { (i as f32 * 0.05).sin() * 1.0 } else { 0.0 };
+            (v, v)
+        });
+        assert!(peak(&out) < 0.51, "peak {}", peak(&out));
+        assert!(peak(&out[10_000..]) > 0.45, "should not over-attenuate");
+        // quiet material passes unchanged (apart from the lookahead delay)
+        let quiet = run("native.limiter", &[], 0.3, sine(300.0, 0.2));
+        assert!((peak(&quiet[5000..]) - 0.2).abs() < 0.005);
+    }
+
+    #[test]
+    fn phaser_changes_the_sound_and_stays_bounded() {
+        let dry = run("native.phaser", &[(3, 0.0)], 0.5, sine(800.0, 0.5));
+        let wet = run("native.phaser", &[(3, 1.0)], 0.5, sine(800.0, 0.5));
+        let diff: f32 =
+            dry[5000..15_000].iter().zip(&wet[5000..15_000]).map(|(a, b)| (a.0 - b.0).abs()).sum();
+        assert!(diff > 20.0, "phaser had no effect: {diff}");
+        assert!(peak(&wet) < 1.5);
+    }
+
+    #[test]
+    fn ring_modulation_of_a_sine_by_itself_is_unipolar() {
+        let out = run("native.ringmod", &[(0, 100.0), (1, 1.0)], 0.3, sine(100.0, 0.8));
+        // sin * sin = sin^2 >= 0 (apart from the phase offset between the two oscillators)
+        let (lo, hi) = out[4000..].iter().fold((f32::MAX, f32::MIN), |(l, h), s| (l.min(s.0), h.max(s.0)));
+        assert!(hi > 0.1 || lo < -0.1, "no output");
+        let flat = run("native.ringmod", &[(0, 100.0), (1, 0.0)], 0.1, sine(100.0, 0.8));
+        assert!((peak(&flat[1000..]) - 0.8).abs() < 0.01, "mix 0 must be transparent");
+    }
+
+    #[test]
+    fn bit_crusher_quantizes() {
+        let out = run("native.bitcrusher", &[(0, 2.0), (1, 1.0), (2, 1.0)], 0.2, sine(100.0, 0.9));
+        let mut levels: Vec<i32> = out.iter().map(|s| (s.0 * 1000.0).round() as i32).collect();
+        levels.sort_unstable();
+        levels.dedup();
+        assert!(levels.len() <= 4, "2-bit output should have at most 4 levels: {levels:?}");
+        // rate reduction holds samples
+        let held = run("native.bitcrusher", &[(0, 16.0), (1, 8.0)], 0.05, sine(1000.0, 0.5));
+        assert!(held[1000..1100].windows(2).filter(|w| w[0].0 == w[1].0).count() > 80);
+    }
+
+    #[test]
+    fn stereo_width_folds_to_mono_and_widens() {
+        let mono = run("native.width", &[(0, 0.0)], 0.01, |_| (1.0, 0.0));
+        assert!(mono.iter().all(|s| (s.0 - 0.5).abs() < 1e-5 && (s.1 - 0.5).abs() < 1e-5));
+        let wide = run("native.width", &[(0, 2.0)], 0.01, |_| (1.0, 0.0));
+        assert!((wide[10].0 - 1.5).abs() < 1e-5 && (wide[10].1 + 0.5).abs() < 1e-5);
+        let same = run("native.width", &[(0, 1.0)], 0.01, |_| (0.3, -0.7));
+        assert!((same[10].0 - 0.3).abs() < 1e-5 && (same[10].1 + 0.7).abs() < 1e-5);
+    }
+
+    #[test]
+    fn tremolo_modulates_amplitude_and_autopan_swings_channels() {
+        let trem = run("native.autopan", &[(0, 5.0), (1, 1.0), (2, 0.0)], 1.0, |_| (1.0, 1.0));
+        let (lo, hi) = trem.iter().fold((f32::MAX, f32::MIN), |(l, h), s| (l.min(s.0), h.max(s.0)));
+        assert!(lo < 0.05 && hi > 0.95, "tremolo range {lo}..{hi}");
+        let pan = run("native.autopan", &[(0, 5.0), (1, 1.0), (2, 1.0)], 1.0, |_| (1.0, 1.0));
+        assert!(pan.iter().any(|s| s.0 < 0.1 && s.1 > 0.9) && pan.iter().any(|s| s.1 < 0.1 && s.0 > 0.9));
+    }
+
+    #[test]
+    fn exciter_adds_high_harmonics_only_when_asked() {
+        let src = |i: usize| {
+            let t = i as f32 / FS as f32;
+            let v = (t * 6000.0 * std::f32::consts::TAU).sin() * 0.3;
+            (v, v)
+        };
+        let off = run("native.exciter", &[(1, 0.0)], 0.1, src);
+        let on = run("native.exciter", &[(1, 1.0)], 0.1, src);
+        assert!((peak(&off[500..]) - 0.3).abs() < 0.01);
+        assert!(peak(&on[500..]) > 0.45, "exciter should add level: {}", peak(&on[500..]));
     }
 }
