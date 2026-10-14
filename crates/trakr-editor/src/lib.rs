@@ -9,6 +9,7 @@ mod midi;
 mod mixer_ops;
 mod ops;
 mod phrase_ops;
+mod plugin_ops;
 mod prefs;
 mod sampling;
 mod script_ops;
@@ -70,6 +71,30 @@ pub fn cell_text(line: Option<&Line>, c: usize, notes: usize) -> String {
             format!("{}{}{:02X}", e.id[0] as char, e.id[1] as char, e.amount)
         }
     }
+}
+
+/// Build the device for one chain slot: a native device, a hosted plugin, or a pass-through when it
+/// cannot be created (the reason is appended to `errors`).
+fn make_device(
+    host: &mut Option<Box<dyn trakr_engine::PluginHost>>,
+    spec: &trakr_core::DeviceSpec,
+    rate: u32,
+    errors: &mut Vec<String>,
+) -> Box<dyn trakr_engine::Device> {
+    if let Some(p) = &spec.plugin {
+        let loaded = match host {
+            Some(h) => h.load(&p.path, &p.plugin_id, rate),
+            None => Err("this build cannot host plugins".to_string()),
+        };
+        return match loaded {
+            Ok((dev, _)) => dev,
+            Err(e) => {
+                errors.push(format!("plugin {} not loaded: {e}", p.name));
+                trakr_engine::devices::create_or_passthrough("", rate)
+            }
+        };
+    }
+    trakr_engine::devices::create_or_passthrough(&spec.id, rate)
 }
 
 /// Cursor inside the phrase editor. `col` counts note columns first, then effect columns.
@@ -147,6 +172,9 @@ pub struct Editor {
     last_key: Option<&'static str>,
     /// Device ids last sent to the engine per track, so only changed chains are rebuilt.
     sent_chains: Vec<Vec<String>>,
+    plugin_host: Option<Box<dyn trakr_engine::PluginHost>>,
+    plugin_list: Vec<trakr_core::PluginInfo>,
+    plugin_errors: Vec<String>,
     midi_backend: Option<Box<dyn trakr_midi::MidiBackend>>,
     midi_in: Option<Box<dyn trakr_midi::MidiInput>>,
     midi_buf: Vec<trakr_midi::MidiEvent>,
@@ -238,6 +266,9 @@ impl Editor {
             midi_in: None,
             midi_buf: Vec::new(),
             midi_pump: None,
+            plugin_host: None,
+            plugin_list: Vec::new(),
+            plugin_errors: Vec::new(),
             script_output: Vec::new(),
             script_error: None,
             config_dir: None,
@@ -304,7 +335,11 @@ impl Editor {
             self.needs_sync = false;
             return;
         }
-        if !self.sync_chains() {
+        let synced = self.sync_chains();
+        if let Some(err) = self.plugin_errors.drain(..).next() {
+            self.status = err;
+        }
+        if !synced {
             return; // queue full: retry from tick()
         }
         if let Some(e) = &mut self.engine {
@@ -342,7 +377,11 @@ impl Editor {
             if self.sent_chains[t] == ids {
                 continue;
             }
-            let chain = ids.iter().map(|id| trakr_engine::devices::create_or_passthrough(id, rate)).collect();
+            let chain = self.song.tracks[t]
+                .devices
+                .iter()
+                .map(|d| make_device(&mut self.plugin_host, d, rate, &mut self.plugin_errors))
+                .collect();
             if !e.send(Command::SetChain { track: t, chain }) {
                 return false;
             }

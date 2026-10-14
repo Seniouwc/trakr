@@ -33,12 +33,19 @@ New commands go into `trakr-editor::Action` (label + shortcut) so menus, keys an
 | `trakr-mod` | ProTracker `.mod` importer. |
 | `trakr-xrns` | Best-effort `.xrns` importer. Element names are from memory, unverified against real files. |
 | `trakr-script` | Lua scripting (mlua, vendored Lua 5.4): `run(song, ctx, source)` edits a song copy, sandboxed with limits. Depends on core only. |
+| `trakr-clap` | Hosts local CLAP effect plugins (clap-sys + libloading); implements `trakr_engine::PluginHost`. `trakr-test-plugin` is a tiny CLAP effect used by its tests. |
 | `trakr-editor` | Frontend-neutral `Editor`: cursor, cell entry, transport keys, save. Own `KeyEvent` type; no UI deps. All editing behavior lives here. |
 | `trakr-tui` | ratatui frontend: key translation + rendering only. |
 | `trakr-gui` | egui/eframe frontend (default): key translation + painter-based grid. |
 | `trakr` | Binary: arg parsing (`--tui` selects the terminal UI, GUI otherwise), file loading, wires audio + frontend. |
 
 Dependency direction: core <- engine/format/xrns/script <- editor <- tui/gui <- trakr. Never make core depend on anything heavier than serde.
+
+## Plugins
+
+- Hosted plugins are `DeviceSpec`s with `plugin: Some(PluginRef)` and id `clap:<plugin id>`; the song stores the path and the parameter ranges, so sliders, automation and saved files work without loading the plugin. The engine runs them from `Engine::run_plugin` (params straight from the song, clamped to those ranges). `ClapDevice::id()` is `"clap"`.
+- The UI thread builds devices (`make_device` in trakr-editor): load failures become pass-throughs plus a status message. Never load or free plugins on the audio thread; chains are freed through the garbage queue.
+- A plugin is native code in-process: no sandboxing yet.
 
 ## Hard rules
 

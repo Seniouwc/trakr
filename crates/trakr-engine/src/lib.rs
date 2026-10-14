@@ -12,6 +12,21 @@ mod voice;
 
 pub use devices::Device;
 
+/// Loads hosted plugins for the UI thread (the binary supplies a real one, e.g. `trakr-clap`).
+pub trait PluginHost {
+    /// Plugins found on this machine.
+    fn scan(&mut self) -> Vec<trakr_core::PluginInfo>;
+
+    /// Instantiate a plugin as an effect at `sample_rate`. Returns the device plus a description of the
+    /// plugin and its parameters for the song to store.
+    fn load(
+        &mut self,
+        path: &str,
+        plugin_id: &str,
+        sample_rate: u32,
+    ) -> Result<(Box<dyn Device>, trakr_core::PluginRef), String>;
+}
+
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
 use trakr_core::{
@@ -483,14 +498,18 @@ impl Engine {
                 AutoTarget::TrackVolume => (Ov::Volume, v),
                 AutoTarget::TrackPan => (Ov::Pan, v),
                 AutoTarget::Device { device, param } => {
-                    let info = song
-                        .tracks
-                        .get(a.track)
-                        .and_then(|t| t.devices.get(device))
-                        .and_then(|d| trakr_core::device_info(&d.id))
-                        .and_then(|i| i.params.get(param));
-                    match info {
-                        Some(i) => (Ov::Param { device, param }, i.denormalize(v)),
+                    let spec = song.tracks.get(a.track).and_then(|t| t.devices.get(device));
+                    let value = match spec {
+                        Some(d) if d.plugin.is_some() => {
+                            d.plugin.as_ref().and_then(|p| p.params.get(param)).map(|i| i.denormalize(v))
+                        }
+                        Some(d) => trakr_core::device_info(&d.id)
+                            .and_then(|i| i.params.get(param))
+                            .map(|i| i.denormalize(v)),
+                        None => None,
+                    };
+                    match value {
+                        Some(value) => (Ov::Param { device, param }, value),
                         None => continue,
                     }
                 }
@@ -661,7 +680,7 @@ impl Engine {
         if t >= MAX_TRACKS {
             return;
         }
-        let mut params = [0.0f32; 16];
+        let mut params = [0.0f32; trakr_core::MAX_PLUGIN_PARAMS];
         // Modulators publish a control value per block; apply last block's values to their targets.
         let mut mods = [(0usize, 0usize, 0.0f32); MAX_MODS];
         let mut nmods = 0;
@@ -692,6 +711,10 @@ impl Engine {
             }
             // The song snapshot and the device instances are updated by separate commands. Never feed a
             // device another device's parameters (that can blow up its feedback paths for good).
+            if spec.id.starts_with(trakr_core::PLUGIN_ID_PREFIX) {
+                self.run_plugin(t, d, spec, base, frames, &mut params);
+                continue;
+            }
             if self.chains[t][d].id() != spec.id {
                 continue;
             }
@@ -720,6 +743,37 @@ impl Engine {
                 self.mod_out[t * MAX_MOD_DEVS + d] = self.chains[t][d].modulation().unwrap_or(0.0);
             }
         }
+    }
+
+    /// Run a hosted plugin in chain slot `d`: its parameters come straight from the song (clamped to the
+    /// ranges the plugin reported), with pattern automation applied on top.
+    fn run_plugin(
+        &mut self,
+        t: usize,
+        d: usize,
+        spec: &trakr_core::DeviceSpec,
+        base: usize,
+        frames: usize,
+        params: &mut [f32; trakr_core::MAX_PLUGIN_PARAMS],
+    ) {
+        let Some(plugin) = &spec.plugin else { return };
+        if self.chains[t][d].id() != "clap" {
+            return;
+        }
+        let n = plugin.params.len().min(params.len());
+        for (i, slot) in params.iter_mut().enumerate().take(n) {
+            let p = &plugin.params[i];
+            *slot = p.clamp(spec.params.get(i).copied().unwrap_or(p.default));
+        }
+        for o in &self.overrides {
+            if let (true, Ov::Param { device, param }) = (o.track == t, &o.target) {
+                if *device == d && *param < n {
+                    params[*param] = plugin.params[*param].clamp(o.value);
+                }
+            }
+        }
+        let buf = &mut self.track_bufs[base..base + frames * 2];
+        self.chains[t][d].process(&params[..n], buf);
     }
 
     fn fire_due_events(&mut self) {
@@ -1297,6 +1351,16 @@ pub fn build_chains(song: &Song, sample_rate: u32) -> Vec<Vec<Box<dyn Device>>> 
 /// Stops at the end of the song, when everything has decayed, or after `max_seconds`.
 pub fn render_song(song: Arc<Song>, sample_rate: u32, max_seconds: f32) -> Vec<f32> {
     let chains = build_chains(&song, sample_rate);
+    render_song_with_chains(song, sample_rate, max_seconds, chains)
+}
+
+/// Like [`render_song`] with caller-built device chains (so hosted plugins can take part).
+pub fn render_song_with_chains(
+    song: Arc<Song>,
+    sample_rate: u32,
+    max_seconds: f32,
+    chains: Vec<Vec<Box<dyn Device>>>,
+) -> Vec<f32> {
     let song = if song.loop_range.is_some() {
         let mut s = (*song).clone();
         s.loop_range = None; // an offline render plays the whole song once
@@ -2126,6 +2190,7 @@ mod device_tests {
             id: "plugin.unknown".into(),
             bypass: false,
             params: vec![],
+            plugin: None,
         });
         let out = render(song, 5000);
         assert!((out[4000] - 1.0).abs() < 0.01);
@@ -2338,6 +2403,23 @@ mod device_tests {
         b"0W", b"0I", b"0O", b"XX", b"00", b"ZZ",
     ];
 
+    /// Stands in for a hosted plugin: scales the signal by the first parameter.
+    struct FuzzClap;
+
+    impl Device for FuzzClap {
+        fn id(&self) -> &'static str {
+            "clap"
+        }
+        fn process(&mut self, params: &[f32], buf: &mut [f32]) {
+            assert!(params.len() <= trakr_core::MAX_PLUGIN_PARAMS);
+            assert!(params.iter().all(|p| p.is_finite() || p.is_nan()), "{params:?}");
+            let g = params.first().copied().filter(|g| g.is_finite()).unwrap_or(1.0).clamp(-4.0, 4.0);
+            for s in buf {
+                *s *= g;
+            }
+        }
+    }
+
     fn random_song(rng: &mut Rng) -> Song {
         let mut song = Song {
             bpm: 40.0 + rng.below(200) as f32,
@@ -2424,6 +2506,31 @@ mod device_tests {
             song.tracks[t].volume = rng.below(400) as f32 / 100.0;
             song.tracks[t].panning = rng.below(300) as f32 / 100.0 - 1.5;
         }
+        // hosted plugins with hostile descriptions and parameter lists
+        for t in 0..song.tracks.len() {
+            if rng.below(3) != 0 {
+                continue;
+            }
+            let params: Vec<trakr_core::PluginParam> = (0..rng.below(80))
+                .map(|i| trakr_core::PluginParam {
+                    id: i,
+                    name: "p".into(),
+                    min: *rng.pick(&[0.0, -5.0, f32::NAN, f32::INFINITY, 3.0]),
+                    max: *rng.pick(&[1.0, 0.0, f32::NAN, f32::NEG_INFINITY, 2.0, 1e30]),
+                    default: *rng.pick(&[0.5, f32::NAN, 100.0]),
+                    stepped: rng.below(2) == 0,
+                })
+                .collect();
+            let mut spec = DeviceSpec::from_plugin(trakr_core::PluginRef {
+                path: "x".into(),
+                plugin_id: "fuzz".into(),
+                name: "fuzz".into(),
+                params,
+            });
+            spec.params = (0..rng.below(100)).map(|_| rng.below(1000) as f32 / 100.0 - 5.0).collect();
+            spec.bypass = rng.below(6) == 0;
+            song.tracks[t].devices.push(spec);
+        }
         let ntracks = song.tracks.len();
         let lines = 1 + rng.below(40) as u16;
         let mut pat = trakr_core::Pattern::new(ntracks, lines);
@@ -2459,7 +2566,14 @@ mod device_tests {
         for round in 0..50 {
             let song = random_song(&mut rng);
             let rate = *rng.pick(&[8000u32, 22_050, 44_100, 48_000, 96_000]);
-            let chains = build_chains(&song, rate);
+            let mut chains = build_chains(&song, rate);
+            for (t, tr) in song.tracks.iter().enumerate() {
+                for (i, d) in tr.devices.iter().enumerate() {
+                    if d.plugin.is_some() {
+                        chains[t][i] = Box::new(FuzzClap);
+                    }
+                }
+            }
             let (mut engine, mut h) = create(rate);
             h.send(Command::SetSong(Arc::new(song.clone())));
             for (track, chain) in chains.into_iter().enumerate() {

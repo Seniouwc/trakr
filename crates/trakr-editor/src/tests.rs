@@ -1162,3 +1162,132 @@ fn user_scripts_are_listed_from_the_config_dir() {
     assert_eq!(e.status, "b");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+struct Scale(f32);
+
+impl trakr_engine::Device for Scale {
+    fn id(&self) -> &'static str {
+        "clap"
+    }
+    fn process(&mut self, params: &[f32], buf: &mut [f32]) {
+        let g = params.first().copied().unwrap_or(1.0) * self.0;
+        for s in buf {
+            *s *= g;
+        }
+    }
+}
+
+struct FakeHost {
+    loads: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    fail: bool,
+}
+
+impl trakr_engine::PluginHost for FakeHost {
+    fn scan(&mut self) -> Vec<trakr_core::PluginInfo> {
+        vec![trakr_core::PluginInfo {
+            path: "/fake/gain.clap".into(),
+            plugin_id: "fake.gain".into(),
+            name: "Fake Gain".into(),
+            vendor: "v".into(),
+        }]
+    }
+    fn load(
+        &mut self,
+        path: &str,
+        plugin_id: &str,
+        _rate: u32,
+    ) -> Result<(Box<dyn trakr_engine::Device>, trakr_core::PluginRef), String> {
+        self.loads.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        if self.fail {
+            return Err("nope".into());
+        }
+        let p = trakr_core::PluginParam {
+            id: 1,
+            name: "Gain".into(),
+            min: 0.0,
+            max: 2.0,
+            default: 1.0,
+            stepped: false,
+        };
+        Ok((
+            Box::new(Scale(1.0)),
+            trakr_core::PluginRef {
+                path: path.into(),
+                plugin_id: plugin_id.into(),
+                name: "Fake Gain".into(),
+                params: vec![p],
+            },
+        ))
+    }
+}
+
+#[test]
+fn plugins_are_added_configured_undone_and_used_when_rendering() {
+    let loads = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let (_engine, handle) = trakr_engine::create(44_100);
+    let mut e = Editor::new(Song::demo(), None, Some(handle));
+    assert!(!e.has_plugin_host());
+    e.scan_plugins();
+    assert!(e.status.contains("cannot host"));
+    e.set_plugin_host(Box::new(FakeHost { loads: loads.clone(), fail: false }));
+    e.scan_plugins();
+    assert_eq!(e.plugins().len(), 1);
+    let info = e.plugins()[0].clone();
+    assert!(e.device_add_plugin(0, &info));
+    let spec = e.song.tracks[0].devices[0].clone();
+    assert_eq!((spec.id.as_str(), spec.params.clone()), ("clap:fake.gain", vec![1.0]));
+    assert!(
+        loads.load(std::sync::atomic::Ordering::SeqCst) >= 2,
+        "once to describe, once to build the chain"
+    );
+
+    e.device_set_param(0, 0, 0, 5.0);
+    assert_eq!(e.song.tracks[0].devices[0].params, vec![2.0], "clamped to the plugin's range");
+    e.device_set_param(0, 0, 3, 1.0); // no such parameter: ignored
+    e.device_set_param(0, 0, 0, f32::NAN);
+    assert_eq!(e.song.tracks[0].devices[0].params, vec![2.0]);
+
+    // rendering the song offline goes through the plugin too
+    let with = {
+        e.device_set_param(0, 0, 0, 0.0);
+        let data = e.render();
+        data.iter().fold(0.0f32, |m, s| m.max(s.abs()))
+    };
+    assert_eq!(with, 0.0, "the plugin silenced track 1 (the demo's only track with notes)");
+    e.undo();
+    e.undo();
+    e.undo();
+    assert!(e.song.tracks[0].devices.is_empty() || e.song.tracks[0].devices[0].params != vec![0.0]);
+
+    // a plugin that fails to load becomes a pass-through and the user is told why
+    let mut bad = Editor::new(Song::demo(), None, None);
+    bad.set_plugin_host(Box::new(FakeHost { loads, fail: true }));
+    assert!(!bad.device_add_plugin(0, &info));
+    assert!(bad.status.contains("cannot load") && bad.status.contains("nope"), "{}", bad.status);
+}
+
+#[test]
+fn song_with_plugin_survives_a_trkr_roundtrip_and_old_files_still_load() {
+    let spec = trakr_core::DeviceSpec::from_plugin(trakr_core::PluginRef {
+        path: "/x/y.clap".into(),
+        plugin_id: "a.b".into(),
+        name: "N".into(),
+        params: vec![trakr_core::PluginParam {
+            id: 3,
+            name: "P".into(),
+            min: -1.0,
+            max: 1.0,
+            default: 0.5,
+            stepped: true,
+        }],
+    });
+    let mut song = Song::demo();
+    song.tracks[0].devices.push(spec.clone());
+    let json = serde_json::to_string(&song).unwrap();
+    let back: Song = serde_json::from_str(&json).unwrap();
+    assert_eq!(back.tracks[0].devices[0], spec);
+    // a device saved before plugins existed has no `plugin` field
+    let old = r#"{"id":"native.gainer","bypass":false,"params":[0.0,0.0]}"#;
+    let d: trakr_core::DeviceSpec = serde_json::from_str(old).unwrap();
+    assert!(d.plugin.is_none());
+}

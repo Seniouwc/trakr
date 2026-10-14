@@ -219,8 +219,19 @@ impl Editor {
 
     // ---- rendering ----------------------------------------------------------------------
 
-    fn render(&self) -> Vec<f32> {
-        trakr_engine::render_song(self.song.clone(), RENDER_RATE, RENDER_MAX_SECONDS)
+    pub(crate) fn render(&mut self) -> Vec<f32> {
+        let chains = self
+            .song
+            .tracks
+            .iter()
+            .map(|t| {
+                t.devices
+                    .iter()
+                    .map(|d| make_device(&mut self.plugin_host, d, RENDER_RATE, &mut self.plugin_errors))
+                    .collect()
+            })
+            .collect();
+        trakr_engine::render_song_with_chains(self.song.clone(), RENDER_RATE, RENDER_MAX_SECONDS, chains)
     }
 
     /// Render the whole song to a new stereo instrument (bounce), e.g. for resampling it further.

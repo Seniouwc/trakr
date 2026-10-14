@@ -14,8 +14,7 @@ fn target_label(editor: &trakr_editor::Editor, track: usize, target: AutoTarget)
             .tracks
             .get(track)
             .and_then(|t| t.devices.get(device))
-            .and_then(|d| device_info(&d.id).map(|i| (i, d)))
-            .and_then(|(i, _)| i.params.get(param).map(|p| format!("{} / {}", i.name, p.name)))
+            .and_then(|d| d.param_meta(param).map(|m| format!("{} / {}", d.display_name(), m.0)))
             .unwrap_or_else(|| "(missing device)".into()),
     }
 }
@@ -35,6 +34,26 @@ impl GuiApp {
                     }
                 }
             });
+            if self.editor.has_plugin_host() {
+                egui::ComboBox::from_id_salt("add_plugin").selected_text("+ Add plugin").show_ui(ui, |ui| {
+                    if ui
+                        .button("Scan for plugins")
+                        .on_hover_text("Looks in ~/.clap, /usr/lib/clap, /usr/local/lib/clap and $CLAP_PATH")
+                        .clicked()
+                    {
+                        self.editor.scan_plugins();
+                    }
+                    ui.separator();
+                    if self.editor.plugins().is_empty() {
+                        ui.weak("None found yet (CLAP effects only)");
+                    }
+                    for p in self.editor.plugins().to_vec() {
+                        if ui.selectable_label(false, format!("{} ({})", p.name, p.vendor)).clicked() {
+                            self.editor.device_add_plugin(track, &p);
+                        }
+                    }
+                });
+            }
         });
         let count = self.editor.song.tracks[track].devices.len();
         if count == 0 {
@@ -52,7 +71,7 @@ impl GuiApp {
     fn device_card(&mut self, ui: &mut egui::Ui, track: usize, index: usize) {
         let spec = self.editor.song.tracks[track].devices[index].clone();
         let info = device_info(&spec.id);
-        let title = info.map_or(spec.id.clone(), |i| i.name.to_string());
+        let title = spec.display_name();
         egui::Frame::group(ui.style()).show(ui, |ui| {
             ui.vertical(|ui| {
                 ui.set_width(300.0);
@@ -72,16 +91,22 @@ impl GuiApp {
                         self.editor.device_remove(track, index);
                     }
                 });
-                let Some(info) = info else {
+                if info.is_none() && spec.plugin.is_none() {
                     ui.weak("Unknown device: it passes audio through unchanged.");
                     return;
-                };
-                for (pi, p) in info.params.iter().enumerate() {
+                }
+                if spec.plugin.is_some() {
+                    ui.weak("Plugin (runs inside trakr; no plugin window)");
+                }
+                for pi in 0..spec.param_count() {
+                    let Some((pname, pmin, pmax, _, plog, pstepped, punit)) = spec.param_meta(pi) else {
+                        continue;
+                    };
                     let mut v = spec.param(pi);
                     ui.horizontal(|ui| {
-                        let label = p.name.split(" (").next().unwrap_or(p.name);
+                        let label = pname.split(" (").next().unwrap_or(&pname).to_string();
                         ui.add_sized([78.0, 18.0], egui::Label::new(label));
-                        if info.id == "native.filter" && pi == 0 {
+                        if spec.id == "native.filter" && pi == 0 {
                             let mut mode = v.round() as usize;
                             egui::ComboBox::from_id_salt(("fmode", track, index))
                                 .selected_text(FILTER_MODES[mode.min(3)])
@@ -95,11 +120,11 @@ impl GuiApp {
                             }
                         } else {
                             ui.spacing_mut().slider_width = 90.0;
-                            let mut slider = egui::Slider::new(&mut v, p.min..=p.max).suffix(p.unit);
-                            if p.log {
+                            let mut slider = egui::Slider::new(&mut v, pmin..=pmax).suffix(punit);
+                            if plog {
                                 slider = slider.logarithmic(true);
                             }
-                            if p.stepped {
+                            if pstepped {
                                 slider = slider.step_by(1.0);
                             }
                             if ui.add(slider).changed() {
@@ -119,7 +144,7 @@ impl GuiApp {
                         }
                     });
                 }
-                if trakr_core::MODULATORS.contains(&info.id) {
+                if info.is_some_and(|i| trakr_core::MODULATORS.contains(&i.id)) {
                     let slot = spec.param(0).round() as usize;
                     let text = if slot == 0 {
                         "Not routed: set Target device to the slot of the device to modulate".to_string()
@@ -151,11 +176,8 @@ impl GuiApp {
         let mut targets: Vec<(usize, AutoTarget)> =
             vec![(track, AutoTarget::TrackVolume), (track, AutoTarget::TrackPan)];
         for (di, d) in self.editor.song.tracks[track].devices.iter().enumerate() {
-            if let Some(info) = device_info(&d.id) {
-                targets.extend(
-                    (0..info.params.len()).map(|pi| (track, AutoTarget::Device { device: di, param: pi })),
-                );
-            }
+            targets
+                .extend((0..d.param_count()).map(|pi| (track, AutoTarget::Device { device: di, param: pi })));
         }
         // Lanes that already exist in this pattern (on any track).
         let existing: Vec<(usize, AutoTarget)> = self
@@ -289,19 +311,14 @@ impl GuiApp {
         // Value readout for the parameter under the pointer.
         if let (Some(pos), AutoTarget::Device { device, param }) = (resp.hover_pos(), target) {
             let (_, v) = from_pos(pos);
-            if let Some(pi) = self
-                .editor
-                .song
-                .tracks
-                .get(track)
-                .and_then(|tr| tr.devices.get(device))
-                .and_then(|d| device_info(&d.id))
-                .and_then(|i| i.params.get(param))
+            let spec = self.editor.song.tracks.get(track).and_then(|tr| tr.devices.get(device));
+            if let Some((value, unit)) =
+                spec.and_then(|d| Some((d.denormalize_param(param, v)?, d.param_meta(param)?.6)))
             {
                 painter.text(
                     pos + Vec2::new(12.0, -14.0),
                     egui::Align2::LEFT_TOP,
-                    format!("{:.2}{}", pi.denormalize(v), pi.unit),
+                    format!("{value:.2}{unit}"),
                     egui::FontId::monospace(11.0),
                     Color32::WHITE,
                 );

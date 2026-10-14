@@ -23,6 +23,9 @@ pub struct DeviceSpec {
     pub id: String,
     pub bypass: bool,
     pub params: Vec<f32>,
+    /// Set for hosted plugins (`id` starts with `clap:`).
+    #[serde(default)]
+    pub plugin: Option<crate::plugin::PluginRef>,
 }
 
 /// A feed from a track into a send track.

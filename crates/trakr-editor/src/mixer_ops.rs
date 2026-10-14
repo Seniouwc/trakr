@@ -72,21 +72,19 @@ impl Editor {
 
     /// Set a device parameter; dragging a slider is one undo step.
     pub fn device_set_param(&mut self, track: usize, index: usize, param: usize, value: f32) {
-        let Some(info) = self
-            .song
-            .tracks
-            .get(track)
-            .and_then(|t| t.devices.get(index))
-            .and_then(|d| trakr_core::device_info(&d.id))
-        else {
+        let Some(spec) = self.song.tracks.get(track).and_then(|t| t.devices.get(index)) else { return };
+        let Some((_, min, max, _, _, _, _)) = spec.param_meta(param) else { return };
+        if !(value.is_finite() && min.is_finite() && max.is_finite()) {
             return;
-        };
-        let Some(pi) = info.params.get(param) else { return };
-        let value = value.clamp(pi.min, pi.max);
+        }
+        let value = value.clamp(min.min(max), min.max(max));
+        let defaults: Vec<f32> =
+            (0..spec.param_count()).filter_map(|i| spec.param_meta(i).map(|m| m.3)).collect();
         self.checkpoint_key("device_param");
         let d = &mut self.song_mut().tracks[track].devices[index];
-        if d.params.len() <= param {
-            d.params = info.defaults();
+        if d.params.len() < defaults.len() {
+            let have = d.params.len();
+            d.params.extend_from_slice(&defaults[have..]);
         }
         d.params[param] = value;
         self.sync();

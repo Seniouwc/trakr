@@ -47,6 +47,7 @@ Compiled from memory of Renoise 3.x behavior. Verify each item against the offic
 - [~] Instrument filter (LP/HP/BP/Notch, cutoff, resonance, cutoff envelope) works; more filter types, drive, and a per-instrument FX chain do not
 - [ ] Macros (instrument macros) and MIDI input properties
 - [~] MIDI instrument routing works: an instrument can send its notes (channel, optional program change, velocity from the volume column, note-off from OFF/next note/stop) to the MIDI output port, with or without its samples; not yet CC/pitch-bend lanes or per-note properties
+- [~] Plugin hosting, local only: CLAP audio effects (mono/stereo) load from `~/.clap`, `/usr/lib/clap`, `/usr/local/lib/clap`, `$CLAP_PATH` via Devices > Add plugin; parameters appear as sliders and can be automated; plugin and parameter ranges are saved in the song; offline render uses plugins. Missing: plugin instruments and note input, plugin GUIs, plugin state save/restore, latency compensation, multi-port/sidechain, VST2/VST3/LV2/AU, out-of-process sandboxing (a crashing plugin crashes trakr), remote/network plugins
 - [ ] Plugin instruments (VST/CLAP/LV2); instrument bank/XRNI import/export
 - [ ] Sample/instrument disk browser, favorites
 

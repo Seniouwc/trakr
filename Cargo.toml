@@ -9,6 +9,8 @@ members = [
     "crates/trakr-midi",
     "crates/trakr-mod",
     "crates/trakr-script",
+    "crates/trakr-clap",
+    "crates/trakr-test-plugin",
     "crates/trakr-editor",
     "crates/trakr-tui",
     "crates/trakr-gui",
@@ -29,6 +31,7 @@ trakr-xrns = { path = "crates/trakr-xrns" }
 trakr-sample = { path = "crates/trakr-sample" }
 trakr-midi = { path = "crates/trakr-midi" }
 trakr-mod = { path = "crates/trakr-mod" }
+trakr-clap = { path = "crates/trakr-clap" }
 trakr-script = { path = "crates/trakr-script" }
 trakr-editor = { path = "crates/trakr-editor" }
 trakr-tui = { path = "crates/trakr-tui" }

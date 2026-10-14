@@ -296,16 +296,59 @@ impl DeviceSpec {
     /// A device with default parameters, or `None` for an unknown id.
     pub fn new(id: &str) -> Option<Self> {
         let info = device_info(id)?;
-        Some(Self { id: info.id.to_string(), bypass: false, params: info.defaults() })
+        Some(Self { id: info.id.to_string(), bypass: false, params: info.defaults(), plugin: None })
+    }
+
+    /// A device that runs a hosted plugin, with the plugin's default parameter values.
+    pub fn from_plugin(plugin: crate::plugin::PluginRef) -> Self {
+        let params = plugin.params.iter().map(|p| p.default).collect();
+        Self {
+            id: format!("{}{}", crate::plugin::PLUGIN_ID_PREFIX, plugin.plugin_id),
+            bypass: false,
+            params,
+            plugin: Some(plugin),
+        }
+    }
+
+    /// Human-readable name: the catalogue name, or the plugin's name.
+    pub fn display_name(&self) -> String {
+        match (&self.plugin, device_info(&self.id)) {
+            (Some(p), _) => p.name.clone(),
+            (None, Some(i)) => i.name.to_string(),
+            (None, None) => self.id.clone(),
+        }
+    }
+
+    /// Number of parameters this device exposes.
+    pub fn param_count(&self) -> usize {
+        match (&self.plugin, device_info(&self.id)) {
+            (Some(p), _) => p.params.len(),
+            (None, Some(i)) => i.params.len(),
+            (None, None) => 0,
+        }
+    }
+
+    /// Parameter `i` at normalized position `t` (0..=1), for automation.
+    pub fn denormalize_param(&self, i: usize, t: f32) -> Option<f32> {
+        if let Some(p) = &self.plugin {
+            return p.params.get(i).map(|p| p.denormalize(t));
+        }
+        device_info(&self.id)?.params.get(i).map(|p| p.denormalize(t))
+    }
+
+    /// (name, min, max, default, logarithmic, stepped, unit) of parameter `i`.
+    pub fn param_meta(&self, i: usize) -> Option<(String, f32, f32, f32, bool, bool, &'static str)> {
+        if let Some(p) = &self.plugin {
+            let p = p.params.get(i)?;
+            return Some((p.name.clone(), p.min, p.max, p.default, false, p.stepped, ""));
+        }
+        let p = device_info(&self.id)?.params.get(i)?;
+        Some((p.name.to_string(), p.min, p.max, p.default, p.log, p.stepped, p.unit))
     }
 
     /// Parameter `i`, falling back to the catalogue default (so short or old parameter lists stay valid).
     pub fn param(&self, i: usize) -> f32 {
-        self.params
-            .get(i)
-            .copied()
-            .or_else(|| device_info(&self.id).and_then(|d| d.params.get(i)).map(|p| p.default))
-            .unwrap_or(0.0)
+        self.params.get(i).copied().or_else(|| self.param_meta(i).map(|m| m.3)).unwrap_or(0.0)
     }
 }
 
