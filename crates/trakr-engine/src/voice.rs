@@ -1,6 +1,6 @@
 use crate::dsp::{Biquad, Coeffs};
 use std::sync::Arc;
-use trakr_core::{Envelope, FilterMode, Instrument, InstrumentFilter, LoopMode, Sample};
+use trakr_core::{Envelope, FilterMode, Instrument, InstrumentFilter, LoopMode, Nna, Sample};
 
 /// How fast a voice's gain and pitch follow their targets (smooths ticks, fades and envelopes).
 const SMOOTH_SECONDS: f32 = 0.003;
@@ -68,6 +68,7 @@ pub struct Voice {
     ctr: u32,
     /// Jump straight to the targets on the first control update instead of smoothing from zero.
     snap: bool,
+    nna: Nna,
     /// An effect command was applied on the current line; its slides and fades start on tick 1.
     fresh_fx: bool,
 }
@@ -158,6 +159,7 @@ impl Voice {
             pan_now: 0.0,
             ctr: 0,
             snap: true,
+            nna: inst.nna,
             fresh_fx: false,
         }
     }
@@ -171,6 +173,24 @@ impl Voice {
         if !self.vol_env.enabled {
             self.ending = true;
         }
+    }
+
+    /// Column marker for voices that no longer answer to their original column (see NNA).
+    pub const DETACHED: usize = usize::MAX - 1;
+
+    pub fn nna(&self) -> Nna {
+        self.nna
+    }
+
+    /// Stop immediately (with the short click-free fade), ignoring any release envelope.
+    pub fn cut(&mut self) {
+        self.releasing = true;
+        self.ending = true;
+    }
+
+    /// Let this voice play on by itself: later notes and effects in its column no longer touch it.
+    pub fn detach(&mut self) {
+        self.column = Self::DETACHED;
     }
 
     pub fn is_releasing(&self) -> bool {

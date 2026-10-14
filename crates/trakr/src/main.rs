@@ -22,7 +22,7 @@ fn main() -> Result<()> {
             let (song, save_path) = trakr_editor::load_song(&p)?;
             (song, Some(save_path))
         }
-        None => (Song::demo(), None),
+        None => (Song::showcase(), None),
     };
 
     let (audio, handle) = match trakr_engine::audio::start() {

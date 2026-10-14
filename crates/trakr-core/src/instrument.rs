@@ -33,6 +33,9 @@ pub struct Sample {
     /// Slice marker positions in frames, ascending.
     #[serde(default)]
     pub slices: Vec<usize>,
+    /// Inclusive velocity range (0..=127) this sample responds to.
+    #[serde(default = "full_velocity")]
+    pub vel_range: (u8, u8),
 }
 
 impl Sample {
@@ -52,6 +55,7 @@ impl Sample {
             loop_end: frames,
             key_range: (0, 119),
             slices: Vec::new(),
+            vel_range: (0, 127),
         }
     }
 
@@ -326,6 +330,22 @@ impl Sample {
     }
 }
 
+/// What happens to a still-sounding note when a new note starts in the same column.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Nna {
+    /// The old note is cut off immediately.
+    #[default]
+    Cut,
+    /// The old note gets a note-off: it plays out its release.
+    NoteOff,
+    /// The old note keeps playing to its natural end.
+    Continue,
+}
+
+fn full_velocity() -> (u8, u8) {
+    (0, 127)
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum FilterMode {
     #[default]
@@ -371,6 +391,8 @@ pub struct Instrument {
     /// Cutoff modulation over note time: 0.5 = none, range +-5 octaves.
     #[serde(default)]
     pub cutoff_env: Arc<Envelope>,
+    #[serde(default)]
+    pub nna: Nna,
 }
 
 impl Instrument {
@@ -384,10 +406,23 @@ impl Instrument {
             pitch_env: Arc::default(),
             filter: InstrumentFilter::default(),
             cutoff_env: Arc::default(),
+            nna: Nna::Cut,
         }
     }
 
     /// First sample whose key range contains `note`.
+    /// Sample for a key and velocity (0..=127). A velocity no zone covers falls back to the key match,
+    /// so a note never goes silent just because the zones have a gap.
+    pub fn sample_for_velocity(&self, note: u8, velocity: u8) -> Option<&Sample> {
+        self.samples
+            .iter()
+            .find(|s| {
+                (s.key_range.0..=s.key_range.1).contains(&note)
+                    && (s.vel_range.0..=s.vel_range.1).contains(&velocity)
+            })
+            .or_else(|| self.sample_for(note))
+    }
+
     pub fn sample_for(&self, note: u8) -> Option<&Sample> {
         self.samples.iter().find(|s| (s.key_range.0..=s.key_range.1).contains(&note))
     }
@@ -490,5 +525,28 @@ mod tests {
         a.add_slice(0);
         a.add_slice(4);
         assert_eq!(a.slices.len(), 3);
+    }
+}
+
+#[cfg(test)]
+mod zone_tests {
+    use super::*;
+
+    #[test]
+    fn velocity_zones_pick_samples_and_fall_back() {
+        let mut inst = Instrument::new("layers");
+        let mut soft = Sample::new("soft", 44_100, 1, vec![0.0; 4]);
+        soft.vel_range = (0, 63);
+        let mut hard = Sample::new("hard", 44_100, 1, vec![0.0; 4]);
+        hard.vel_range = (64, 100);
+        inst.samples = vec![soft, hard];
+        assert_eq!(inst.sample_for_velocity(48, 10).unwrap().name, "soft");
+        assert_eq!(inst.sample_for_velocity(48, 90).unwrap().name, "hard");
+        assert_eq!(
+            inst.sample_for_velocity(48, 127).unwrap().name,
+            "soft",
+            "gap falls back to the key match"
+        );
+        assert!(inst.sample_for_velocity(150, 10).is_none());
     }
 }

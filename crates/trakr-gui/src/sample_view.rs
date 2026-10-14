@@ -20,6 +20,7 @@ struct Info {
     loop_start: usize,
     loop_end: usize,
     keys: (u32, u32),
+    vel: (u32, u32),
     name: String,
     peak: f32,
 }
@@ -38,6 +39,7 @@ impl Info {
             loop_start: s.loop_start,
             loop_end: s.loop_end,
             keys: (s.key_range.0 as u32, s.key_range.1 as u32),
+            vel: (s.vel_range.0 as u32, s.vel_range.1 as u32),
             name: s.name.clone(),
             peak: s.peak(0, s.frames()),
         }
@@ -103,6 +105,32 @@ impl GuiApp {
             if ui.add(egui::DragValue::new(&mut volume).range(0.0..=4.0).speed(0.01)).changed() {
                 self.editor.instrument_set_volume(volume);
             }
+            let mut nna = self.editor.current_instrument().map_or(trakr_core::Nna::Cut, |i| i.nna);
+            let before = nna;
+            egui::ComboBox::from_id_salt("nna")
+                .selected_text(match nna {
+                    trakr_core::Nna::Cut => "NNA: cut",
+                    trakr_core::Nna::NoteOff => "NNA: note-off",
+                    trakr_core::Nna::Continue => "NNA: continue",
+                })
+                .show_ui(ui, |ui| {
+                    ui.selectable_value(&mut nna, trakr_core::Nna::Cut, "Cut: the old note stops at once");
+                    ui.selectable_value(
+                        &mut nna,
+                        trakr_core::Nna::NoteOff,
+                        "Note-off: the old note plays its release",
+                    );
+                    ui.selectable_value(
+                        &mut nna,
+                        trakr_core::Nna::Continue,
+                        "Continue: the old note plays to its end",
+                    );
+                })
+                .response
+                .on_hover_text("What happens to a sounding note when a new one starts in the same column");
+            if nna != before {
+                self.editor.edit_instrument("nna", |i| i.nna = nna);
+            }
             ui.separator();
             if ui.button("Play").on_hover_text("Audition the instrument at the sample's base note").clicked()
             {
@@ -162,6 +190,7 @@ impl GuiApp {
         let (mut base, mut fine, mut vol, mut pan) = (i.base, i.fine, i.vol, i.pan);
         let (mut mode, mut ls, mut le) = (i.mode, i.loop_start as u64, i.loop_end as u64);
         let mut keys = i.keys;
+        let mut vel = i.vel;
         ui.horizontal_wrapped(|ui| {
             ui.monospace(format!(
                 "{}  {} Hz  {} ch  {} frames  {}  peak {:.1} dB",
@@ -203,6 +232,13 @@ impl GuiApp {
             if lo.changed() || hi.changed() {
                 self.editor
                     .edit_sample_coalesced("keys", idx, |s| s.key_range = (keys.0 as u8, keys.1 as u8));
+            }
+            ui.label("Velocity");
+            let vlo = ui.add(egui::DragValue::new(&mut vel.0).range(0..=127));
+            ui.label("to");
+            let vhi = ui.add(egui::DragValue::new(&mut vel.1).range(0..=127));
+            if vlo.changed() || vhi.changed() {
+                self.editor.edit_sample_coalesced("vel", idx, |s| s.vel_range = (vel.0 as u8, vel.1 as u8));
             }
         });
         ui.horizontal_wrapped(|ui| {

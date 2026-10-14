@@ -443,6 +443,9 @@ impl Device for Gate {
 struct Limiter {
     l: DelayLine,
     r: DelayLine,
+    /// Gain each of the last `look + 1` input samples would need, newest at `pos`.
+    needs: Vec<f32>,
+    pos: usize,
     look: usize,
     gain: f32,
     fs: f32,
@@ -451,7 +454,15 @@ struct Limiter {
 impl Limiter {
     fn new(fs: f32) -> Self {
         let look = ((fs * 0.002) as usize).max(8);
-        Self { l: DelayLine::new(look + 4), r: DelayLine::new(look + 4), look, gain: 1.0, fs }
+        Self {
+            l: DelayLine::new(look + 4),
+            r: DelayLine::new(look + 4),
+            needs: vec![1.0; look + 1],
+            pos: 0,
+            look,
+            gain: 1.0,
+            fs,
+        }
     }
 }
 
@@ -460,15 +471,19 @@ impl Device for Limiter {
         let pre = db_to_gain(p(params, 0, 0.0));
         let ceiling = db_to_gain(p(params, 1, -1.0));
         let rel = 1.0 / (self.fs * p(params, 2, 80.0) * 0.001).max(1.0);
-        let slope = 1.0 / self.look as f32; // reaches any needed gain before the delayed peak arrives
+        let slope = 1.0 / self.look as f32; // a full-scale drop takes exactly the lookahead time
         for fr in buf.chunks_exact_mut(2) {
             let (a, b) = (fr[0] * pre, fr[1] * pre);
             let peak = a.abs().max(b.abs());
-            let need = if peak > ceiling { ceiling / peak } else { 1.0 };
-            if need < self.gain {
-                self.gain = (self.gain - slope).max(need);
+            self.pos = (self.pos + 1) % self.needs.len();
+            self.needs[self.pos] = if peak > ceiling { ceiling / peak } else { 1.0 };
+            // The gain must already be low enough when the loudest sample of the lookahead window
+            // reaches the output, so aim for the smallest need in the window and ramp down to it.
+            let target = self.needs.iter().fold(1.0f32, |m, &n| m.min(n));
+            if target < self.gain {
+                self.gain = (self.gain - slope).max(target);
             } else {
-                self.gain = (self.gain + rel).min(need.max(self.gain)).min(1.0);
+                self.gain = (self.gain + rel).min(target);
             }
             self.l.write(a);
             self.r.write(b);

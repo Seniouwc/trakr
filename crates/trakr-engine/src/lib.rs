@@ -672,13 +672,19 @@ impl Engine {
     ) {
         let song = self.song.clone(); // refcount bump only
         let Some(instrument) = song.instruments.get(inst as usize) else { return };
-        let Some(sample) = instrument.sample_for(note) else { return };
+        let velocity = (vol.clamp(0.0, 1.0) * 127.0).round() as u8;
+        let Some(sample) = instrument.sample_for_velocity(note, velocity) else { return };
         if song.tracks.get(track).is_some_and(|t| t.mute == MuteState::Off) {
             return;
         }
-        // Same track+column: cut the previous voice (NNA = cut). TODO: NNA modes.
+        // The previous note in this column ends according to its instrument's NNA setting.
         for v in self.voices.iter_mut().filter(|v| v.track == track && v.column == column) {
-            v.release();
+            match v.nna() {
+                trakr_core::Nna::Cut => v.cut(),
+                trakr_core::Nna::NoteOff => v.release(),
+                trakr_core::Nna::Continue => {}
+            }
+            v.detach();
         }
         if self.voices.len() >= MAX_VOICES {
             self.voices.remove(0);
@@ -1550,5 +1556,66 @@ mod device_tests {
 
     fn hold_song_dev() -> Song {
         song_with(vec![1.0; 20_000])
+    }
+
+    // ---- NNA and velocity zones ----
+
+    fn nna_song(mode: trakr_core::Nna) -> Song {
+        let mut song = song_with(vec![1.0; 100_000]);
+        song.instruments[0].nna = mode;
+        *Arc::make_mut(&mut song.instruments[0].volume_env) =
+            trakr_core::Envelope::adsr(0.01, 0.01, 1.0, 0.2);
+        // instrument 1: a 10-frame click, played on line 1 in the same column
+        let mut click = Instrument::new("click");
+        click.samples.push(Sample::new("c", RATE, 1, vec![0.0; 10]));
+        song.instruments.push(click);
+        let n = &mut Arc::make_mut(&mut song.patterns[0]).line_mut(0, 1).notes[0];
+        n.note = 48;
+        n.instrument = 1;
+        song
+    }
+
+    #[test]
+    fn nna_decides_what_happens_to_the_previous_note() {
+        // line 1 starts at frame 44100 (one second per line). Probe 100 ms and 500 ms later.
+        let (a, b) = (44_100 + 4410, 44_100 + 22_050);
+        let cut = render(nna_song(trakr_core::Nna::Cut), b + 100);
+        assert!(cut[a].abs() < 0.01, "cut should be silent: {}", cut[a]);
+        let off = render(nna_song(trakr_core::Nna::NoteOff), b + 100);
+        assert!(off[a] > 0.2 && off[a] < 0.8, "release in progress: {}", off[a]);
+        assert!(off[b].abs() < 0.01, "release over: {}", off[b]);
+        let cont = render(nna_song(trakr_core::Nna::Continue), b + 100);
+        assert!(cont[a] > 0.9 && cont[b] > 0.9, "continue keeps sounding: {} {}", cont[a], cont[b]);
+    }
+
+    #[test]
+    fn velocity_zones_choose_the_layer() {
+        let mut song = song_with(vec![0.2; 5000]);
+        song.instruments[0].samples[0].vel_range = (0, 63);
+        let mut hard = Sample::new("hard", RATE, 1, vec![0.9; 5000]);
+        hard.vel_range = (64, 127);
+        song.instruments[0].samples.push(hard);
+        let set_vol = |song: &mut Song, v: u8| {
+            Arc::make_mut(&mut song.patterns[0]).line_mut(0, 0).notes[0].volume = v;
+        };
+        set_vol(&mut song, 0x20); // 0.25 -> velocity 32 -> soft layer
+        let soft = render(song.clone(), 500)[400];
+        set_vol(&mut song, 0x70); // 0.875 -> velocity 111 -> hard layer
+        let hard = render(song, 500)[400];
+        assert!((soft - 0.05).abs() < 0.01, "soft layer {soft}");
+        assert!((hard - 0.79).abs() < 0.03, "hard layer {hard}");
+    }
+
+    #[test]
+    fn showcase_song_renders_loud_but_never_clips() {
+        let song = Arc::new(Song::showcase());
+        let out = render_song(song, 44_100, 120.0);
+        let secs = out.len() as f32 / 2.0 / 44_100.0;
+        assert!(secs > 25.0 && secs < 40.0, "4 patterns of 64 lines at 124 BPM ~ 31 s, got {secs}");
+        let peak = out.iter().fold(0.0f32, |m, s| m.max(s.abs()));
+        assert!(peak > 0.3, "too quiet: {peak}");
+        assert!(peak <= 1.0, "limiter should hold the master: {peak}");
+        let rms = (out.iter().map(|s| s * s).sum::<f32>() / out.len() as f32).sqrt();
+        assert!(rms > 0.03, "rms {rms}");
     }
 }
