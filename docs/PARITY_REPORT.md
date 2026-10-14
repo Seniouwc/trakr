@@ -5,8 +5,9 @@ today", not code quality. **Caveat:** the reference is my memory of Renoise 3.x 
 manual or a side-by-side session, so treat scores as informed estimates. Command ids and `.xrns` element
 names are unverified (see `docs/PARITY.md`, which lists every item).
 
-Evidence base: about 10,500 lines of Rust in 10 crates and 94 automated tests (engine rendering, editor
-operations, GUI input routing, file formats). The GUI was driven live under a virtual display. **Not tested:**
+Evidence base: about 19,000 lines of Rust in 14 crates and 184 automated tests (engine rendering and fuzzing,
+editor operations and fuzzing, GUI input routing, file formats, a real CLAP test plugin loaded from disk,
+sandboxed Lua). The GUI was driven live under a virtual display. **Not tested:**
 real speakers or audio devices, recording from a real microphone, a real MIDI keyboard, Windows/macOS, long
 sessions, large songs.
 
@@ -14,34 +15,34 @@ sessions, large songs.
 
 | Area | Score | Where it stands |
 |---|---|---|
-| Pattern editor and note entry | 5.5 | Notes, instrument, volume, pan, delay, effect columns; hex entry; selection, copy/cut/paste, transpose, reverse, interpolate, fade ramps, insert/delete line; unlimited-ish undo; add/remove tracks and columns; MIDI recording. Missing: phrase editor, find/replace, per-sub-column visibility, randomize/expand/shrink/duplicate, mix and flood paste, line highlight settings, track colors/groups/collapse. |
+| Pattern editor and note entry | 5.8 | Notes, instrument, volume, pan, delay, effect columns; hex entry; selection, copy/cut/paste, transpose, reverse, interpolate, fade ramps, insert/delete line; unlimited-ish undo; add/remove tracks and columns; MIDI recording. Phrase editor (Phrases dock) and Lua scripts for bulk edits. Missing: find/replace, per-sub-column visibility, randomize/expand/shrink/duplicate, mix and flood paste, line highlight settings, track colors/groups/collapse. |
 | Song structure and sequencing | 4.0 | Sequence list (insert, clone, delete, move, pick pattern), pattern length and names, loop range, play song / pattern / from cursor, follow. Missing: pattern matrix, sections, per-slot track mutes, groove/shuffle, block loop, play block, tempo/LPB automation beyond `ZT`/`ZL`. |
 | Effect commands | 3.5 | 17 commands (tempo, break, sample offset, backwards, cut, delay, retrigger, pitch slides, glide, vibrato, tremolo, arpeggio, volume slide, fade in/out). Volume and pan columns work on notes and running notes. Missing: special volume-column commands, envelope control, track-level commands (volume, pan, width), auto pan, effects on delayed notes, ghost notes, most of the Z set. |
-| Instruments and playback | 5.5 | Multiple samples per instrument with key and velocity zones, NNA modes, base note and fine tune, forward/reverse/ping-pong loops, volume/pan/pitch/cutoff envelopes with a hold point, per-instrument filter, per-note effects. Missing: modulation sets (LFO, stepper, key/velocity tracking), sample FX chains, oversampling and anti-aliased sinc for large pitch-ups, phrases, instrument bank, plugin instruments. |
+| Instruments and playback | 6.0 | Multiple samples per instrument with key and velocity zones, NNA modes, base note and fine tune, forward/reverse/ping-pong loops, volume/pan/pitch/cutoff envelopes with a hold point, per-instrument filter, per-note effects. Phrases (own speed, columns, loop region, key-mapped and transposed). Instruments can also send MIDI notes. Missing: modulation sets (LFO, stepper, key/velocity tracking), phrase program mode and shuffle, sample FX chains, oversampling and anti-aliased sinc for large pitch-ups, instrument bank, plugin instruments. |
 | Sample editor | 6.0 | Zoomable waveform, selection, cut/copy/paste/delete/crop, silence, fades, gain, normalize, invert, DC removal, reverse, mono/stereo, tape pitch shift, resample, slicing with split-to-keys, loop editing, WAV export (16/24/32f), import of WAV/AIFF/FLAC/OGG/MP3, live recording. Missing: spectrum view, drawing, loop crossfade, dither, time-stretch, transient detection, beat-sync. |
-| Mixer and DSP | 5.0 | Per-track bus, device chain, fader with mute/solo/off, pan, master chain and volume, meters with peak hold. Eighteen native devices (gainer, filter, ladder filter, 3- and 10-band EQ, gate, compressor, limiter, delay, reverb, chorus/flanger, phaser, distortion, bit crusher, ring mod, stereo width, tremolo/auto-pan, exciter) against Renoise's roughly fifty. Groups and sends work (nested groups, pre/post-fader feeds). Missing: sidechain, arbitrary routing, track delay, plugin delay compensation, most devices. |
-| Automation and modulation | 4.0 | Per-pattern lanes for track volume/pan and any native device parameter with a graph editor and playhead. Missing: curves and interpolation modes, recording knob moves, envelope copy/paste, range tools, modulation devices (LFO, envelope follower, hydra, formula, macros). |
-| Plugin hosting | 0.0 | None: no CLAP, VST3, LV2, LADSPA. |
-| MIDI, OSC, scripting | 2.5 | MIDI input for notes, CC7/CC10 and transport. Missing: MIDI output and clock, mapping, OSC, Lua scripting. |
-| File formats and project | 4.5 | Native `.trkr` roundtrip, WAV export, song bounce to sample, `.xrns` import of metadata, tracks, patterns, notes, sequence and instruments with sample audio (no envelopes, devices or automation; element names and sample paths are from memory and only tested against synthetic fixtures, so real-world files may import differently). Autosave with crash recovery and a recent-files list work. Missing: `.xrns`/`.xrni`/`.xrnt` export and instrument formats, S3M/XM/IT import (MOD import works), per-track/stem/selection render, FLAC/OGG/MP3 export, backups. |
+| Mixer and DSP | 5.4 | Per-track bus, device chain, fader with mute/solo/off, pan, master chain and volume, meters with peak hold. Twenty native devices (gainer, filter, ladder filter, 3- and 10-band EQ, gate, compressor, limiter, delay, reverb, chorus/flanger, phaser, distortion, bit crusher, ring mod, stereo width, tremolo/auto-pan, exciter, plus LFO and envelope-follower modulators) against Renoise's roughly fifty, and local CLAP effect plugins. Groups and sends work (nested groups, pre/post-fader feeds). Missing: sidechain, arbitrary routing, track delay, plugin delay compensation, most devices. |
+| Automation and modulation | 5.0 | Per-pattern lanes for track volume/pan and any native device parameter with a graph editor and playhead. Plugin parameters can be automated too. LFO and envelope-follower devices drive any parameter in the same chain (control rate, one block of delay). Missing: curves and interpolation modes, recording knob moves, envelope copy/paste, range tools, hydra, formula, macros, tempo-synced LFO. |
+| Plugin hosting | 2.5 | Local CLAP audio effects (mono/stereo): scan, add to a track, sliders, automation, saved with the song, used in offline render; tested against a real shared library. Missing: instruments, plugin windows, plugin state, latency compensation, sidechain, VST2/VST3/LV2/AU, sandboxing. |
+| MIDI, OSC, scripting | 4.5 | MIDI input for notes, CC7/CC10 and transport; MIDI output per instrument with program change; MIDI clock and start/stop master with a latency setting; sandboxed Lua 5.4 scripting (song, patterns, cells, selection, undoable runs, console, user script folder). Missing: clock slave, MIDI mapping, OSC, script access to instruments/devices/automation, script callbacks and menu hooks. |
+| File formats and project | 5.0 | Native `.trkr` roundtrip, WAV export, song bounce to sample, `.xrns` import of metadata, tracks, patterns, notes, sequence and instruments with sample audio (no envelopes, devices or automation; element names and sample paths are from memory and only tested against synthetic fixtures, so real-world files may import differently). Autosave with crash recovery and a recent-files list work. `.xrns` export (metadata, tracks, patterns, sequence, instruments with 24-bit samples; roundtrip-tested through the importer; envelopes, devices, automation, phrases and routing are not exported and are reported). Missing: `.xrni`/`.xrnt` instrument and preset formats, S3M/XM/IT import (MOD import works), per-track/stem/selection render, FLAC/OGG/MP3 export, backups. |
 | Interface and workflow | 5.5 | Native GUI with menus showing shortcuts, context menu, mouse selection, continuous scrolling pattern view, dockable mixer/devices/automation/instrument panels, help window with effect table; plus a terminal UI. Preferences are stored (octave, step, follow, recents). Themes, scale, font size and a rebindable keymap exist. Missing: a Renoise-compatible keymap preset, window/session restore, command palette, a Renoise-compatible keymap preset, TUI views for everything except the pattern editor, accessibility and scaling options. |
 | Engine quality and reliability | 3.5 | Real-time-safe design, sample-accurate delay column, tick timing, smoothing against clicks, automated render tests. Weak spots: sinc interpolation does not low-pass for pitch-ups, 128 voices fixed, 64 track limit, voices free large buffers on the audio thread in rare cases, no JACK/PipeWire backend or buffer-size UI, no CPU/latency tools, unverified on real hardware. |
 
 ## Overall
 
-**About 4.4 / 10 weighted by what a typical Renoise song uses day to day** (pattern editing, instruments,
+**About 5.0 / 10 weighted by what a typical Renoise song uses day to day** (pattern editing, instruments,
 sample editing, mixing and effects count most; plugins, scripting and format breadth count less). In plain
 terms: trakr can already be used to sketch and finish simple sample-based tracker songs on Linux, and its
 sample editing and pattern workflow are the closest to Renoise. It cannot yet replace Renoise for anyone who
-depends on plugins, a full effect rack, sends and groups, phrases, or opening existing Renoise projects.
+depends on plugin instruments or VST/LV2 plugins, a full effect rack, or opening existing Renoise projects faithfully.
 
 ## Highest-value gaps, in order
 
 1. **Verify `.xrns` import against real files** (instruments and samples are now imported but only checked against synthetic fixtures), then add envelopes, devices and automation to it.
 2. **Sidechain routing and a `#Send`-style device**, then more native devices (multiband, convolver, bus compressor, modulation devices).
-3. **Plugin hosting (CLAP first)**: the largest single missing capability.
+3. **Plugin instruments and plugin windows (CLAP note ports, GUI embedding), then VST3/LV2**: effects now work, instruments do not.
 4. **Remaining effect commands and special volume/pan column commands**, checked against the manual.
-5. **Instrument modulation sets (LFO, stepper, key/velocity tracking), phrases.**
+5. **Instrument modulation sets (LFO, stepper, key/velocity tracking), phrase program mode and shuffle.**
 6. **A Renoise-style keymap preset, window/session restore, command palette.**
-7. **MIDI output/clock/mapping, OSC, Lua scripting.**
+7. **MIDI clock slave and mapping, OSC, script callbacks and wider script API (instruments, devices, automation).**
 8. **Hardware verification pass**: real audio devices, latency, JACK/PipeWire, real MIDI keyboards, long-session soak tests.
