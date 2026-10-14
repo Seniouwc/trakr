@@ -199,6 +199,29 @@ impl GuiApp {
                     for a in [PlaySong, PlayPattern, PlayFromCursor, Stop, ToggleFollow] {
                         self.item(ui, a);
                     }
+                    ui.separator();
+                    ui.menu_button("MIDI input", |ui| {
+                        let current = self.editor.midi_port_name().map(str::to_owned);
+                        if !self.editor.has_midi() {
+                            ui.weak("MIDI is not available");
+                        }
+                        let ports = self.editor.midi_ports();
+                        if ports.is_empty() && self.editor.has_midi() {
+                            ui.weak("No MIDI input devices found");
+                        }
+                        for (i, name) in ports.iter().enumerate() {
+                            if ui.radio(current.as_deref() == Some(name.as_str()), name).clicked() {
+                                self.editor.midi_connect(i);
+                                ui.close_menu();
+                            }
+                        }
+                        if current.is_some() && ui.button("Disconnect").clicked() {
+                            self.editor.midi_disconnect();
+                            ui.close_menu();
+                        }
+                        ui.separator();
+                        ui.weak("Notes play the current instrument (and record in edit mode); CC7 volume, CC10 pan; Start/Stop control playback.");
+                    });
                 });
                 ui.menu_button("Help", |ui| {
                     if ui.button("Keyboard reference").clicked() {
@@ -296,8 +319,9 @@ impl GuiApp {
             ui.horizontal(|ui| {
                 let ed = &self.editor;
                 ui.monospace(format!(
-                    "{}  |  track {} col {} line {:02X}  |  {}",
+                    "{}{}  |  track {} col {} line {:02X}  |  {}",
                     if ed.edit_mode { "EDIT" } else { "----" },
+                    ed.midi_port_name().map_or(String::new(), |n| format!("  MIDI: {n}")),
                     ed.cursor.track + 1,
                     ed.cursor.col + 1,
                     ed.cursor.line,

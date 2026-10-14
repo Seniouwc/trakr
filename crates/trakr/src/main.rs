@@ -36,6 +36,11 @@ fn main() -> Result<()> {
     editor.set_recorder_factory(Box::new(|| {
         Ok(Box::new(trakr_engine::audio::start_input()?) as Box<dyn trakr_editor::InputRecorder>)
     }));
+    editor.set_midi_backend(Box::new(trakr_midi::MidirBackend));
+    // Open the first MIDI keyboard automatically; the GUI menu can switch or close it.
+    if !editor.midi_ports().is_empty() {
+        editor.midi_connect(0);
+    }
     let result = if tui { trakr_tui::run(editor) } else { trakr_gui::run(editor) };
     drop(audio);
     result

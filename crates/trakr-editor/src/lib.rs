@@ -5,6 +5,7 @@ mod action;
 mod instruments;
 mod io;
 mod keys;
+mod midi;
 mod mixer_ops;
 mod ops;
 mod sampling;
@@ -14,6 +15,7 @@ pub use io::load_song;
 pub use keys::{KeyCode, KeyEvent};
 pub use ops::{Cell, Clipboard};
 pub use trakr_engine::InputRecorder;
+pub use trakr_midi::{MidiBackend, MidiEvent, MidiInput};
 pub use trakr_sample::WavFormat;
 
 /// Opens the audio input on demand; supplied by the binary.
@@ -128,6 +130,9 @@ pub struct Editor {
     last_key: Option<&'static str>,
     /// Device ids last sent to the engine per track, so only changed chains are rebuilt.
     sent_chains: Vec<Vec<String>>,
+    midi_backend: Option<Box<dyn trakr_midi::MidiBackend>>,
+    midi_in: Option<Box<dyn trakr_midi::MidiInput>>,
+    midi_buf: Vec<trakr_midi::MidiEvent>,
 }
 
 fn piano_key(c: char) -> Option<u8> {
@@ -200,6 +205,9 @@ impl Editor {
             needs_sync: false,
             last_key: None,
             sent_chains: Vec::new(),
+            midi_backend: None,
+            midi_in: None,
+            midi_buf: Vec::new(),
         };
         app.sync();
         app.dirty = false;
@@ -271,6 +279,7 @@ impl Editor {
     pub fn tick(&mut self) {
         self.flush_sync();
         self.record_poll();
+        self.midi_poll();
         if let Some(e) = &mut self.engine {
             e.collect_garbage();
         }

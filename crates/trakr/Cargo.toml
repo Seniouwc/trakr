@@ -13,4 +13,5 @@ trakr-format = { workspace = true }
 trakr-editor = { workspace = true }
 trakr-tui = { workspace = true }
 trakr-gui = { workspace = true }
+trakr-midi = { workspace = true, features = ["backend"] }
 trakr-xrns = { workspace = true }

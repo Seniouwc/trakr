@@ -11,4 +11,5 @@ trakr-engine = { workspace = true }
 trakr-format = { workspace = true }
 trakr-xrns = { workspace = true }
 trakr-sample = { workspace = true }
+trakr-midi = { workspace = true }
 anyhow = "1.0.104"

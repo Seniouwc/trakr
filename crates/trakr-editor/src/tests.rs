@@ -441,3 +441,78 @@ fn track_limit_is_enforced() {
     assert_eq!(app.song.tracks.len(), trakr_engine::MAX_METER_TRACKS);
     assert!(app.status.contains("limit"));
 }
+
+struct FakeMidi {
+    events: Vec<trakr_midi::MidiEvent>,
+}
+
+impl trakr_midi::MidiInput for FakeMidi {
+    fn poll(&mut self, out: &mut Vec<trakr_midi::MidiEvent>) {
+        out.append(&mut self.events);
+    }
+    fn port_name(&self) -> &str {
+        "fake keyboard"
+    }
+}
+
+struct FakeBackend;
+
+impl trakr_midi::MidiBackend for FakeBackend {
+    fn ports(&mut self) -> Vec<String> {
+        vec!["fake keyboard".into()]
+    }
+    fn open(&mut self, _port: usize) -> anyhow::Result<Box<dyn trakr_midi::MidiInput>> {
+        use trakr_midi::MidiEvent::*;
+        Ok(Box::new(FakeMidi {
+            events: vec![
+                NoteOn { channel: 0, note: 60, velocity: 127 },
+                NoteOff { channel: 0, note: 60 },
+                NoteOn { channel: 0, note: 64, velocity: 64 },
+            ],
+        }))
+    }
+}
+
+#[test]
+fn midi_keyboard_records_notes_in_edit_mode() {
+    let mut app = ed();
+    assert!(!app.has_midi() && app.midi_ports().is_empty());
+    app.set_midi_backend(Box::new(FakeBackend));
+    assert_eq!(app.midi_ports(), vec!["fake keyboard".to_string()]);
+    app.edit_mode = true;
+    app.midi_connect(0);
+    assert_eq!(app.midi_port_name(), Some("fake keyboard"));
+    app.tick();
+    let l0 = app.song.patterns[0].line(0, 0).unwrap().notes[0];
+    assert_eq!((l0.note, l0.instrument, l0.volume), (48, 0, 0x80), "MIDI 60 is C-4");
+    let l1 = app.song.patterns[0].line(0, 1).unwrap().notes[0];
+    assert_eq!((l1.note, l1.volume), (52, 0x40));
+    assert_eq!(app.cursor.line, 2);
+    app.midi_disconnect();
+    assert!(app.midi_port_name().is_none());
+}
+
+#[test]
+fn midi_does_not_write_when_edit_mode_is_off_and_maps_controllers() {
+    use trakr_midi::MidiEvent::*;
+    let mut app = ed();
+    app.handle_midi(NoteOn { channel: 0, note: 60, velocity: 100 });
+    assert!(app.song.patterns[0].line(0, 0).is_none());
+    app.handle_midi(Cc { channel: 0, controller: 7, value: 50 });
+    assert_eq!(app.song.tracks[0].volume, 0.5);
+    app.handle_midi(Cc { channel: 0, controller: 10, value: 127 });
+    assert_eq!(app.song.tracks[0].panning, 1.0);
+    app.handle_midi(Cc { channel: 0, controller: 10, value: 64 });
+    assert_eq!(app.song.tracks[0].panning, 0.0);
+    // transport messages must not panic without an engine
+    app.handle_midi(Start);
+    app.handle_midi(Continue);
+    app.handle_midi(Stop);
+}
+
+#[test]
+fn midi_note_on_plays_through_the_engine() {
+    let (mut engine, mut app) = engine_editor();
+    app.handle_midi(trakr_midi::MidiEvent::NoteOn { channel: 0, note: 60, velocity: 127 });
+    assert!(render_peak(&mut engine, &mut app, 4000) > 0.1, "keyboard note should be audible");
+}
