@@ -2,7 +2,7 @@
 
 An open source tracker DAW written in Rust, with a native window (egui) and a terminal mode (ratatui) in one binary. The goal is a free, Linux-first alternative to Renoise with full feature parity.
 
-**Status: early scaffold (v0.0.1).** The core model, a basic audio engine, a terminal UI, a native project format and a minimal XRNS importer work. Most sequencer effects, DSP, automation and plugin hosting are not implemented yet. See the [roadmap](docs/ROADMAP.md) and [parity checklist](docs/PARITY.md).
+**Status: early scaffold (v0.0.1).** The core model, a basic audio engine, a terminal UI, a native project format and a minimal XRNS importer work. Most sequencer effects, DSP, automation and plugin hosting are not implemented yet. See the [roadmap](docs/ROADMAP.md), the [parity checklist](docs/PARITY.md) and the scored [parity report](docs/PARITY_REPORT.md).
 
 ## Goals
 
@@ -20,6 +20,7 @@ An open source tracker DAW written in Rust, with a native window (egui) and a te
 - Delay column and timing effects (sample offset, backwards, cut, delay, retrigger)
 - Pitch and volume effects: slides, glide, vibrato, tremolo, arpeggio, volume slide, fade in/out (`0I`/`0O`), plus Block > Fade in/out that ramps the volume column
 - Instrument volume, pan and pitch envelopes with a hold point
+- MIDI keyboard input (play and record notes, CC volume/pan, transport)
 - Mixer with per-track volume, pan, mute, solo, level meters; song loop range
 - Track devices (gainer, filter, 3-band EQ, delay, reverb, chorus/flanger, distortion, compressor), instrument filter with cutoff envelope, and pattern automation of any device parameter
 - Real-time engine with sequencer, voices and mixer (cpal audio output)

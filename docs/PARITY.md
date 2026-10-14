@@ -73,11 +73,11 @@ Compiled from memory of Renoise 3.x behavior. Verify each item against the offic
 - [ ] Out-of-process sandboxing, crash recovery, plugin scan cache, blocklist
 
 ## IO, control, scripting
-- [ ] MIDI input (notes, CC, clock slave), MIDI output, MIDI clock master, MIDI mapping for any parameter
+- [~] MIDI input works (midir): notes play and record (velocity to the volume column), CC7/CC10 set cursor-track volume/pan, start/continue/stop control the transport, device picker in Play > MIDI input. Missing: MIDI output, clock slave/master, pitch bend, program change, MIDI mapping of arbitrary parameters, per-instrument MIDI routing, channel filtering
 - [ ] OSC server and client
 - [ ] Lua scripting API with tool/menu entries (mlua), API surface equivalent to the official one
 - [ ] Audio backends: ALSA (cpal, working), JACK, PipeWire native; device selection and buffer size UI
-- [ ] Record: live audio input to sample, "record to pattern" from MIDI
+- [~] Record: live audio input to sample works; recording MIDI into the pattern works in edit mode (no quantize, no chords-to-columns)
 
 ## Render, export, files
 - [ ] Offline render to WAV/FLAC/OGG/MP3: whole song, selection, single track, per-track stems, per-pattern, with bit depth/dither options
