@@ -1,0 +1,11 @@
+[package]
+name = "trakr-script"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+trakr-core = { workspace = true }
+mlua = { version = "0.11.5", features = ["lua54", "vendored"] }
+thiserror = "2.0.21"

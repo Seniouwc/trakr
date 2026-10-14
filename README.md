@@ -29,6 +29,7 @@ An open source tracker DAW written in Rust, with a native window (egui) and a te
 - Real-time engine with sequencer, voices and mixer (cpal audio output)
 - Native `.trkr` project format (zip of `song.json` and raw sample data), autosave with crash recovery, recent files, saved preferences
 - `.mod` module import (ProTracker and compatible, 4 to 99 channels)
+- Lua scripting (sandboxed, one undo step per run): Scripts menu, examples, your own `.lua` files in the config folder, a console window
 - Best-effort `.xrns` import and export (patterns and instruments with samples) for interoperability
 
 ## Building

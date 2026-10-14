@@ -359,7 +359,8 @@ mod tests {
         }
     }
 
-    struct Log(Arc<Mutex<Vec<(Instant, Vec<u8>)>>>);
+    type Sent = Arc<Mutex<Vec<(Instant, Vec<u8>)>>>;
+    struct Log(Sent);
     impl MidiSink for Log {
         fn send(&mut self, bytes: &[u8]) {
             self.0.lock().unwrap().push((Instant::now(), bytes.to_vec()));

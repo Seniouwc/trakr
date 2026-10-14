@@ -12,6 +12,7 @@ mod panels;
 mod phrases_view;
 mod prefs_view;
 mod sample_view;
+mod scripts_view;
 #[cfg(test)]
 mod tests;
 mod theme;
@@ -95,6 +96,9 @@ pub(crate) struct GuiApp {
     pub binding_message: String,
     /// Keys go to the phrase editor instead of the pattern grid (set by clicking in it).
     pub phrase_focus: bool,
+    pub show_console: bool,
+    pub script_text: String,
+    pub script_name: String,
 }
 
 impl GuiApp {
@@ -134,6 +138,9 @@ impl GuiApp {
             text_editing: false,
             checked_recovery: false,
             phrase_focus: false,
+            show_console: false,
+            script_text: String::new(),
+            script_name: String::new(),
             palette: theme::Palette::named("dark"),
             applied_theme: "dark".into(),
             applied_scale: 1.0,
@@ -233,6 +240,7 @@ impl GuiApp {
         egui::CentralPanel::default().show(ctx, |ui| self.pattern_view(ui));
         self.show_dialogs(ctx);
         self.prefs_window(ctx);
+        self.console_window(ctx);
         self.text_editing = ctx.output(|o| o.ime.is_some());
     }
 }

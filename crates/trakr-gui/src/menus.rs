@@ -233,6 +233,7 @@ impl GuiApp {
                         ui.weak("Notes play the current instrument (and record in edit mode); CC7 volume, CC10 pan; Start/Stop control playback.");
                     });
                 });
+                ui.menu_button("Scripts", |ui| self.scripts_menu(ui));
                 ui.menu_button("Help", |ui| {
                     if ui.button("Keyboard reference").clicked() {
                         self.show_help = true;

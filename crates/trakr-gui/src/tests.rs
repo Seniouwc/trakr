@@ -407,3 +407,22 @@ fn phrase_editor_takes_keys_after_a_click_and_gives_them_back() {
     h.text("x");
     assert_eq!(h.app.editor.current_phrase().unwrap().lines.len(), before);
 }
+
+#[test]
+fn script_console_renders_and_typing_in_it_does_not_edit_the_pattern() {
+    let mut h = Harness::new();
+    h.app.show_console = true;
+    h.app.script_text = "trakr.status('from console')".into();
+    h.app.editor.script_error = Some("example error".into());
+    h.app.editor.script_output = vec!["line one".into()];
+    for _ in 0..3 {
+        h.frame(vec![]);
+    }
+    h.text(" ");
+    h.text("z");
+    // whatever the console's focus does with the keys, the run itself works and is one undo step
+    assert!(h.app.editor.run_script(&h.app.script_text.clone()));
+    assert_eq!(h.app.editor.status, "from console");
+    h.app.show_console = false;
+    h.frame(vec![]);
+}

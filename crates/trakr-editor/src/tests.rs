@@ -1111,3 +1111,54 @@ fn midi_output_carries_instrument_notes_and_clock_and_can_reconnect() {
     assert_eq!(e.midi_out_port_name(), Some("mock out"));
     e.midi_out_disconnect();
 }
+
+#[test]
+fn a_script_is_one_undo_step_and_errors_change_nothing() {
+    let mut e = ed();
+    e.set_cursor(2, 0, 0, 4);
+    let before = e.song.patterns[0].clone();
+    assert!(e.run_script(
+        "for l = 0, 7 do trakr.set_note(trakr.ctx.pattern, trakr.ctx.track, l, 0, { note = 'C-4', instrument = 0 }) end print('done')"
+    ));
+    assert_eq!(e.script_output, vec!["done".to_string()]);
+    assert_eq!(e.song.patterns[0].line(2, 7).unwrap().notes[0].note, 48);
+    assert!(e.dirty);
+    e.undo();
+    assert_eq!(*e.song.patterns[0], *before, "the whole run undoes at once");
+    let again = e.song.patterns[0].clone();
+    assert!(!e.run_script("trakr.set_note(0, 0, 0, 0, { note = 48 }); error('nope')"));
+    assert!(e.script_error.as_deref().is_some_and(|m| m.contains("nope")));
+    assert!(e.status.starts_with("script error"));
+    assert_eq!(*e.song.patterns[0], *again, "failed scripts change nothing");
+    assert!(!e.run_script_file(std::path::Path::new("/nonexistent/x.lua")));
+}
+
+#[test]
+fn script_context_and_requests() {
+    let mut e = ed();
+    e.set_cursor(3, 0, 0, 9);
+    e.instrument = 2;
+    assert!(e.run_script("assert(trakr.ctx.track == 3 and trakr.ctx.line == 9 and trakr.ctx.instrument == 2); trakr.status('checked')"));
+    assert_eq!(e.status, "checked");
+    // selection arrives as tracks and lines
+    e.set_cursor(1, 0, 0, 2);
+    e.select_to(2, 0, 6);
+    assert!(e.run_script("local s = trakr.ctx.selection; assert(s.track0 == 1 and s.track1 == 2 and s.line0 == 2 and s.line1 == 6)"));
+}
+
+#[test]
+fn user_scripts_are_listed_from_the_config_dir() {
+    let dir = std::env::temp_dir().join(format!("trakr-scripts-{}", std::process::id()));
+    std::fs::create_dir_all(dir.join("scripts")).unwrap();
+    std::fs::write(dir.join("scripts/b.lua"), "trakr.status('b')").unwrap();
+    std::fs::write(dir.join("scripts/a.lua"), "trakr.status('a')").unwrap();
+    std::fs::write(dir.join("scripts/readme.txt"), "x").unwrap();
+    let mut e = ed();
+    e.set_config_dir(Some(dir.clone()));
+    let names: Vec<String> = e.user_scripts().into_iter().map(|s| s.0).collect();
+    assert_eq!(names, ["a", "b"]);
+    let path = e.user_scripts()[1].1.clone();
+    assert!(e.run_script_file(&path));
+    assert_eq!(e.status, "b");
+    let _ = std::fs::remove_dir_all(&dir);
+}

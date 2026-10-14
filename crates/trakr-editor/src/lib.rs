@@ -11,6 +11,7 @@ mod ops;
 mod phrase_ops;
 mod prefs;
 mod sampling;
+mod script_ops;
 
 pub use action::Action;
 pub use io::load_song;
@@ -20,6 +21,7 @@ pub use prefs::{default_config_dir, Prefs};
 pub use trakr_engine::InputRecorder;
 pub use trakr_midi::{MidiBackend, MidiEvent, MidiInput, MidiOutMsg, MidiSink};
 pub use trakr_sample::WavFormat;
+pub use trakr_script::{API as SCRIPT_API, EXAMPLES as SCRIPT_EXAMPLES};
 
 /// Opens the audio input on demand; supplied by the binary.
 pub type RecorderFactory = Box<dyn FnMut() -> anyhow::Result<Box<dyn InputRecorder>>>;
@@ -149,6 +151,9 @@ pub struct Editor {
     midi_in: Option<Box<dyn trakr_midi::MidiInput>>,
     midi_buf: Vec<trakr_midi::MidiEvent>,
     midi_pump: Option<trakr_midi::pump::Pump>,
+    /// What the last script printed, and its error if it failed.
+    pub script_output: Vec<String>,
+    pub script_error: Option<String>,
     config_dir: Option<PathBuf>,
     pub prefs: Prefs,
     keymap: Vec<(KeyEvent, Action)>,
@@ -233,6 +238,8 @@ impl Editor {
             midi_in: None,
             midi_buf: Vec::new(),
             midi_pump: None,
+            script_output: Vec::new(),
+            script_error: None,
             config_dir: None,
             prefs: Prefs::default(),
             keymap: Vec::new(),

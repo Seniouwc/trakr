@@ -77,7 +77,7 @@ Compiled from memory of Renoise 3.x behavior. Verify each item against the offic
 - [x] MIDI output and clock master: Play > MIDI output picks a port, sends 24 ppqn timing clock plus start/stop with the transport (optional), latency setting aligns it with the audio device; timing is stamped per frame by the engine and delivered by a helper thread (jitter about a millisecond, not hardware-locked)
 - [~] MIDI input works (midir): notes play and record (velocity to the volume column), CC7/CC10 set cursor-track volume/pan, start/continue/stop control the transport, device picker in Play > MIDI input. Missing: clock slave (external sync), pitch bend, MIDI mapping of arbitrary parameters, channel filtering
 - [ ] OSC server and client
-- [ ] Lua scripting API with tool/menu entries (mlua), API surface equivalent to the official one
+- [~] Lua 5.4 scripting (mlua, vendored): sandboxed (no io/os/load, instruction/time/memory limits), runs on a copy of the song so a run is one undo step and errors change nothing; API covers song settings, patterns, sequence, note and effect cells, cursor/selection context, status, transport requests; Scripts menu with examples and `<config>/scripts/*.lua`, console window with reference. Missing: instrument/sample/device/automation access, track editing, callbacks and observers, custom menu entries/keybindings from scripts, GUI toolkit, OSC/websocket
 - [ ] Audio backends: ALSA (cpal, working), JACK, PipeWire native; device selection and buffer size UI
 - [~] Record: live audio input to sample works; recording MIDI into the pattern works in edit mode (no quantize, no chords-to-columns)
 
