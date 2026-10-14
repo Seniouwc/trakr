@@ -46,7 +46,7 @@ impl FileDialog {
         let ext = Path::new(file).extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase);
         let ext = ext.as_deref().unwrap_or("");
         match self.mode {
-            FileMode::Open | FileMode::SaveAs => matches!(ext, "trkr" | "xrns"),
+            FileMode::Open | FileMode::SaveAs => matches!(ext, "trkr" | "xrns" | "mod"),
             FileMode::ImportSample | FileMode::AddSample => {
                 matches!(ext, "wav" | "flac" | "ogg" | "mp3" | "aif" | "aiff")
             }
@@ -123,7 +123,7 @@ impl GuiApp {
     fn file_dialog_ui(&mut self, ctx: &egui::Context) {
         let Some(mut d) = self.dialog.take() else { return };
         let title = match d.mode {
-            FileMode::Open => "Open song (.trkr, .xrns)",
+            FileMode::Open => "Open song (.trkr, .xrns, .mod)",
             FileMode::SaveAs => "Save song as",
             FileMode::ImportSample => "Import sample as new instrument (wav, flac, ogg, mp3, aiff)",
             FileMode::AddSample => "Add sample file to the selected instrument",

@@ -27,6 +27,7 @@ An open source tracker DAW written in Rust, with a native window (egui) and a te
 - 18 track devices (filters, EQs, dynamics, delay, reverb, modulation and distortion effects), instrument filter with cutoff envelope, and pattern automation of any device parameter
 - Real-time engine with sequencer, voices and mixer (cpal audio output)
 - Native `.trkr` project format (zip of `song.json` and raw sample data), autosave with crash recovery, recent files, saved preferences
+- `.mod` module import (ProTracker and compatible, 4 to 99 channels)
 - Best-effort `.xrns` import (patterns and instruments with samples) for interoperability
 
 ## Building
@@ -38,6 +39,7 @@ cargo run -p trakr                 # native window, built-in demo song
 cargo run -p trakr -- --tui        # same, in the terminal
 cargo run -p trakr -- song.trkr    # open a native project
 cargo run -p trakr -- song.xrns    # import an XRNS file
+cargo run -p trakr -- song.mod     # import a ProTracker module
 ```
 
 ## Keys

@@ -7,26 +7,36 @@ use std::path::Path;
 /// Load a `.trkr` or `.xrns` file. Returns the song and the path later saves should go to
 /// (an imported `.xrns` saves to a sibling `.trkr` instead of overwriting the original).
 pub fn load_song(path: &Path) -> Result<(Song, PathBuf)> {
+    let (song, _) = load_song_report(path)?;
+    Ok((song, save_path_for(path)))
+}
+
+/// Imported formats save to a sibling `.trkr` instead of overwriting the original.
+fn save_path_for(path: &Path) -> PathBuf {
     let ext = path.extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase);
-    match ext.as_deref() {
-        Some("xrns") => {
-            let (song, _) = load_song_report(path)?;
-            Ok((song, path.with_extension("trkr")))
-        }
-        Some("trkr") => {
-            let song =
-                trakr_format::load_path(path).with_context(|| format!("loading {}", path.display()))?;
-            Ok((song, path.to_path_buf()))
-        }
-        _ => anyhow::bail!("unknown file type: {} (expected .trkr or .xrns)", path.display()),
+    if ext.as_deref() == Some("trkr") {
+        path.to_path_buf()
+    } else {
+        path.with_extension("trkr")
     }
 }
 
-/// Like [`load_song`] but also returns what an `.xrns` import had to skip.
+/// Like [`load_song`] but also returns what an import (`.xrns`, `.mod`) had to skip.
 pub fn load_song_report(path: &Path) -> Result<(Song, Vec<String>)> {
-    let (song, warnings) =
-        trakr_xrns::import_path_with_report(path).with_context(|| format!("importing {}", path.display()))?;
-    Ok((song, warnings))
+    let ext = path.extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase);
+    match ext.as_deref() {
+        Some("xrns") => {
+            trakr_xrns::import_path_with_report(path).with_context(|| format!("importing {}", path.display()))
+        }
+        Some("mod") => {
+            let bytes = std::fs::read(path).with_context(|| format!("reading {}", path.display()))?;
+            trakr_mod::import(&bytes).with_context(|| format!("importing {}", path.display()))
+        }
+        Some("trkr") => trakr_format::load_path(path)
+            .map(|s| (s, Vec::new()))
+            .with_context(|| format!("loading {}", path.display())),
+        _ => anyhow::bail!("unknown file type: {} (expected .trkr, .xrns or .mod)", path.display()),
+    }
 }
 
 impl Editor {
@@ -50,15 +60,10 @@ impl Editor {
     }
 
     pub fn open(&mut self, path: &Path) {
-        match load_song(path) {
-            Ok((song, save_path)) => {
+        match load_song_report(path) {
+            Ok((song, warnings)) => {
                 self.clear_autosave(); // the document being replaced
-                let is_xrns = path.extension().is_some_and(|e| e.eq_ignore_ascii_case("xrns"));
-                let warnings = if is_xrns {
-                    load_song_report(path).map(|(_, w)| w).unwrap_or_default()
-                } else {
-                    Vec::new()
-                };
+                let save_path = save_path_for(path);
                 self.replace_song(song, Some(save_path));
                 self.remember_recent(path);
                 self.status = if warnings.is_empty() {

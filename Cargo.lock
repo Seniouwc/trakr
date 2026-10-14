@@ -3936,6 +3936,7 @@ dependencies = [
  "trakr-engine",
  "trakr-format",
  "trakr-midi",
+ "trakr-mod",
  "trakr-sample",
  "trakr-xrns",
 ]
@@ -3978,6 +3979,15 @@ version = "0.0.1"
 dependencies = [
  "anyhow",
  "midir",
+]
+
+[[package]]
+name = "trakr-mod"
+version = "0.0.1"
+dependencies = [
+ "thiserror 2.0.21",
+ "trakr-core",
+ "trakr-engine",
 ]
 
 [[package]]

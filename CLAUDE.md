@@ -30,6 +30,7 @@ New commands go into `trakr-editor::Action` (label + shortcut) so menus, keys an
 | `trakr-engine` | Real-time engine: sequencer, voices, mixer, command queue, cpal backend (feature `audio`). |
 | `trakr-format` | Native `.trkr` (zip: `song.json` + raw f32 samples). Versioned via `FORMAT_VERSION`. |
 | `trakr-sample` | Audio file decoding (symphonia) into `Sample`. |
+| `trakr-mod` | ProTracker `.mod` importer. |
 | `trakr-xrns` | Best-effort `.xrns` importer. Element names are from memory, unverified against real files. |
 | `trakr-editor` | Frontend-neutral `Editor`: cursor, cell entry, transport keys, save. Own `KeyEvent` type; no UI deps. All editing behavior lives here. |
 | `trakr-tui` | ratatui frontend: key translation + rendering only. |

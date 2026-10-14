@@ -85,7 +85,7 @@ Compiled from memory of Renoise 3.x behavior. Verify each item against the offic
 - [~] Native `.trkr` project save/load
 - [~] `.xrns` import: metadata, tracks, patterns, notes, effects, sequence, and instruments with decoded sample audio (volume, pan, transpose/finetune, loops, key mapping; warnings for anything skipped). Element names and the `SampleData/` layout are from memory and tested only against synthetic fixtures. Missing: instrument envelopes, filters, devices, automation, phrases, groups, sends
 - [ ] `.xrns` export; `.xrni` and `.xrnt` import/export; track DSP presets; theme files
-- [ ] MOD, S3M, XM, IT import
+- [~] MOD import (4 to 99 channels; instruments, loops, finetune, volumes, Amiga panning, timing, common effects; unsupported effects reported); S3M, XM, IT do not
 - [x] Autosave (every 60 s while there is unsaved work, beside the project or in the config dir), crash recovery prompt, recent files menu
 - [ ] Backups of previous saves
 
