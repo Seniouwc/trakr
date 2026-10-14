@@ -309,3 +309,75 @@ fn random_input_never_panics_or_freezes() {
     });
     rx.recv_timeout(Duration::from_secs(180)).expect("the GUI froze or panicked under random input");
 }
+
+#[test]
+fn themes_and_scale_apply_and_draw() {
+    let mut h = Harness::new();
+    for theme in ["light", "contrast", "dark", "nonsense"] {
+        h.app.editor.prefs.theme = theme.into();
+        h.app.editor.prefs.ui_scale = 1.3;
+        h.app.editor.prefs.font_size = 18.0;
+        h.app.dock = Dock::Mixer;
+        h.frame(vec![]);
+        h.frame(vec![]);
+        assert_eq!(h.app.applied_theme, theme);
+    }
+}
+
+#[test]
+fn preferences_window_captures_a_new_shortcut() {
+    let mut h = Harness::new();
+    h.app.show_prefs = true;
+    for tab in [prefs_view::PrefsTab::Keys, prefs_view::PrefsTab::Appearance, prefs_view::PrefsTab::General] {
+        h.app.prefs_tab = tab;
+        h.frame(vec![]);
+        h.frame(vec![]);
+    }
+    h.app.capturing = Some(trakr_editor::Action::Undo);
+    h.app.editor.edit_mode = true;
+    let f12 = |pressed| Event::Key {
+        key: Key::F12,
+        physical_key: None,
+        pressed,
+        repeat: false,
+        modifiers: Modifiers::NONE,
+    };
+    h.frame(vec![f12(true)]);
+    assert!(h.app.capturing.is_none());
+    assert_eq!(h.app.editor.shortcut_for(trakr_editor::Action::Undo), "F12");
+    // a refused key reports why and leaves the binding alone
+    h.app.capturing = Some(trakr_editor::Action::Redo);
+    h.frame(vec![Event::Key {
+        key: Key::F12,
+        physical_key: None,
+        pressed: true,
+        repeat: false,
+        modifiers: Modifiers::NONE,
+    }]);
+    assert!(h.app.binding_message.contains("already used"), "{}", h.app.binding_message);
+    // keys pressed while capturing must not trigger actions
+    h.app.capturing = Some(trakr_editor::Action::Redo);
+    h.app.editor.set_cursor(0, 0, 0, 3);
+    h.frame(vec![Event::Key {
+        key: Key::F5,
+        physical_key: None,
+        pressed: true,
+        repeat: false,
+        modifiers: Modifiers::NONE,
+    }]);
+    // F5 belongs to "Play song": refused, and pressing it while capturing did not start playback
+    assert_eq!(h.app.editor.shortcut_for(trakr_editor::Action::Redo), "Ctrl-Y");
+    assert!(h.app.binding_message.contains("Play song"), "{}", h.app.binding_message);
+    assert!(h.app.capturing.is_none());
+    assert!(!h.app.editor.playhead().0);
+}
+
+#[test]
+fn egui_key_mapping_covers_letters_digits_and_function_keys() {
+    for (k, c) in [(Key::A, 'a'), (Key::Z, 'z'), (Key::Num0, '0'), (Key::Num9, '9')] {
+        assert_eq!(prefs_view::egui_to_keycode(k), Some(trakr_editor::KeyCode::Char(c)));
+    }
+    assert_eq!(prefs_view::egui_to_keycode(Key::F12), Some(trakr_editor::KeyCode::F(12)));
+    assert_eq!(prefs_view::egui_to_keycode(Key::Space), Some(trakr_editor::KeyCode::Char(' ')));
+    assert_eq!(prefs_view::egui_to_keycode(Key::Enter), None);
+}

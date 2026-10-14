@@ -44,7 +44,7 @@ cargo run -p trakr -- song.mod     # import a ProTracker module
 
 ## Keys
 
-The keymap is the same in both frontends. The GUI also has full menus (with these shortcuts shown), a context menu on the grid, mouse selection and a Help > Keyboard reference window.
+The keymap is the same in both frontends and can be changed in Edit > Preferences (GUI) or `~/.config/trakr/prefs.json`. The GUI also has full menus (with these shortcuts shown), a context menu on the grid, mouse selection and a Help > Keyboard reference window.
 
 | Key | Action |
 |---|---|

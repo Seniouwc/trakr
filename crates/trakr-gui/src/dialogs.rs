@@ -315,9 +315,10 @@ impl GuiApp {
                 ui.heading("Shortcuts");
                 egui::Grid::new("keys").striped(true).show(ui, |ui| {
                     for a in menus::ALL_ACTIONS {
-                        if !a.shortcut().is_empty() {
+                        let key = self.editor.shortcut_for(*a);
+                        if !key.is_empty() {
                             ui.label(a.label());
-                            ui.monospace(a.shortcut());
+                            ui.monospace(key);
                             ui.end_row();
                         }
                     }

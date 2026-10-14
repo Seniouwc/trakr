@@ -92,6 +92,6 @@ Compiled from memory of Renoise 3.x behavior. Verify each item against the offic
 ## Application
 - [~] TUI pattern editor (single pattern view, cursor, edit mode)
 - [ ] TUI views: sequencer/matrix, mixer, instrument editor, sample editor, automation editor, plugin browser, disk browser, settings, help
-- [ ] Configurable keymap (Renoise-compatible preset), themes, mouse support, command palette
+- [~] Configurable keymap (Preferences > Keys: set, clear, reset per action; conflicts and reserved typing keys refused; saved), themes (dark, light, high contrast), interface scale, pattern font size, mouse support. No Renoise-compatible preset and no command palette
 - [~] Preferences storage (octave, edit step, follow, recent files, autosave interval in `~/.config/trakr/prefs.json`); window layout and session restore are not saved
 - [ ] Optional GUI frontend reusing core/engine

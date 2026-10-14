@@ -897,3 +897,65 @@ fn random_editing_keeps_the_song_consistent() {
         fuzz_editor(seed);
     }
 }
+
+#[test]
+fn default_keymap_matches_the_documented_shortcuts() {
+    let app = ed();
+    for &a in Action::ALL {
+        let text = a.shortcut();
+        if text.is_empty() {
+            continue;
+        }
+        let k = KeyEvent::from_text(text).unwrap_or_else(|| panic!("{a:?}: cannot parse shortcut {text}"));
+        assert_eq!(app.action_for_key(k), Some(a), "{a:?} ({text})");
+        assert_eq!(Action::from_key(k), Some(a), "built-in table disagrees for {a:?}");
+        assert_eq!(app.shortcut_for(a), text);
+    }
+    let redo = KeyEvent { code: KeyCode::Char('z'), ctrl: true, alt: false, shift: true };
+    assert_eq!(app.action_for_key(redo), Some(Action::Redo));
+}
+
+#[test]
+fn rebinding_changes_behavior_and_validates() {
+    let mut app = ed();
+    app.edit_mode = true;
+    put(&mut app, 0, 40);
+    assert!(app.set_binding(Action::Undo, KeyEvent::from_text("F12")).is_ok());
+    assert_eq!(app.shortcut_for(Action::Undo), "F12");
+    app.on_key(KeyEvent::ctrl('z'));
+    assert_eq!(note_at(&app, 0, 0), 40, "the old shortcut no longer works");
+    app.on_key(KeyEvent::new(KeyCode::F(12)));
+    assert_eq!(note_at(&app, 0, 0), NOTE_EMPTY, "the new one does");
+    assert!(app.set_binding(Action::Redo, KeyEvent::from_text("F12")).unwrap_err().contains("Undo"));
+    assert!(app.set_binding(Action::Redo, KeyEvent::from_text("Z")).is_err(), "typing keys are reserved");
+    assert!(app.set_binding(Action::Redo, KeyEvent::from_text("Up")).is_err(), "navigation is reserved");
+    assert!(app
+        .set_binding(Action::Redo, KeyEvent::from_text("Ctrl-Up"))
+        .unwrap_err()
+        .contains("Previous slot"));
+    app.set_binding(Action::Redo, None).unwrap();
+    assert_eq!(app.shortcut_for(Action::Redo), "");
+    assert_eq!(app.action_for_key(KeyEvent::ctrl('y')), None);
+    app.reset_binding(Action::Redo);
+    assert_eq!(app.shortcut_for(Action::Redo), "Ctrl-Y");
+    app.reset_all_bindings();
+    assert_eq!(app.shortcut_for(Action::Undo), "Ctrl-Z");
+}
+
+#[test]
+fn custom_keymap_is_saved_with_the_preferences() {
+    let dir = temp_dir("keymap");
+    let mut app = ed();
+    app.set_config_dir(Some(dir.clone()));
+    app.set_binding(Action::TransposeUp, KeyEvent::from_text("Ctrl-Shift-U")).unwrap();
+    let mut fresh = ed();
+    fresh.set_config_dir(Some(dir.clone()));
+    fresh.load_prefs();
+    assert_eq!(fresh.shortcut_for(Action::TransposeUp), "Ctrl-Shift-U");
+    assert_eq!(
+        fresh.shortcut_for(Action::TransposeDown),
+        "Alt-Down",
+        "other bindings stay at their defaults"
+    );
+    let _ = std::fs::remove_dir_all(dir);
+}

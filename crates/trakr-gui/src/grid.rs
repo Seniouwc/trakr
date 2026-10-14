@@ -8,7 +8,6 @@ use trakr_editor::{cell_text, Action, Editor, FX_HL, FX_SUBS, NOTE_HL, NOTE_SUBS
 
 const NOTE_COL_W: usize = 16;
 const FX_COL_W: usize = 5;
-const FONT_SIZE: f32 = 15.0;
 
 fn track_width(ed: &Editor, t: usize) -> usize {
     let (n, f) = ed.cols(t);
@@ -32,7 +31,8 @@ enum Click {
 
 impl GuiApp {
     pub fn pattern_view(&mut self, ui: &mut egui::Ui) {
-        let font = FontId::monospace(FONT_SIZE);
+        let pal = self.palette;
+        let font = FontId::monospace(self.editor.prefs.font_size.clamp(9.0, 32.0));
         let (cw, rh) = ui.fonts(|f| (f.glyph_width(&font, '0'), f.row_height(&font)));
         let (resp, painter) = ui.allocate_painter(ui.available_size(), Sense::click_and_drag());
         let area = resp.rect;
@@ -51,7 +51,7 @@ impl GuiApp {
             );
         });
 
-        painter.rect_filled(area, 0.0, Color32::from_gray(18));
+        painter.rect_filled(area, 0.0, pal.bg);
 
         let (cols, header_hits, top_line) = {
             let ed = &self.editor;
@@ -85,15 +85,10 @@ impl GuiApp {
                 let w = track_width(ed, t) as f32 * cw;
                 let tr = &s.tracks[t];
                 let rect = Rect::from_min_size(Pos2::new(x, area.top()), Vec2::new(w - cw, rh));
-                let [r, g, b] = tr.color.unwrap_or([60, 60, 70]);
-                let bg = if t == cur.track {
-                    Color32::from_rgb(r / 2 + 60, g / 2 + 60, b / 2 + 60)
-                } else {
-                    Color32::from_rgb(r / 2, g / 2, b / 2)
-                };
+                let bg = pal.header_fill(tr.color, t == cur.track);
                 painter.rect_filled(rect, 2.0, bg);
                 let muted = tr.mute != MuteState::Active;
-                let color = if muted { Color32::DARK_GRAY } else { Color32::WHITE };
+                let color = if muted { pal.header_text_muted } else { pal.header_text };
                 painter.with_clip_rect(rect).text(
                     Pos2::new(x + 2.0, area.top()),
                     Align2::LEFT_TOP,
@@ -135,7 +130,7 @@ impl GuiApp {
             painter.rect_filled(
                 Rect::from_min_size(Pos2::new(area.left(), mid_y), Vec2::new(area.width(), rh)),
                 0.0,
-                Color32::from_gray(34),
+                pal.band,
             );
 
             // Lines outside the current pattern come from the neighbouring slots, so the view scrolls
@@ -174,28 +169,24 @@ impl GuiApp {
                 let is_play_row = playing && play_seq == slot && play_line as isize == li;
                 let row = Rect::from_min_size(Pos2::new(area.left(), y), Vec2::new(area.width(), rh));
                 if is_play_row {
-                    painter.rect_filled(
-                        row,
-                        0.0,
-                        Color32::from_rgba_unmultiplied(0, 90, 30, if in_current { 255 } else { 120 }),
-                    );
+                    painter.rect_filled(row, 0.0, if in_current { pal.play_row } else { pal.play_row_dim });
                 } else if li % lpb == 0 && !is_cursor_row {
-                    painter.rect_filled(row, 0.0, Color32::from_gray(24));
+                    painter.rect_filled(row, 0.0, pal.beat_row);
                 }
                 if li == 0 && r > 0 {
                     painter.line_segment(
                         [Pos2::new(area.left(), y), Pos2::new(area.right(), y)],
-                        Stroke::new(1.0_f32, Color32::from_rgb(70, 90, 130)),
+                        Stroke::new(1.0_f32, pal.divider),
                     );
                 }
                 let fg = if !in_current {
-                    Color32::from_gray(62)
+                    pal.text_other
                 } else if li % (lpb * 4) == 0 {
-                    Color32::WHITE
+                    pal.text_bar
                 } else if li % lpb == 0 {
-                    Color32::from_gray(170)
+                    pal.text_beat
                 } else {
-                    Color32::from_gray(110)
+                    pal.text
                 };
                 painter.text(
                     Pos2::new(area.left() + 2.0, y),
@@ -225,7 +216,7 @@ impl GuiApp {
                             painter.rect_filled(
                                 Rect::from_min_size(Pos2::new(x, y), Vec2::new(chars as f32 * cw, rh)),
                                 0.0,
-                                Color32::from_rgb(30, 60, 110),
+                                pal.selection,
                             );
                         }
                         if is_cursor_row && t == cur.track && c == cur.col {
@@ -241,14 +232,10 @@ impl GuiApp {
                             painter.rect_filled(
                                 hl,
                                 0.0,
-                                if ed.edit_mode {
-                                    Color32::from_rgb(210, 40, 40)
-                                } else {
-                                    Color32::from_rgb(0, 150, 180)
-                                },
+                                if ed.edit_mode { pal.cursor_edit } else { pal.cursor_view },
                             );
                         }
-                        let text_color = if muted && in_current { Color32::from_gray(70) } else { fg };
+                        let text_color = if muted && in_current { pal.text_muted } else { fg };
                         painter.text(
                             Pos2::new(x, y),
                             Align2::LEFT_TOP,
@@ -258,13 +245,7 @@ impl GuiApp {
                         );
                         x += chars as f32 * cw;
                     }
-                    painter.text(
-                        Pos2::new(x, y),
-                        Align2::LEFT_TOP,
-                        "│",
-                        font.clone(),
-                        Color32::from_gray(60),
-                    );
+                    painter.text(Pos2::new(x, y), Align2::LEFT_TOP, "│", font.clone(), pal.column_sep);
                     x += cw;
                 }
             }
@@ -349,14 +330,14 @@ impl GuiApp {
 
         resp.context_menu(|ui| {
             for a in [Action::Cut, Action::Copy, Action::Paste, Action::Clear, Action::SelectAll] {
-                if ui.add(egui::Button::new(a.label()).shortcut_text(a.shortcut())).clicked() {
+                if ui.add(egui::Button::new(a.label()).shortcut_text(self.editor.shortcut_for(a))).clicked() {
                     self.run_action(a);
                     ui.close_menu();
                 }
             }
             ui.separator();
             for a in [Action::TransposeUp, Action::TransposeDown, Action::Reverse, Action::Interpolate] {
-                if ui.add(egui::Button::new(a.label()).shortcut_text(a.shortcut())).clicked() {
+                if ui.add(egui::Button::new(a.label()).shortcut_text(self.editor.shortcut_for(a))).clicked() {
                     self.run_action(a);
                     ui.close_menu();
                 }

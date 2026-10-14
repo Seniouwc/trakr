@@ -138,6 +138,7 @@ pub struct Editor {
     midi_buf: Vec<trakr_midi::MidiEvent>,
     config_dir: Option<PathBuf>,
     pub prefs: Prefs,
+    keymap: Vec<(KeyEvent, Action)>,
     last_autosave: Option<std::time::Instant>,
     autosave_every: std::time::Duration,
     autosaved: bool,
@@ -218,10 +219,12 @@ impl Editor {
             midi_buf: Vec::new(),
             config_dir: None,
             prefs: Prefs::default(),
+            keymap: Vec::new(),
             last_autosave: None,
             autosave_every: std::time::Duration::ZERO,
             autosaved: false,
         };
+        app.rebuild_keymap();
         app.sync();
         app.dirty = false;
         app
@@ -531,8 +534,7 @@ impl Editor {
     // ---- input ----------------------------------------------------------
 
     pub fn on_key(&mut self, k: KeyEvent) {
-        if let Some(a) = Action::from_key(k) {
-            // Plain Delete/Backspace/Space only act as commands in the cases below.
+        if let Some(a) = self.action_for_key(k) {
             self.do_action(a);
             return;
         }

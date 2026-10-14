@@ -17,6 +17,13 @@ pub struct Prefs {
     pub follow: bool,
     /// Seconds between autosaves of unsaved work; 0 turns autosave off.
     pub autosave_seconds: u64,
+    /// Custom key bindings: action name (as in `Action`'s Debug form) to shortcut text; empty text unbinds.
+    pub keymap: std::collections::BTreeMap<String, String>,
+    /// "dark", "light" or "contrast".
+    pub theme: String,
+    pub ui_scale: f32,
+    /// Pattern grid font size in points.
+    pub font_size: f32,
 }
 
 impl Default for Prefs {
@@ -27,6 +34,10 @@ impl Default for Prefs {
             edit_step: 1,
             follow: true,
             autosave_seconds: DEFAULT_AUTOSAVE_SECONDS,
+            keymap: Default::default(),
+            theme: "dark".into(),
+            ui_scale: 1.0,
+            font_size: 15.0,
         }
     }
 }
@@ -55,6 +66,7 @@ impl Editor {
                 self.edit_step = p.edit_step.min(64);
                 self.follow = p.follow;
                 self.prefs = p;
+                self.rebuild_keymap();
             }
         }
     }
@@ -167,5 +179,92 @@ impl Editor {
             }
             Err(e) => self.status = format!("cannot read the autosave: {e}"),
         }
+    }
+}
+
+// ---- key bindings ------------------------------------------------------------------------
+
+const NAV_KEYS: [KeyCode; 10] = [
+    KeyCode::Up,
+    KeyCode::Down,
+    KeyCode::Left,
+    KeyCode::Right,
+    KeyCode::PageUp,
+    KeyCode::PageDown,
+    KeyCode::Home,
+    KeyCode::End,
+    KeyCode::Tab,
+    KeyCode::BackTab,
+];
+
+impl Editor {
+    pub(crate) fn rebuild_keymap(&mut self) {
+        let mut map: Vec<(KeyEvent, Action)> = Vec::new();
+        for &a in Action::ALL {
+            let text = match self.prefs.keymap.get(&format!("{a:?}")) {
+                Some(t) => t.as_str(),
+                None => a.shortcut(),
+            };
+            if let Some(k) = KeyEvent::from_text(text) {
+                map.push((k, a));
+            }
+        }
+        if !self.prefs.keymap.contains_key("Redo") {
+            map.push((
+                KeyEvent { code: KeyCode::Char('z'), ctrl: true, alt: false, shift: true },
+                Action::Redo,
+            ));
+        }
+        self.keymap = map;
+    }
+
+    /// The action bound to a key press, if any.
+    pub fn action_for_key(&self, k: KeyEvent) -> Option<Action> {
+        let find = |k: KeyEvent| self.keymap.iter().find(|(b, _)| *b == k).map(|(_, a)| *a);
+        find(k).or_else(|| {
+            // Shift+F5 acts like F5, but Shift+arrows keep extending the selection.
+            (k.shift && !NAV_KEYS.contains(&k.code)).then(|| find(KeyEvent { shift: false, ..k })).flatten()
+        })
+    }
+
+    /// Current shortcut text for an action ("" when unbound).
+    pub fn shortcut_for(&self, a: Action) -> String {
+        self.keymap.iter().find(|(_, b)| *b == a).map(|(k, _)| k.to_text()).unwrap_or_default()
+    }
+
+    /// Bind (or with `None` unbind) a key. Typing keys stay reserved for note and value entry, and a key
+    /// already used by another action is refused with a message naming it.
+    pub fn set_binding(&mut self, a: Action, key: Option<KeyEvent>) -> Result<(), String> {
+        if let Some(k) = key {
+            let plain = !k.ctrl && !k.alt;
+            if plain && matches!(k.code, KeyCode::Char(c) if c != ' ') {
+                return Err("plain letters, digits and symbols are for entering notes and values".into());
+            }
+            if plain && NAV_KEYS.contains(&k.code) {
+                return Err(
+                    "plain navigation keys (arrows, Tab, Home, End, PgUp, PgDn) cannot be rebound".into()
+                );
+            }
+            if let Some((_, other)) = self.keymap.iter().find(|(b, o)| *b == k && *o != a) {
+                return Err(format!("{} is already used by \"{}\"", k.to_text(), other.label()));
+            }
+        }
+        self.prefs.keymap.insert(format!("{a:?}"), key.map(|k| k.to_text()).unwrap_or_default());
+        self.rebuild_keymap();
+        self.save_prefs();
+        Ok(())
+    }
+
+    /// Go back to the built-in shortcut for an action.
+    pub fn reset_binding(&mut self, a: Action) {
+        self.prefs.keymap.remove(&format!("{a:?}"));
+        self.rebuild_keymap();
+        self.save_prefs();
+    }
+
+    pub fn reset_all_bindings(&mut self) {
+        self.prefs.keymap.clear();
+        self.rebuild_keymap();
+        self.save_prefs();
     }
 }

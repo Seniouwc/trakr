@@ -9,9 +9,11 @@ mod input;
 mod menus;
 mod mixer;
 mod panels;
+mod prefs_view;
 mod sample_view;
 #[cfg(test)]
 mod tests;
+mod theme;
 
 use dialogs::{Confirm, FileDialog};
 use eframe::egui;
@@ -82,6 +84,13 @@ pub(crate) struct GuiApp {
     pub text_editing: bool,
     pub grid_info: GridInfo,
     checked_recovery: bool,
+    pub palette: theme::Palette,
+    applied_theme: String,
+    applied_scale: f32,
+    pub show_prefs: bool,
+    pub prefs_tab: prefs_view::PrefsTab,
+    pub capturing: Option<trakr_editor::Action>,
+    pub binding_message: String,
 }
 
 impl GuiApp {
@@ -119,6 +128,13 @@ impl GuiApp {
             title: String::new(),
             text_editing: false,
             checked_recovery: false,
+            palette: theme::Palette::named("dark"),
+            applied_theme: "dark".into(),
+            applied_scale: 1.0,
+            show_prefs: false,
+            prefs_tab: Default::default(),
+            capturing: None,
+            binding_message: String::new(),
             grid_info: GridInfo {
                 area: egui::Rect::NOTHING,
                 char_w: 8.0,
@@ -159,7 +175,9 @@ impl GuiApp {
     pub(crate) fn frame(&mut self, ctx: &egui::Context) {
         // Keys go to the editor unless a text field is being edited (egui reports focus on the pattern
         // grid itself as "wants keyboard input", so that flag cannot be used).
-        if !self.text_editing && self.dialog.is_none() && self.confirm.is_none() {
+        self.apply_appearance(ctx);
+        self.capture_binding(ctx);
+        if !self.text_editing && self.dialog.is_none() && self.confirm.is_none() && self.capturing.is_none() {
             let keys = input::collect_keys(ctx);
             if !keys.is_empty() {
                 // Keep arrows and Tab from moving egui's widget focus: the grid takes focus back.
@@ -204,6 +222,7 @@ impl GuiApp {
         self.side_panel(ctx);
         egui::CentralPanel::default().show(ctx, |ui| self.pattern_view(ui));
         self.show_dialogs(ctx);
+        self.prefs_window(ctx);
         self.text_editing = ctx.output(|o| o.ime.is_some());
     }
 }

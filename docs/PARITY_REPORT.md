@@ -24,12 +24,12 @@ sessions, large songs.
 | Plugin hosting | 0.0 | None: no CLAP, VST3, LV2, LADSPA. |
 | MIDI, OSC, scripting | 2.5 | MIDI input for notes, CC7/CC10 and transport. Missing: MIDI output and clock, mapping, OSC, Lua scripting. |
 | File formats and project | 4.5 | Native `.trkr` roundtrip, WAV export, song bounce to sample, `.xrns` import of metadata, tracks, patterns, notes, sequence and instruments with sample audio (no envelopes, devices or automation; element names and sample paths are from memory and only tested against synthetic fixtures, so real-world files may import differently). Autosave with crash recovery and a recent-files list work. Missing: `.xrns`/`.xrni`/`.xrnt` export and instrument formats, S3M/XM/IT import (MOD import works), per-track/stem/selection render, FLAC/OGG/MP3 export, backups. |
-| Interface and workflow | 5.0 | Native GUI with menus showing shortcuts, context menu, mouse selection, continuous scrolling pattern view, dockable mixer/devices/automation/instrument panels, help window with effect table; plus a terminal UI. Preferences are stored (octave, step, follow, recents). Missing: themes, configurable keymap, window/session restore, command palette, a Renoise-compatible keymap preset, TUI views for everything except the pattern editor, accessibility and scaling options. |
+| Interface and workflow | 5.5 | Native GUI with menus showing shortcuts, context menu, mouse selection, continuous scrolling pattern view, dockable mixer/devices/automation/instrument panels, help window with effect table; plus a terminal UI. Preferences are stored (octave, step, follow, recents). Themes, scale, font size and a rebindable keymap exist. Missing: a Renoise-compatible keymap preset, window/session restore, command palette, a Renoise-compatible keymap preset, TUI views for everything except the pattern editor, accessibility and scaling options. |
 | Engine quality and reliability | 3.5 | Real-time-safe design, sample-accurate delay column, tick timing, smoothing against clicks, automated render tests. Weak spots: linear interpolation only, 128 voices fixed, 64 track limit, voices free large buffers on the audio thread in rare cases, no JACK/PipeWire backend or buffer-size UI, no CPU/latency tools, unverified on real hardware. |
 
 ## Overall
 
-**About 4.2 / 10 weighted by what a typical Renoise song uses day to day** (pattern editing, instruments,
+**About 4.4 / 10 weighted by what a typical Renoise song uses day to day** (pattern editing, instruments,
 sample editing, mixing and effects count most; plugins, scripting and format breadth count less). In plain
 terms: trakr can already be used to sketch and finish simple sample-based tracker songs on Linux, and its
 sample editing and pattern workflow are the closest to Renoise. It cannot yet replace Renoise for anyone who
@@ -42,6 +42,6 @@ depends on plugins, a full effect rack, sends and groups, phrases, or opening ex
 3. **Plugin hosting (CLAP first)**: the largest single missing capability.
 4. **Remaining effect commands and special volume/pan column commands**, checked against the manual.
 5. **Instrument modulation sets (LFO, stepper, key/velocity tracking), phrases.**
-6. **Preferences, configurable keymap (with a Renoise-style preset), themes, autosave and recent files.**
+6. **A Renoise-style keymap preset, window/session restore, command palette.**
 7. **MIDI output/clock/mapping, OSC, Lua scripting.**
 8. **Hardware verification pass**: real audio devices, latency, JACK/PipeWire, real MIDI keyboards, long-session soak tests.

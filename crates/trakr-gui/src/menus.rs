@@ -15,7 +15,10 @@ impl GuiApp {
             Redo => self.editor.can_redo(),
             _ => true,
         };
-        if ui.add_enabled(enabled, Button::new(a.label()).shortcut_text(a.shortcut())).clicked() {
+        if ui
+            .add_enabled(enabled, Button::new(a.label()).shortcut_text(self.editor.shortcut_for(a)))
+            .clicked()
+        {
             self.run_action(a);
             ui.close_menu();
         }
@@ -86,6 +89,11 @@ impl GuiApp {
                     ui.separator();
                     for a in [SelectAll, SelectNone, ToggleEdit] {
                         self.item(ui, a);
+                    }
+                    ui.separator();
+                    if ui.button("Preferences...").clicked() {
+                        self.show_prefs = true;
+                        ui.close_menu();
                     }
                 });
                 ui.menu_button("Block", |ui| {
