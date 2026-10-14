@@ -276,6 +276,7 @@ pub fn create(sample_rate: u32) -> (Engine, EngineHandle) {
     let (mtx, mrx) = rtrb::RingBuffer::new(MIDI_QUEUE);
     let pos = Arc::new(SharedPos::default());
     let song = Arc::new(Song::default());
+    let song_tpl = song.tpl;
     let engine = Engine {
         sample_rate,
         bpm: song.bpm,
@@ -289,6 +290,10 @@ pub fn create(sample_rate: u32) -> (Engine, EngineHandle) {
         seq_pos: 0,
         line: 0,
         frames_to_line: 0.0,
+        tpl: song_tpl,
+        fx_vol: [None; MAX_TRACKS],
+        fx_pan: [None; MAX_TRACKS],
+        chance: 0x2545_F491_4F6C_DD1D,
         voices: Vec::with_capacity(MAX_VOICES),
         events: Vec::with_capacity(MAX_EVENTS),
         phrase_runs: Vec::with_capacity(MAX_PHRASE_RUNS),
@@ -335,6 +340,12 @@ pub struct Engine {
     seq_pos: usize,
     line: u16,
     frames_to_line: f64,
+    /// Ticks per line, changed by `ZK` while playing.
+    tpl: u8,
+    /// Track volume / pan set by `0L` / `0P` until the next play or stop.
+    fx_vol: [Option<f32>; MAX_TRACKS],
+    fx_pan: [Option<f32>; MAX_TRACKS],
+    chance: u64,
     voices: Vec<Voice>,
     events: Vec<Event>,
     phrase_runs: Vec<PhraseRun>,
@@ -375,7 +386,7 @@ pub struct Engine {
 
 impl Engine {
     fn frames_per_tick(&self) -> f64 {
-        Song::frames_per_line(self.bpm, self.lpb, self.sample_rate) / self.song.tpl.max(1) as f64
+        Song::frames_per_line(self.bpm, self.lpb, self.sample_rate) / self.tpl.max(1) as f64
     }
 
     /// Render interleaved stereo f32 into `out` (`out.len()` must be even).
@@ -530,7 +541,9 @@ impl Engine {
             Some(n) => dsp::db_to_gain(-60.0 + 66.0 * n),
             None => tr.volume,
         };
+        let vol = self.fx_vol.get(t).copied().flatten().unwrap_or(vol);
         let pan = self.override_for(t, |o| matches!(o, Ov::Pan)).map_or(tr.panning, |n| n * 2.0 - 1.0);
+        let pan = self.fx_pan.get(t).copied().flatten().unwrap_or(pan);
         let solo_gate = tr.kind != trakr_core::TrackKind::Sequencer || !any_solo || tr.solo;
         let target = if tr.mute == MuteState::Active && solo_gate { vol } else { 0.0 };
         let prev = if self.fader_prev[t] < 0.0 { target } else { self.fader_prev[t] }; // first use: no ramp
@@ -825,6 +838,9 @@ impl Engine {
                     if old.lpb != self.song.lpb {
                         self.lpb = self.song.lpb;
                     }
+                    if old.tpl != self.song.tpl {
+                        self.tpl = self.song.tpl;
+                    }
                     // If the garbage queue is full, leak rather than free on the RT thread.
                     if let Err(rtrb::PushError::Full(old)) = self.garbage.push(Garbage::Song(old)) {
                         std::mem::forget(old);
@@ -844,6 +860,9 @@ impl Engine {
                 Command::Play { seq_pos, line, loop_pattern } => {
                     self.bpm = self.song.bpm;
                     self.lpb = self.song.lpb;
+                    self.tpl = self.song.tpl;
+                    self.fx_vol = [None; MAX_TRACKS];
+                    self.fx_pan = [None; MAX_TRACKS];
                     self.seq_pos = seq_pos;
                     self.line = line;
                     self.clamp_position();
@@ -1027,6 +1046,16 @@ impl Engine {
         self.midi_emit(MidiOutMsg::NoteOn { channel, note, velocity });
     }
 
+    /// Random byte for probabilistic effects (xorshift64*, no allocation).
+    fn next_chance(&mut self) -> u8 {
+        let mut x = self.chance;
+        x ^= x >> 12;
+        x ^= x << 25;
+        x ^= x >> 27;
+        self.chance = x;
+        (x.wrapping_mul(0x2545_F491_4F6C_DD1D) >> 56) as u8
+    }
+
     fn retire_run(&mut self, run: PhraseRun) {
         if let Err(rtrb::PushError::Full(Garbage::Phrase(p))) = self.garbage.push(Garbage::Phrase(run.phrase))
         {
@@ -1186,7 +1215,7 @@ impl Engine {
         let song = self.song.clone(); // refcount bump only
         let Some(pat) = song.pattern_at(self.seq_pos) else { return };
         let fpl = Song::frames_per_line(self.bpm, self.lpb, self.sample_rate);
-        let fpt = fpl / song.tpl.max(1) as f64;
+        let fpt = fpl / self.tpl.max(1) as f64;
         for (ti, track) in pat.tracks.iter().enumerate() {
             let Some(line) = track.lines.get(&self.line) else { continue };
 
@@ -1200,6 +1229,16 @@ impl Engine {
                 b"ZT" if fx.amount >= 32 => this.bpm = fx.amount as f32,
                 b"ZL" if fx.amount >= 1 => this.lpb = fx.amount,
                 b"ZB" => this.pending_break = Some(fx.amount as u16),
+                b"ZK" if fx.amount >= 1 => this.tpl = fx.amount,
+                b"0L" if ti < MAX_TRACKS => this.fx_vol[ti] = Some(fx.amount as f32 / 128.0),
+                b"0P" if ti < MAX_TRACKS => {
+                    this.fx_pan[ti] = Some((fx.amount as f32 / 128.0 - 1.0).clamp(-1.0, 1.0))
+                }
+                b"0X" => {
+                    for v in this.voices.iter_mut().filter(|v| v.track == ti) {
+                        v.cut();
+                    }
+                }
                 b"0S" => offset = fx.amount,
                 b"0B" => backwards = fx.amount != 0,
                 b"0C" => cut_ticks = Some(fx.amount),
@@ -1227,6 +1266,9 @@ impl Engine {
                 } else if col.note != NOTE_EMPTY && col.instrument != EMPTY {
                     let vol = if col.volume <= 0x80 { col.volume as f32 / 128.0 } else { 1.0 };
                     let pan = if col.panning <= 0x80 { col.panning as f32 / 64.0 - 1.0 } else { 0.0 };
+                    if &col.effect.id == b"0Y" && self.next_chance() > col.effect.amount {
+                        continue; // "maybe": the note plays with probability amount/255
+                    }
                     let phrase =
                         song.instruments.get(col.instrument as usize).and_then(|i| i.phrase_for(col.note));
                     if let Some(pi) = phrase {
@@ -1661,6 +1703,93 @@ mod sequencer_tests {
         song.tracks[0].mute = MuteState::Muted;
         let (_, msgs) = render_midi(song, 1000, true);
         assert!(msgs.iter().all(|m| !matches!(m.1, MidiOutMsg::NoteOn { .. })), "{msgs:?}");
+    }
+
+    fn render_stereo(song: Song, frames: usize) -> Vec<(f32, f32)> {
+        let (mut engine, mut h) = create(RATE);
+        h.send(Command::SetSong(Arc::new(song)));
+        h.send(Command::Play { seq_pos: 0, line: 0, loop_pattern: false });
+        let mut out = vec![0.0; frames * 2];
+        engine.render(&mut out);
+        out.chunks_exact(2).map(|f| (f[0], f[1])).collect()
+    }
+
+    fn fx_at(l: &mut trakr_core::Line, slot: usize, id: &[u8; 2], amount: u8) {
+        l.effects[slot] = EffectCmd { id: *id, amount };
+    }
+
+    #[test]
+    fn track_volume_and_pan_commands() {
+        let mut song = song_with(vec![1.0; 3000], LoopMode::Off);
+        put(&mut song, 0, |l| {
+            note(&mut l.notes[0]);
+            fx_at(l, 0, b"0L", 0x40);
+            fx_at(l, 1, b"0P", 0x00);
+        });
+        let out = render_stereo(song, 800);
+        let (l, r) = out[500];
+        assert!((l - 0.5).abs() < 0.02 && r.abs() < 1e-4, "{l} {r}");
+    }
+
+    #[test]
+    fn note_volume_command_sets_the_playing_note() {
+        let mut song = song_with(vec![1.0; 3000], LoopMode::Off);
+        put(&mut song, 0, |l| {
+            note(&mut l.notes[0]);
+            l.notes[0].effect = EffectCmd { id: *b"0M", amount: 0x40 };
+        });
+        let out = render_stereo(song, 800);
+        assert!((out[500].0 - 0.5).abs() < 0.03, "{}", out[500].0);
+    }
+
+    #[test]
+    fn maybe_command_gates_notes_by_probability() {
+        let mut never = song_with(vec![1.0; 100], LoopMode::Off);
+        let mut always = never.clone();
+        for line in 0..6 {
+            put(&mut never, line, |l| {
+                note(&mut l.notes[0]);
+                l.notes[0].effect = EffectCmd { id: *b"0Y", amount: 0 };
+            });
+            put(&mut always, line, |l| {
+                note(&mut l.notes[0]);
+                l.notes[0].effect = EffectCmd { id: *b"0Y", amount: 0xFF };
+            });
+        }
+        assert!(onsets(&render(never, 6000)).len() <= 1, "amount 0 almost never plays");
+        assert_eq!(onsets(&render(always, 6000)).len(), 6);
+    }
+
+    #[test]
+    fn stop_track_command_cuts_everything() {
+        let mut song = song_with(vec![1.0; 100_000], LoopMode::Forward);
+        put(&mut song, 0, |l| note(&mut l.notes[0]));
+        put(&mut song, 1, |l| fx_at(l, 0, b"0X", 0));
+        let out = render(song, 3000);
+        assert!(out[500] > 0.9 && out[1500].abs() < 1e-3 && out[2900].abs() < 1e-3);
+    }
+
+    #[test]
+    fn ticks_per_line_command_rescales_timing() {
+        let mut song = song_with(vec![1.0; 100], LoopMode::Off);
+        put(&mut song, 0, |l| fx_at(l, 0, b"ZK", 8));
+        put(&mut song, 1, |l| {
+            note(&mut l.notes[0]);
+            fx_at(l, 0, b"0Q", 4); // 4 of 8 ticks: half a line
+        });
+        assert_eq!(first_nonzero(&render(song, 3000)), Some(1500));
+    }
+
+    #[test]
+    fn auto_pan_swings_the_note_between_channels() {
+        let mut song = song_with(vec![1.0; 100_000], LoopMode::Forward);
+        put(&mut song, 0, |l| {
+            note(&mut l.notes[0]);
+            l.notes[0].effect = EffectCmd { id: *b"0N", amount: 0x4F };
+        });
+        let out = render_stereo(song, 2000);
+        let (lmin, lmax) = out[100..].iter().fold((f32::MAX, 0.0f32), |(a, b), s| (a.min(s.0), b.max(s.0)));
+        assert!(lmax > 0.9 && lmin < 0.2, "{lmin} {lmax}");
     }
 
     #[test]
@@ -2398,9 +2527,9 @@ mod device_tests {
         }
     }
 
-    const FX_IDS: [&[u8; 2]; 20] = [
+    const FX_IDS: [&[u8; 2]; 27] = [
         b"ZT", b"ZL", b"ZB", b"0S", b"0B", b"0C", b"0Q", b"0R", b"0U", b"0D", b"0G", b"0V", b"0T", b"0A",
-        b"0W", b"0I", b"0O", b"XX", b"00", b"ZZ",
+        b"0W", b"0I", b"0O", b"XX", b"00", b"ZZ", b"0M", b"0N", b"0Y", b"0L", b"0P", b"0X", b"ZK",
     ];
 
     /// Stands in for a hosted plugin: scales the signal by the first parameter.

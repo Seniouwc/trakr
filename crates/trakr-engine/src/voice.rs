@@ -66,6 +66,8 @@ pub struct Voice {
     trem: (f32, f32),
     trem_phase: f32,
     trem_gain: f32,
+    autopan: (f32, f32),
+    autopan_phase: f32,
     vslide: f32,
     /// Gain from fades and volume slides, 0..=2.
     dyn_gain: f32,
@@ -162,6 +164,8 @@ impl Voice {
             trem: (0.0, 0.0),
             trem_phase: 0.0,
             trem_gain: 1.0,
+            autopan: (0.0, 0.0),
+            autopan_phase: 0.0,
             vslide: 0.0,
             dyn_gain: 1.0,
             fade: None,
@@ -278,6 +282,8 @@ impl Voice {
                 }
             }
             b"0W" => self.vslide = (x - y) / 64.0,
+            b"0M" => self.dyn_gain = (amount as f32 / 128.0).min(2.0),
+            b"0N" => self.autopan = (x, y / 15.0),
             b"0I" if amount > 0 => {
                 self.dyn_gain = 0.0;
                 self.fade = Some((1.0, 1.0 / amount as f32));
@@ -363,6 +369,10 @@ impl Voice {
         if self.pan_env.enabled {
             let t = self.pan_env.effective_time(age, rel);
             pan += (self.pan_env.value_at(t) - 0.5) * 2.0;
+        }
+        if self.autopan.1 > 0.0 {
+            self.autopan_phase = (self.autopan_phase + self.autopan.0 * 0.5 * dt).fract();
+            pan += self.autopan.1 * (self.autopan_phase * std::f32::consts::TAU).sin();
         }
         self.pan_now = pan.clamp(-1.0, 1.0);
 

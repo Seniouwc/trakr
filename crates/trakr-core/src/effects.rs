@@ -20,4 +20,11 @@ pub const EFFECTS: &[(&str, &str, &str)] = &[
     ("0W", "Volume slide", "x = up, y = down, in 1/64 per tick; 00 stops"),
     ("0I", "Fade in", "ramp the note from silence to full over xx ticks"),
     ("0O", "Fade out", "ramp the note to silence over xx ticks, then end it"),
+    ("0M", "Note volume", "set the playing note's volume to xx/80 (hex); 80 = full"),
+    ("0N", "Auto pan", "x = speed, y = depth; 00 stops"),
+    ("0Y", "Maybe", "in a note column: the note plays with probability xx/FF"),
+    ("0L", "Track volume", "set the track's volume to xx/80 (hex) until play or stop; 80 = unity"),
+    ("0P", "Track pan", "set the track's pan, 00 = left, 80 = center, FF = right, until play or stop"),
+    ("0X", "Stop track", "cut every note playing on the track"),
+    ("ZK", "Set ticks per line", "xx = ticks per line"),
 ];
