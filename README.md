@@ -21,6 +21,7 @@ An open source tracker DAW written in Rust, with a native window (egui) and a te
 - Pitch and volume effects: slides, glide, vibrato, tremolo, arpeggio, volume slide, fade in/out (`0I`/`0O`), plus Block > Fade in/out that ramps the volume column
 - Instrument volume, pan and pitch envelopes with a hold point
 - Mixer with per-track volume, pan, mute, solo, level meters; song loop range
+- Track devices (gainer, filter, 3-band EQ, delay, reverb, chorus/flanger, distortion, compressor), instrument filter with cutoff envelope, and pattern automation of any device parameter
 - Real-time engine with sequencer, voices and mixer (cpal audio output)
 - Native `.trkr` project format (zip of `song.json` and raw sample data)
 - Best-effort `.xrns` import for interoperability

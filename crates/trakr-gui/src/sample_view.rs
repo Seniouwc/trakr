@@ -55,16 +55,22 @@ impl GuiApp {
             if self.editor.current_instrument().is_some() {
                 ui.horizontal(|ui| {
                     ui.selectable_value(&mut self.sample_tab, SampleTab::Sample, "Sample");
-                    for k in [EnvKind::Volume, EnvKind::Pan, EnvKind::Pitch] {
+                    ui.selectable_value(&mut self.sample_tab, SampleTab::Filter, "Filter");
+                    for k in [EnvKind::Volume, EnvKind::Pan, EnvKind::Pitch, EnvKind::Cutoff] {
                         let on = self.editor.current_instrument().is_some_and(|i| match k {
                             EnvKind::Volume => i.volume_env.enabled,
                             EnvKind::Pan => i.pan_env.enabled,
                             EnvKind::Pitch => i.pitch_env.enabled,
+                            EnvKind::Cutoff => i.cutoff_env.enabled,
                         });
                         let label = format!("{} env{}", k.label(), if on { " *" } else { "" });
                         ui.selectable_value(&mut self.sample_tab, SampleTab::Env(k), label);
                     }
                 });
+                if self.sample_tab == SampleTab::Filter {
+                    self.filter_ui(ui);
+                    return;
+                }
                 if let SampleTab::Env(k) = self.sample_tab {
                     self.envelope_editor(ui, k);
                     return;
@@ -528,5 +534,43 @@ impl GuiApp {
                 }
             }
         });
+    }
+}
+
+impl GuiApp {
+    /// Per-instrument resonant filter; the cutoff envelope tab modulates it over the note.
+    fn filter_ui(&mut self, ui: &mut egui::Ui) {
+        let Some(f) = self.editor.current_instrument().map(|i| i.filter) else { return };
+        let (mut mode, mut cutoff, mut q) = (f.mode, f.cutoff, f.resonance);
+        ui.horizontal_wrapped(|ui| {
+            ui.label("Filter");
+            egui::ComboBox::from_id_salt("inst_filter_mode").selected_text(format!("{mode:?}")).show_ui(
+                ui,
+                |ui| {
+                    for m in [
+                        trakr_core::FilterMode::Off,
+                        trakr_core::FilterMode::LowPass,
+                        trakr_core::FilterMode::HighPass,
+                        trakr_core::FilterMode::BandPass,
+                        trakr_core::FilterMode::Notch,
+                    ] {
+                        ui.selectable_value(&mut mode, m, format!("{m:?}"));
+                    }
+                },
+            );
+            let a = ui.add(
+                egui::Slider::new(&mut cutoff, 20.0..=20_000.0)
+                    .logarithmic(true)
+                    .text("Cutoff")
+                    .suffix(" Hz"),
+            );
+            let b = ui.add(egui::Slider::new(&mut q, 0.1..=10.0).logarithmic(true).text("Resonance (Q)"));
+            if mode != f.mode || a.changed() || b.changed() {
+                self.editor.edit_instrument("inst_filter", |i| {
+                    i.filter = trakr_core::InstrumentFilter { mode, cutoff, resonance: q };
+                });
+            }
+        });
+        ui.weak("The filter runs on every note of this instrument. Use the Cutoff env tab to sweep it over the life of each note.");
     }
 }

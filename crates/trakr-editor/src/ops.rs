@@ -467,6 +467,10 @@ impl Editor {
     // ---- tracks -------------------------------------------------------------
 
     pub fn track_add(&mut self) {
+        if self.song.tracks.len() >= trakr_engine::MAX_METER_TRACKS {
+            self.status = format!("track limit reached ({})", trakr_engine::MAX_METER_TRACKS);
+            return;
+        }
         self.checkpoint();
         let song = self.song_mut();
         let idx =

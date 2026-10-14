@@ -44,7 +44,7 @@ Compiled from memory of Renoise 3.x behavior. Verify each item against the offic
 - [~] Slice markers (manual, shift-click, even split) and split-to-keys work; beat-sync, time-stretch, transient detection do not
 - [~] Key zones (per-sample key range) and per-sample volume/pan/tune work; velocity zones, layers, NNA, mute-groups do not
 - [~] Instrument volume, pan and pitch envelopes (points, sustain hold, GUI editor) work; cutoff/resonance/drive, LFOs, key/velocity tracking, stepper, random, envelope loops and fade-out do not
-- [ ] Instrument filters (types per manual), per-instrument FX chain (sample FX chain)
+- [~] Instrument filter (LP/HP/BP/Notch, cutoff, resonance, cutoff envelope) works; more filter types, drive, and a per-instrument FX chain do not
 - [ ] Macros (instrument macros) and MIDI input properties
 - [ ] Plugin instruments (VST/CLAP/LV2) and MIDI instrument routing; instrument bank/XRNI import/export
 - [ ] Sample/instrument disk browser, favorites
@@ -53,17 +53,17 @@ Compiled from memory of Renoise 3.x behavior. Verify each item against the offic
 
 ## Mixer and DSP
 - [~] Track volume and panning applied in mix; master track volume applied (master DSP chain not yet)
-- [ ] Pre/post mixer split, track width, track delay (ms compensation)
-- [ ] Master track with its own DSP chain
+- [~] Device chain runs before the track fader (post-fader chain and pre/post split do not exist); track width and track delay do not
+- [x] Master track with its own DSP chain
 - [ ] Send tracks and `#Send` device routing, group tracks, routing to arbitrary tracks, sidechain
 - [x] Track mute, solo and off, mixer view with per-track and master meters and peak hold
 - [ ] Plugin delay compensation
-- [ ] Native devices (verify against manual): EQ (5/10 band, mixer EQ), filters (analog, digital, notch, scream), gainer, stereo expander, compressor, gate, limiter, bus compressor, maximizer, exciter, delay, multitap, reverb, chorus, flanger, phaser, ring mod, distortion, cabinet sim, convolver, repeater, DC offset, LFO, envelope follower, hydra, key tracker, velocity tracker, formula, meta mixer, doofer, #Line Input, #Multiband Send, #Send, #Sidechain, signal follower
+- [~] Native devices: Gainer, Filter (LP/HP/BP/Notch), 3-band EQ, Delay (with ping-pong), Reverb (Freeverb topology), Chorus/flanger, Distortion, Compressor, with GUI cards, bypass, reorder, undo. Still missing (verify against manual): multiband EQ, scream/analog filters, stereo expander, gate, limiter, bus compressor, maximizer, exciter, multitap, phaser, ring mod, cabinet sim, convolver, repeater, DC offset, LFO, envelope follower, hydra, key/velocity tracker, formula, meta mixer, doofer, #Line Input, #Multiband Send, #Send, #Sidechain, signal follower
 
 ## Automation and modulation
-- [ ] Per-pattern automation envelopes for any device/track parameter
-- [ ] Envelope editing: points, lines, curves, interpolation modes, scaling, copy/paste, record from UI/MIDI
-- [ ] Automation playback, ranges, and "write to pattern" (envelope to effect commands)
+- [x] Per-pattern automation lanes for track volume/pan and any native device parameter (breakpoint curves, GUI editor, playhead)
+- [~] Envelope editing: points and straight lines work; curves, interpolation modes, scaling, copy/paste, recording from UI/MIDI do not
+- [~] Automation playback works (evaluated per 512-frame block); ranges and "write to pattern" do not
 - [ ] Modulation devices: LFO, envelope follower, hydra, formula, key/velocity tracker, signal follower, meta mixer
 
 ## Plugins

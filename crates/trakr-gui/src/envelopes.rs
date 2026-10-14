@@ -10,6 +10,7 @@ pub enum EnvKind {
     Volume,
     Pan,
     Pitch,
+    Cutoff,
 }
 
 impl EnvKind {
@@ -18,6 +19,7 @@ impl EnvKind {
             EnvKind::Volume => "Volume",
             EnvKind::Pan => "Pan",
             EnvKind::Pitch => "Pitch",
+            EnvKind::Cutoff => "Cutoff",
         }
     }
 
@@ -26,6 +28,7 @@ impl EnvKind {
             EnvKind::Volume => "volume multiplier over the life of the note (top = full)",
             EnvKind::Pan => "pan over the note: bottom = left, middle = center, top = right",
             EnvKind::Pitch => "pitch bend over the note: middle = no change, top/bottom = +/- 12 semitones",
+            EnvKind::Cutoff => "filter cutoff over the note: middle = no change, top/bottom = +/- 5 octaves (needs the instrument filter on)",
         }
     }
 
@@ -34,6 +37,7 @@ impl EnvKind {
             EnvKind::Volume => &i.volume_env,
             EnvKind::Pan => &i.pan_env,
             EnvKind::Pitch => &i.pitch_env,
+            EnvKind::Cutoff => &i.cutoff_env,
         }
     }
 
@@ -42,6 +46,7 @@ impl EnvKind {
             EnvKind::Volume => &mut i.volume_env,
             EnvKind::Pan => &mut i.pan_env,
             EnvKind::Pitch => &mut i.pitch_env,
+            EnvKind::Cutoff => &mut i.cutoff_env,
         })
     }
 
@@ -49,7 +54,9 @@ impl EnvKind {
         match self {
             EnvKind::Volume => Envelope::adsr(0.02, 0.2, 0.6, 0.3),
             EnvKind::Pan => Envelope { enabled: true, points: vec![(0.0, 0.5), (1.0, 0.5)], sustain: None },
-            EnvKind::Pitch => Envelope { enabled: true, points: vec![(0.0, 0.5), (0.5, 0.5)], sustain: None },
+            EnvKind::Pitch | EnvKind::Cutoff => {
+                Envelope { enabled: true, points: vec![(0.0, 0.5), (0.5, 0.5)], sustain: None }
+            }
         }
     }
 }

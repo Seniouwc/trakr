@@ -431,3 +431,13 @@ fn device_ops_and_automation_lanes() {
     app.undo();
     assert!(app.automation_lane(0, target).is_some());
 }
+
+#[test]
+fn track_limit_is_enforced() {
+    let mut app = ed();
+    for _ in 0..100 {
+        app.do_action(Action::TrackAdd);
+    }
+    assert_eq!(app.song.tracks.len(), trakr_engine::MAX_METER_TRACKS);
+    assert!(app.status.contains("limit"));
+}

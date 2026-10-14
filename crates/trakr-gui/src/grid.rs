@@ -2,7 +2,7 @@
 //! playhead, when following) stays on the middle row and the pattern scrolls underneath it.
 
 use crate::GuiApp;
-use eframe::egui::{self, Align2, Color32, EventFilter, FontId, Pos2, Rect, Sense, Vec2};
+use eframe::egui::{self, Align2, Color32, EventFilter, FontId, Pos2, Rect, Sense, Stroke, Vec2};
 use trakr_core::MuteState;
 use trakr_editor::{cell_text, Action, Editor, FX_HL, FX_SUBS, NOTE_HL, NOTE_SUBS};
 
@@ -124,7 +124,6 @@ impl GuiApp {
             let height = ((area.height() / rh) as usize).saturating_sub(1).max(1);
             let nlines = ed.lines_in_pattern() as isize;
             let top = cur.line as isize - (height / 2) as isize;
-            let pat = ed.pattern_index().and_then(|i| s.patterns.get(i));
             let lpb = s.lpb.max(1) as isize;
             let sel = ed.selection();
             let mut cols: Vec<ColRect> = Vec::new();
@@ -137,21 +136,59 @@ impl GuiApp {
                 Color32::from_gray(34),
             );
 
-            for r in 0..height {
-                let li = top + r as isize;
-                if li < 0 || li >= nlines {
-                    continue;
+            // Lines outside the current pattern come from the neighbouring slots, so the view scrolls
+            // continuously through the sequence (dimmed), like the song really plays.
+            let nseq = s.sequence.len() as isize;
+            let lines_of = |slot: isize| {
+                s.sequence
+                    .get(slot as usize)
+                    .and_then(|&p| s.patterns.get(p))
+                    .map_or(1, |p| p.number_of_lines) as isize
+            };
+            let resolve = |li: isize| -> Option<(usize, isize, bool)> {
+                if (0..nlines).contains(&li) {
+                    return Some((ed.seq_pos, li, true));
                 }
+                let (mut slot, mut l) = (ed.seq_pos as isize, li);
+                for _ in 0..16 {
+                    if l < 0 {
+                        slot = (slot - 1).rem_euclid(nseq);
+                        l += lines_of(slot);
+                    } else if l >= lines_of(slot) {
+                        l -= lines_of(slot);
+                        slot = (slot + 1).rem_euclid(nseq);
+                    } else {
+                        return Some((slot as usize, l, false));
+                    }
+                }
+                None
+            };
+
+            for r in 0..height {
+                let Some((slot, li, in_current)) = resolve(top + r as isize) else { continue };
+                let pat = s.sequence.get(slot).and_then(|&p| s.patterns.get(p));
                 let y = area.top() + (r + 1) as f32 * rh;
-                let is_cursor_row = li == cur.line as isize;
-                let is_play_row = playing && play_seq == ed.seq_pos && play_line as isize == li;
+                let is_cursor_row = in_current && li == cur.line as isize;
+                let is_play_row = playing && play_seq == slot && play_line as isize == li;
                 let row = Rect::from_min_size(Pos2::new(area.left(), y), Vec2::new(area.width(), rh));
                 if is_play_row {
-                    painter.rect_filled(row, 0.0, Color32::from_rgb(0, 70, 20));
+                    painter.rect_filled(
+                        row,
+                        0.0,
+                        Color32::from_rgba_unmultiplied(0, 90, 30, if in_current { 255 } else { 120 }),
+                    );
                 } else if li % lpb == 0 && !is_cursor_row {
                     painter.rect_filled(row, 0.0, Color32::from_gray(24));
                 }
-                let fg = if li % (lpb * 4) == 0 {
+                if li == 0 && r > 0 {
+                    painter.line_segment(
+                        [Pos2::new(area.left(), y), Pos2::new(area.right(), y)],
+                        Stroke::new(1.0_f32, Color32::from_rgb(70, 90, 130)),
+                    );
+                }
+                let fg = if !in_current {
+                    Color32::from_gray(62)
+                } else if li % (lpb * 4) == 0 {
                     Color32::WHITE
                 } else if li % lpb == 0 {
                     Color32::from_gray(170)
@@ -177,10 +214,11 @@ impl GuiApp {
                         if r == 0 {
                             cols.push(ColRect { track: t, col: c, notes: n, x });
                         }
-                        let selected = sel.is_some_and(|b| {
-                            (b.col0..=b.col1).contains(&(flat0 + c))
-                                && (b.line0 as isize..=b.line1 as isize).contains(&li)
-                        });
+                        let selected = in_current
+                            && sel.is_some_and(|b| {
+                                (b.col0..=b.col1).contains(&(flat0 + c))
+                                    && (b.line0 as isize..=b.line1 as isize).contains(&li)
+                            });
                         if selected {
                             painter.rect_filled(
                                 Rect::from_min_size(Pos2::new(x, y), Vec2::new(chars as f32 * cw, rh)),
@@ -208,7 +246,7 @@ impl GuiApp {
                                 },
                             );
                         }
-                        let text_color = if muted { Color32::from_gray(70) } else { fg };
+                        let text_color = if muted && in_current { Color32::from_gray(70) } else { fg };
                         painter.text(
                             Pos2::new(x, y),
                             Align2::LEFT_TOP,

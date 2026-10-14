@@ -191,6 +191,8 @@ impl GuiApp {
                 ui.menu_button("View", |ui| {
                     ui.radio_value(&mut self.dock, crate::Dock::Instrument, "Instrument / sample editor");
                     ui.radio_value(&mut self.dock, crate::Dock::Mixer, "Mixer");
+                    ui.radio_value(&mut self.dock, crate::Dock::Devices, "Track devices");
+                    ui.radio_value(&mut self.dock, crate::Dock::Automation, "Automation");
                     ui.radio_value(&mut self.dock, crate::Dock::Hidden, "Hide bottom panel");
                 });
                 ui.menu_button("Play", |ui| {
