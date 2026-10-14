@@ -75,6 +75,10 @@ impl GuiApp {
                         self.open_dialog(FileMode::ExportSong);
                         ui.close_menu();
                     }
+                    if ui.button("Export as .xrns...").clicked() {
+                        self.open_dialog(FileMode::ExportXrns);
+                        ui.close_menu();
+                    }
                     ui.separator();
                     self.item(ui, Quit);
                 });

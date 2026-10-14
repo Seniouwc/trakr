@@ -959,3 +959,16 @@ fn custom_keymap_is_saved_with_the_preferences() {
     );
     let _ = std::fs::remove_dir_all(dir);
 }
+
+#[test]
+fn export_xrns_writes_a_readable_archive() {
+    let mut ed = Editor::new(Song::demo(), None, None);
+    let dir = std::env::temp_dir().join(format!("trakr-xrns-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("out.xrns");
+    ed.export_xrns(&path);
+    assert!(ed.status.starts_with("exported"), "{}", ed.status);
+    let back = trakr_xrns::import_path(&path).unwrap();
+    assert_eq!(back.tracks.len(), ed.song.tracks.len());
+    let _ = std::fs::remove_dir_all(&dir);
+}

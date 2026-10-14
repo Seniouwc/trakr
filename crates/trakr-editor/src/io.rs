@@ -81,6 +81,17 @@ impl Editor {
         }
     }
 
+    /// Export the song as an `.xrns` archive for interoperability; reports what was left out.
+    pub fn export_xrns(&mut self, path: &Path) {
+        match trakr_xrns::export_path_with_report(&self.song, path) {
+            Ok(w) if w.is_empty() => self.status = format!("exported {}", path.display()),
+            Ok(w) => {
+                self.status = format!("exported {} ({} things skipped: {})", path.display(), w.len(), w[0]);
+            }
+            Err(e) => self.status = format!("export failed: {e}"),
+        }
+    }
+
     pub fn save(&mut self) {
         let path = self.path.clone().unwrap_or_else(|| PathBuf::from("untitled.trkr"));
         self.save_as(path);

@@ -12,6 +12,7 @@ pub enum FileMode {
     AddSample,
     ExportSample,
     ExportSong,
+    ExportXrns,
 }
 
 pub struct FileDialog {
@@ -35,6 +36,7 @@ impl FileDialog {
             }
             FileMode::ExportSample => "sample.wav".into(),
             FileMode::ExportSong => "song.wav".into(),
+            FileMode::ExportXrns => "song.xrns".into(),
             _ => String::new(),
         };
         let mut d = Self { mode, dir, name, entries: vec![], error: String::new() };
@@ -51,6 +53,7 @@ impl FileDialog {
                 matches!(ext, "wav" | "flac" | "ogg" | "mp3" | "aif" | "aiff")
             }
             FileMode::ExportSample | FileMode::ExportSong => ext == "wav",
+            FileMode::ExportXrns => ext == "xrns",
         }
     }
 
@@ -129,6 +132,7 @@ impl GuiApp {
             FileMode::AddSample => "Add sample file to the selected instrument",
             FileMode::ExportSample => "Export sample as WAV",
             FileMode::ExportSong => "Export song as WAV",
+            FileMode::ExportXrns => "Export song as .xrns",
         };
         let mut keep = true;
         let mut chosen: Option<PathBuf> = None;
@@ -173,7 +177,10 @@ impl GuiApp {
             }
             ui.horizontal(|ui| {
                 let verb = match d.mode {
-                    FileMode::SaveAs | FileMode::ExportSample | FileMode::ExportSong => "Save",
+                    FileMode::SaveAs
+                    | FileMode::ExportSample
+                    | FileMode::ExportSong
+                    | FileMode::ExportXrns => "Save",
                     _ => "Open",
                 };
                 if ui.button(verb).clicked() && !d.name.is_empty() {
@@ -214,6 +221,13 @@ impl GuiApp {
                     } else {
                         d.error = "file does not exist".into();
                     }
+                }
+                FileMode::ExportXrns => {
+                    if path.extension().is_none() {
+                        path.set_extension("xrns");
+                    }
+                    self.editor.export_xrns(&path);
+                    keep = false;
                 }
                 FileMode::ExportSample | FileMode::ExportSong => {
                     if path.extension().is_none() {
