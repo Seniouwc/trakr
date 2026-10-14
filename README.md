@@ -28,7 +28,10 @@ An open source tracker DAW written in Rust, with a native window (egui) and a te
 - 20 track devices (filters, EQs, dynamics, delay, reverb, modulation and distortion effects, plus LFO and envelope-follower modulators that drive any other device's parameter), instrument filter with cutoff envelope, and pattern automation of any device parameter
 - Real-time engine with sequencer, voices and mixer (cpal audio output)
 - Native `.trkr` project format (zip of `song.json` and raw sample data), autosave with crash recovery, recent files, saved preferences
-- `.mod` module import (ProTracker and compatible, 4 to 99 channels)
+- `.mod`, `.s3m` and `.xm` module import
+- Command palette (Ctrl-P), find and replace (Ctrl-F), randomize, expand, shrink and repeat block tools
+- Instrument LFOs, key tracking, velocity-to-cutoff; 28 native devices including sidechain, bus and multiband compressors
+- MIDI learn, MIDI clock input (tempo follow), OSC remote control, per-track stem and loop-range WAV export, CPU meter
 - Local CLAP effect plugin hosting (scan, add to a track, edit and automate parameters)
 - Lua scripting (sandboxed, one undo step per run): Scripts menu, examples, your own `.lua` files in the config folder, a console window
 - Best-effort `.xrns` import and export (patterns and instruments with samples) for interoperability

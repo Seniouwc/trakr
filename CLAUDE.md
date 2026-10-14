@@ -30,16 +30,17 @@ New commands go into `trakr-editor::Action` (label + shortcut) so menus, keys an
 | `trakr-engine` | Real-time engine: sequencer, voices, mixer, command queue, cpal backend (feature `audio`). |
 | `trakr-format` | Native `.trkr` (zip: `song.json` + raw f32 samples). Versioned via `FORMAT_VERSION`. |
 | `trakr-sample` | Audio file decoding (symphonia) into `Sample`. |
-| `trakr-mod` | ProTracker `.mod` importer. |
+| `trakr-mod` | ProTracker `.mod`, Scream Tracker `.s3m` and FastTracker `.xm` importers (`import_any` sniffs the format). |
 | `trakr-xrns` | Best-effort `.xrns` importer. Element names are from memory, unverified against real files. |
 | `trakr-script` | Lua scripting (mlua, vendored Lua 5.4): `run(song, ctx, source)` edits a song copy, sandboxed with limits. Depends on core only. |
 | `trakr-clap` | Hosts local CLAP effect plugins (clap-sys + libloading); implements `trakr_engine::PluginHost`. `trakr-test-plugin` is a tiny CLAP effect used by its tests. |
+| `trakr-osc` | UDP OSC receiver (no deps): `parse`, `OscServer`. The editor maps addresses to commands (`osc_ops.rs`). |
 | `trakr-editor` | Frontend-neutral `Editor`: cursor, cell entry, transport keys, save. Own `KeyEvent` type; no UI deps. All editing behavior lives here. |
 | `trakr-tui` | ratatui frontend: key translation + rendering only. |
 | `trakr-gui` | egui/eframe frontend (default): key translation + painter-based grid. |
 | `trakr` | Binary: arg parsing (`--tui` selects the terminal UI, GUI otherwise), file loading, wires audio + frontend. |
 
-Dependency direction: core <- engine/format/xrns/script <- editor <- tui/gui <- trakr. Never make core depend on anything heavier than serde.
+Dependency direction: core <- engine/format/xrns/script/osc <- editor <- tui/gui <- trakr. Never make core depend on anything heavier than serde.
 
 ## Plugins
 
