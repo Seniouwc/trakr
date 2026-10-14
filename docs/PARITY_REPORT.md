@@ -5,7 +5,7 @@ today", not code quality. **Caveat:** the reference is my memory of Renoise 3.x 
 manual or a side-by-side session, so treat scores as informed estimates. Command ids and `.xrns` element
 names are unverified (see `docs/PARITY.md`, which lists every item).
 
-Evidence base: about 23,000 lines of Rust in 16 crates and 230 automated tests (engine rendering and fuzzing,
+Evidence base: about 23,000 lines of Rust in 16 crates and 226 automated tests (engine rendering and fuzzing,
 editor operations and fuzzing, GUI input routing, file formats, a real CLAP test plugin loaded from disk,
 sandboxed Lua). The GUI was driven live under a virtual display. **Not tested:**
 real speakers or audio devices, recording from a real microphone, a real MIDI keyboard, Windows/macOS, long
