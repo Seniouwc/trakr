@@ -16,6 +16,7 @@ mod scripts_view;
 #[cfg(test)]
 mod tests;
 mod theme;
+mod tools_view;
 
 use dialogs::{Confirm, FileDialog};
 use eframe::egui;
@@ -97,6 +98,10 @@ pub(crate) struct GuiApp {
     /// Keys go to the phrase editor instead of the pattern grid (set by clicking in it).
     pub phrase_focus: bool,
     pub show_console: bool,
+    pub show_palette: bool,
+    pub palette_query: String,
+    pub show_find: bool,
+    pub find: tools_view::FindState,
     pub script_text: String,
     pub script_name: String,
 }
@@ -139,6 +144,10 @@ impl GuiApp {
             checked_recovery: false,
             phrase_focus: false,
             show_console: false,
+            show_palette: false,
+            palette_query: String::new(),
+            show_find: false,
+            find: Default::default(),
             script_text: String::new(),
             script_name: String::new(),
             palette: theme::Palette::named("dark"),
@@ -241,6 +250,7 @@ impl GuiApp {
         self.show_dialogs(ctx);
         self.prefs_window(ctx);
         self.console_window(ctx);
+        self.tool_windows(ctx);
         self.text_editing = ctx.output(|o| o.ime.is_some());
     }
 }

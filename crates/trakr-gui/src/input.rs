@@ -39,6 +39,9 @@ fn letter_key(k: Key) -> Option<char> {
         Key::S => 's',
         Key::Y => 'y',
         Key::Z => 'z',
+        Key::P => 'p',
+        Key::F => 'f',
+        Key::R => 'r',
         _ => return None,
     })
 }

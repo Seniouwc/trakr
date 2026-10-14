@@ -701,12 +701,18 @@ fn action_all_is_complete() {
             LoopStart => 55,
             LoopEnd => 56,
             LoopClear => 57,
+            Randomize => 58,
+            ExpandBlock => 59,
+            ShrinkBlock => 60,
+            RepeatBlock => 61,
+            OpenPalette => 62,
+            OpenFind => 63,
         }
     }
     for (i, a) in Action::ALL.iter().enumerate() {
         assert_eq!(index(*a), i, "{a:?} is out of order in Action::ALL");
     }
-    assert_eq!(Action::ALL.len(), 58);
+    assert_eq!(Action::ALL.len(), 64);
     for a in Action::ALL {
         assert!(!a.label().is_empty());
     }
@@ -1290,4 +1296,97 @@ fn song_with_plugin_survives_a_trkr_roundtrip_and_old_files_still_load() {
     let old = r#"{"id":"native.gainer","bypass":false,"params":[0.0,0.0]}"#;
     let d: trakr_core::DeviceSpec = serde_json::from_str(old).unwrap();
     assert!(d.plugin.is_none());
+}
+
+fn fill(e: &mut Editor, lines: &[(u16, u8, u8)]) {
+    e.edit_mode = true;
+    for &(l, note, inst) in lines {
+        e.set_cursor(0, 0, 0, l);
+        e.edit(|x| {
+            x.notes[0].note = note;
+            x.notes[0].instrument = inst;
+        });
+    }
+}
+
+fn select(e: &mut Editor, l0: u16, l1: u16) {
+    e.set_cursor(0, 0, 0, l0);
+    e.select_to(0, 0, l1);
+}
+
+#[test]
+fn expand_shrink_and_repeat_blocks() {
+    let mut e = ed();
+    fill(&mut e, &[(0, 48, 0), (1, 50, 0), (2, 52, 0), (3, 53, 0)]);
+    select(&mut e, 0, 3);
+    e.expand_block();
+    let notes: Vec<u8> = (0..8).map(|l| note_at(&e, 0, l)).collect();
+    assert_eq!(notes, [48, NOTE_EMPTY, 50, NOTE_EMPTY, 52, NOTE_EMPTY, 53, NOTE_EMPTY]);
+    select(&mut e, 0, 7);
+    e.shrink_block();
+    let notes: Vec<u8> = (0..8).map(|l| note_at(&e, 0, l)).collect();
+    assert_eq!(notes, [48, 50, 52, 53, NOTE_EMPTY, NOTE_EMPTY, NOTE_EMPTY, NOTE_EMPTY]);
+    select(&mut e, 0, 1);
+    e.repeat_block();
+    assert_eq!((note_at(&e, 0, 2), note_at(&e, 0, 3), note_at(&e, 0, 62)), (48, 50, 48));
+    e.undo();
+    assert_eq!(note_at(&e, 0, 2), 52);
+    e.edit_mode = false;
+    e.expand_block();
+    assert!(e.status.contains("edit mode"));
+}
+
+#[test]
+fn randomize_stays_in_range_and_is_reproducible() {
+    let mut a = ed();
+    fill(&mut a, &[(0, 48, 0), (1, 48, 0), (2, 48, 0)]);
+    let mut b = ed();
+    fill(&mut b, &[(0, 48, 0), (1, 48, 0), (2, 48, 0)]);
+    for e in [&mut a, &mut b] {
+        e.set_random_seed(42);
+        select(e, 0, 2);
+        e.randomize_volume(40);
+    }
+    let vols = |e: &Editor| -> Vec<u8> {
+        (0..3).map(|l| e.song.patterns[0].line(0, l).unwrap().notes[0].volume).collect()
+    };
+    assert_eq!(vols(&a), vols(&b));
+    assert!(vols(&a).iter().all(|v| *v <= 0x80 && *v >= 0x80 - 40));
+    assert!(vols(&a).windows(2).any(|w| w[0] != w[1]), "values differ: {:?}", vols(&a));
+}
+
+#[test]
+fn find_and_replace_notes_and_instruments() {
+    let mut e = ed();
+    fill(&mut e, &[(2, 48, 1), (5, 52, 1), (9, 48, 2), (12, 48, 1)]);
+    e.set_cursor(0, 0, 0, 0);
+    let spec = CellSpec { note: Some(48), ..Default::default() };
+    assert!(e.find_next(spec));
+    assert_eq!(e.cursor.line, 2);
+    assert!(e.find_next(spec) && e.cursor.line == 9);
+    assert!(e.find_next(spec) && e.cursor.line == 12);
+    assert!(e.find_next(spec) && e.cursor.line == 2, "wraps around");
+    assert!(!e.find_next(CellSpec { note: Some(10), ..Default::default() }));
+    // replace instrument 1 with 7, only where the note is 48
+    let n = e.replace_all(
+        CellSpec { note: Some(48), instrument: Some(1), ..Default::default() },
+        CellSpec { instrument: Some(7), ..Default::default() },
+        Scope::Pattern,
+    );
+    assert_eq!(n, 2);
+    let inst = |l| e.song.patterns[0].line(0, l).unwrap().notes[0].instrument;
+    assert_eq!((inst(2), inst(5), inst(9), inst(12)), (7, 1, 2, 7));
+    // selection scope only touches the selection
+    select(&mut e, 0, 6);
+    let n = e.replace_all(
+        CellSpec { instrument: Some(7), ..Default::default() },
+        CellSpec { note: Some(60), ..Default::default() },
+        Scope::Selection,
+    );
+    assert_eq!(n, 1);
+    assert_eq!(note_at(&e, 0, 2), 60);
+    assert_eq!(note_at(&e, 0, 12), 48);
+    assert_eq!(e.replace_all(CellSpec::default(), CellSpec::default(), Scope::Song), 0);
+    e.undo();
+    assert_eq!(note_at(&e, 0, 2), 48);
 }

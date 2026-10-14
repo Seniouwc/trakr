@@ -70,6 +70,12 @@ pub enum Action {
     LoopStart,
     LoopEnd,
     LoopClear,
+    Randomize,
+    ExpandBlock,
+    ShrinkBlock,
+    RepeatBlock,
+    OpenPalette,
+    OpenFind,
 }
 
 impl Action {
@@ -133,6 +139,12 @@ impl Action {
         Action::LoopStart,
         Action::LoopEnd,
         Action::LoopClear,
+        Action::Randomize,
+        Action::ExpandBlock,
+        Action::ShrinkBlock,
+        Action::RepeatBlock,
+        Action::OpenPalette,
+        Action::OpenFind,
     ];
 
     pub fn label(self) -> &'static str {
@@ -196,6 +208,12 @@ impl Action {
             LoopStart => "Loop range starts here",
             LoopEnd => "Loop range ends here",
             LoopClear => "Clear loop range",
+            Randomize => "Randomize volumes",
+            ExpandBlock => "Expand block (double length)",
+            ShrinkBlock => "Shrink block (half length)",
+            RepeatBlock => "Repeat block to pattern end",
+            OpenPalette => "Command palette",
+            OpenFind => "Find and replace",
         }
     }
 
@@ -235,6 +253,8 @@ impl Action {
             InstrumentPrev => "F9",
             InstrumentNext => "F10",
             RecordToggle => "Ctrl-R",
+            OpenPalette => "Ctrl-P",
+            OpenFind => "Ctrl-F",
             _ => "",
         }
     }
@@ -255,6 +275,8 @@ impl Action {
                 KeyCode::Char('v') => Paste,
                 KeyCode::Char('a') => SelectAll,
                 KeyCode::Char('r') => RecordToggle,
+                KeyCode::Char('p') => OpenPalette,
+                KeyCode::Char('f') => OpenFind,
                 KeyCode::Up => SeqPrev,
                 KeyCode::Down => SeqNext,
                 _ => return None,

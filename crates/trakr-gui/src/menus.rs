@@ -109,7 +109,11 @@ impl GuiApp {
                         self.item(ui, a);
                     }
                     ui.separator();
-                    for a in [InsertLine, DeleteLine] {
+                    for a in [Randomize, ExpandBlock, ShrinkBlock, RepeatBlock] {
+                        self.item(ui, a);
+                    }
+                    ui.separator();
+                    for a in [InsertLine, DeleteLine, OpenFind, OpenPalette] {
                         self.item(ui, a);
                     }
                 });

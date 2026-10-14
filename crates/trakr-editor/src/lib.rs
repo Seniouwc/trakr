@@ -2,6 +2,7 @@
 //! Both the TUI and the GUI are thin renderers over [`Editor`].
 
 mod action;
+mod edit_tools;
 mod instruments;
 mod io;
 mod keys;
@@ -15,6 +16,7 @@ mod sampling;
 mod script_ops;
 
 pub use action::Action;
+pub use edit_tools::{CellSpec, Scope};
 pub use io::load_song;
 pub use keys::{KeyCode, KeyEvent};
 pub use ops::{Cell, Clipboard};
@@ -182,6 +184,10 @@ pub struct Editor {
     /// What the last script printed, and its error if it failed.
     pub script_output: Vec<String>,
     pub script_error: Option<String>,
+    /// Set by commands that open a frontend window; the frontend clears them.
+    pub palette_requested: bool,
+    pub find_requested: bool,
+    rng: u64,
     config_dir: Option<PathBuf>,
     pub prefs: Prefs,
     keymap: Vec<(KeyEvent, Action)>,
@@ -271,6 +277,9 @@ impl Editor {
             plugin_errors: Vec::new(),
             script_output: Vec::new(),
             script_error: None,
+            palette_requested: false,
+            find_requested: false,
+            rng: 0x9E37_79B9_7F4A_7C15,
             config_dir: None,
             prefs: Prefs::default(),
             keymap: Vec::new(),

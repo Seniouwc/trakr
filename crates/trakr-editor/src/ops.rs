@@ -14,6 +14,10 @@ pub enum Cell {
 }
 
 impl Cell {
+    pub(crate) fn emptied_pub(self) -> Cell {
+        self.emptied()
+    }
+
     fn emptied(self) -> Cell {
         match self {
             Cell::Note(_) => Cell::Note(NoteColumn::default()),
@@ -162,6 +166,22 @@ impl Editor {
             let f = self.flat_index(self.cursor.track, self.cursor.col);
             Block { col0: f, col1: f, line0: self.cursor.line, line1: self.cursor.line }
         })
+    }
+
+    pub(crate) fn need_edit_pub(&mut self) -> bool {
+        self.need_edit()
+    }
+
+    pub(crate) fn target_block_pub(&self) -> Block {
+        self.target_block()
+    }
+
+    pub(crate) fn read_block_pub(&self, b: Block) -> Vec<Vec<Cell>> {
+        self.read_block(b)
+    }
+
+    pub(crate) fn write_block_pub(&mut self, f0: usize, l0: u16, rows: &[Vec<Cell>]) {
+        self.write_block(f0, l0, rows)
     }
 
     fn need_edit(&mut self) -> bool {
@@ -829,6 +849,12 @@ impl Editor {
             LoopStart => self.set_loop_edge(true),
             LoopEnd => self.set_loop_edge(false),
             LoopClear => self.clear_loop(),
+            Randomize => self.randomize_volume(32),
+            ExpandBlock => self.expand_block(),
+            ShrinkBlock => self.shrink_block(),
+            RepeatBlock => self.repeat_block(),
+            OpenPalette => self.palette_requested = true,
+            OpenFind => self.find_requested = true,
             RecordToggle => self.record_toggle(),
             RenderToSample => self.render_to_sample(),
             InstrumentPrev => {

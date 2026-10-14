@@ -426,3 +426,20 @@ fn script_console_renders_and_typing_in_it_does_not_edit_the_pattern() {
     h.app.show_console = false;
     h.frame(vec![]);
 }
+
+#[test]
+fn command_palette_opens_with_a_shortcut_and_runs_the_best_match() {
+    let mut h = Harness::new();
+    h.key(Key::P, Modifiers::COMMAND);
+    h.frame(vec![]);
+    assert!(h.app.show_palette, "Ctrl-P opens the palette");
+    assert!(!h.app.editor.edit_mode);
+    h.app.palette_query = "edit mode".into();
+    h.frame(vec![]);
+    h.key(Key::Enter, Modifiers::NONE);
+    assert!(!h.app.show_palette);
+    assert!(h.app.editor.edit_mode, "the matching command ran");
+    h.key(Key::F, Modifiers::COMMAND);
+    h.frame(vec![]);
+    assert!(h.app.show_find, "Ctrl-F opens find and replace");
+}
