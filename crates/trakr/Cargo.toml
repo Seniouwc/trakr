@@ -11,4 +11,5 @@ trakr-core = { workspace = true }
 trakr-engine = { workspace = true, features = ["audio"] }
 trakr-format = { workspace = true }
 trakr-tui = { workspace = true }
+trakr-gui = { workspace = true }
 trakr-xrns = { workspace = true }

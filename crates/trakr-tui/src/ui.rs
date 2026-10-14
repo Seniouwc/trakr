@@ -1,48 +1,12 @@
-use crate::app::{App, FX_SUBS, NOTE_SUBS};
 use ratatui::layout::{Constraint, Layout};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line as TLine, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
 use ratatui::Frame;
-use trakr_core::note::note_name;
-use trakr_core::{Line, EMPTY};
+use trakr_editor::{cell_text, Editor as App, FX_HL, FX_SUBS, NOTE_HL, NOTE_SUBS};
 
 const NOTE_COL_W: usize = 16; // "C-4 01 40 80 00" + 1
 const FX_COL_W: usize = 5; // "0A40" + 1
-
-// Char ranges of each sub-field inside a column's text.
-const NOTE_HL: [(usize, usize); NOTE_SUBS] =
-    [(0, 3), (4, 5), (5, 6), (7, 8), (8, 9), (10, 11), (11, 12), (13, 14), (14, 15)];
-const FX_HL: [(usize, usize); FX_SUBS] = [(0, 1), (1, 2), (2, 3), (3, 4)];
-
-fn hex2(v: u8, empty: u8) -> String {
-    if v == empty {
-        "..".into()
-    } else {
-        format!("{v:02X}")
-    }
-}
-
-fn cell_text(line: Option<&Line>, c: usize, notes: usize) -> String {
-    if c < notes {
-        let n = line.map(|l| l.notes[c]).unwrap_or_default();
-        format!(
-            "{} {} {} {} {}",
-            note_name(n.note),
-            hex2(n.instrument, EMPTY),
-            hex2(n.volume, EMPTY),
-            hex2(n.panning, EMPTY),
-            hex2(n.delay, 0)
-        )
-    } else {
-        let e = line.map(|l| l.effects[c - notes]).unwrap_or_default();
-        if e.is_empty() {
-            "....".into()
-        } else {
-            format!("{}{}{:02X}", e.id[0] as char, e.id[1] as char, e.amount)
-        }
-    }
-}
 
 fn track_width(app: &App, t: usize) -> usize {
     let (n, f) = app.cols(t);

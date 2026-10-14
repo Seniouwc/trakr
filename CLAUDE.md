@@ -22,10 +22,12 @@ System dependency: ALSA headers (`libasound2-dev`, or `nix develop` using flake.
 | `trakr-engine` | Real-time engine: sequencer, voices, mixer, command queue, cpal backend (feature `audio`). |
 | `trakr-format` | Native `.trkr` (zip: `song.json` + raw f32 samples). Versioned via `FORMAT_VERSION`. |
 | `trakr-xrns` | Best-effort `.xrns` importer. Element names are from memory, unverified against real files. |
-| `trakr-tui` | ratatui frontend. `app.rs` = state + input, `ui.rs` = rendering. |
-| `trakr` | Binary: arg parsing, file loading, wires audio + TUI. |
+| `trakr-editor` | Frontend-neutral `Editor`: cursor, cell entry, transport keys, save. Own `KeyEvent` type; no UI deps. All editing behavior lives here. |
+| `trakr-tui` | ratatui frontend: key translation + rendering only. |
+| `trakr-gui` | egui/eframe frontend (default): key translation + painter-based grid. |
+| `trakr` | Binary: arg parsing (`--tui` selects the terminal UI, GUI otherwise), file loading, wires audio + frontend. |
 
-Dependency direction: core <- engine/format/xrns <- tui <- trakr. Never make core depend on anything heavier than serde.
+Dependency direction: core <- engine/format/xrns <- editor <- tui/gui <- trakr. Never make core depend on anything heavier than serde.
 
 ## Hard rules
 

@@ -13,7 +13,19 @@ fn load(path: &Path) -> Result<Song> {
 }
 
 fn main() -> Result<()> {
-    let arg = std::env::args().nth(1);
+    let mut tui = false;
+    let mut arg = None;
+    for a in std::env::args().skip(1) {
+        match a.as_str() {
+            "--tui" => tui = true,
+            "-h" | "--help" => {
+                println!("usage: trakr [--tui] [song.trkr | song.xrns]\n  --tui   run in the terminal instead of the native window");
+                return Ok(());
+            }
+            _ if a.starts_with('-') => anyhow::bail!("unknown option: {a}"),
+            _ => arg = Some(a),
+        }
+    }
     let (song, path) = match arg {
         Some(p) => {
             let p = PathBuf::from(p);
@@ -36,7 +48,7 @@ fn main() -> Result<()> {
             (None, None)
         }
     };
-    let result = trakr_tui::run(song, path, handle);
+    let result = if tui { trakr_tui::run(song, path, handle) } else { trakr_gui::run(song, path, handle) };
     drop(audio);
     result
 }

@@ -1,12 +1,80 @@
-use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+//! Frontend-neutral editor state and input handling, shared by the TUI and GUI.
+
 use std::path::PathBuf;
 use std::sync::Arc;
+use trakr_core::note::note_name;
 use trakr_core::{Line, Song, EMPTY, NOTE_EMPTY, NOTE_OFF};
 use trakr_engine::{Command, EngineHandle};
+
+/// Frontend-neutral key codes. Each frontend translates its native events into these.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum KeyCode {
+    Char(char),
+    F(u8),
+    Up,
+    Down,
+    Left,
+    Right,
+    PageUp,
+    PageDown,
+    Home,
+    End,
+    Tab,
+    BackTab,
+    Backspace,
+    Delete,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct KeyEvent {
+    pub code: KeyCode,
+    pub ctrl: bool,
+    pub alt: bool,
+}
+
+impl KeyEvent {
+    pub fn new(code: KeyCode) -> Self {
+        Self { code, ctrl: false, alt: false }
+    }
+}
+
+/// Text for one column of a line: a note column ("C-4 01 40 80 00") or an effect column ("0A40").
+pub fn cell_text(line: Option<&Line>, c: usize, notes: usize) -> String {
+    fn hex2(v: u8, empty: u8) -> String {
+        if v == empty {
+            "..".into()
+        } else {
+            format!("{v:02X}")
+        }
+    }
+    if c < notes {
+        let n = line.map(|l| l.notes[c]).unwrap_or_default();
+        format!(
+            "{} {} {} {} {}",
+            note_name(n.note),
+            hex2(n.instrument, EMPTY),
+            hex2(n.volume, EMPTY),
+            hex2(n.panning, EMPTY),
+            hex2(n.delay, 0)
+        )
+    } else {
+        let e = line.map(|l| l.effects[c - notes]).unwrap_or_default();
+        if e.is_empty() {
+            "....".into()
+        } else {
+            format!("{}{}{:02X}", e.id[0] as char, e.id[1] as char, e.amount)
+        }
+    }
+}
 
 /// Sub-field counts: note column = note, inst(2), vol(2), pan(2), delay(2); effect column = id(2), amount(2).
 pub const NOTE_SUBS: usize = 9;
 pub const FX_SUBS: usize = 4;
+
+/// Character ranges of each sub-field inside the text from [`cell_text`], for cursor highlighting.
+pub const NOTE_HL: [(usize, usize); NOTE_SUBS] =
+    [(0, 3), (4, 5), (5, 6), (7, 8), (8, 9), (10, 11), (11, 12), (13, 14), (14, 15)];
+pub const FX_HL: [(usize, usize); FX_SUBS] = [(0, 1), (1, 2), (2, 3), (3, 4)];
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Cursor {
@@ -17,7 +85,7 @@ pub struct Cursor {
     pub line: u16,
 }
 
-pub struct App {
+pub struct Editor {
     pub song: Arc<Song>,
     pub cursor: Cursor,
     pub seq_pos: usize,
@@ -72,7 +140,7 @@ fn piano_key(c: char) -> Option<u8> {
     })
 }
 
-impl App {
+impl Editor {
     pub fn new(song: Song, path: Option<PathBuf>, engine: Option<EngineHandle>) -> Self {
         let status = if engine.is_some() { "ready".into() } else { "no audio device: editing only".into() };
         let mut app = Self {
@@ -231,7 +299,7 @@ impl App {
     // ---- input ----------------------------------------------------------
 
     pub fn on_key(&mut self, k: KeyEvent) {
-        let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
+        let ctrl = k.ctrl;
         match k.code {
             KeyCode::Char('q') if ctrl => self.quit = true,
             KeyCode::Char('s') if ctrl => self.save(),
@@ -266,7 +334,7 @@ impl App {
                 self.edit_mode = !self.edit_mode;
                 self.status = if self.edit_mode { "edit mode on".into() } else { "edit mode off".into() };
             }
-            KeyCode::Char(c) if !ctrl && !k.modifiers.contains(KeyModifiers::ALT) => self.type_char(c),
+            KeyCode::Char(c) if !ctrl && !k.alt => self.type_char(c),
             _ => {}
         }
     }
@@ -422,12 +490,12 @@ mod tests {
     use super::*;
 
     fn key(c: char) -> KeyEvent {
-        KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE)
+        KeyEvent::new(KeyCode::Char(c))
     }
 
     #[test]
     fn note_entry_writes_and_advances() {
-        let mut app = App::new(Song::default(), None, None);
+        let mut app = Editor::new(Song::default(), None, None);
         app.on_key(key(' '));
         app.on_key(key('z'));
         let line = app.song.patterns[0].line(0, 0).unwrap();
@@ -438,17 +506,17 @@ mod tests {
 
     #[test]
     fn nothing_written_when_edit_mode_off() {
-        let mut app = App::new(Song::default(), None, None);
+        let mut app = Editor::new(Song::default(), None, None);
         app.on_key(key('z'));
         assert!(app.song.patterns[0].line(0, 0).is_none());
     }
 
     #[test]
     fn hex_entry_in_volume_column() {
-        let mut app = App::new(Song::default(), None, None);
+        let mut app = Editor::new(Song::default(), None, None);
         app.on_key(key(' '));
         for _ in 0..3 {
-            app.on_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
+            app.on_key(KeyEvent::new(KeyCode::Right));
         }
         app.on_key(key('4'));
         app.on_key(key('0'));
@@ -457,8 +525,8 @@ mod tests {
 
     #[test]
     fn down_wraps_through_sequence() {
-        let mut app = App::new(Song::default(), None, None);
-        app.on_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
+        let mut app = Editor::new(Song::default(), None, None);
+        app.on_key(KeyEvent::new(KeyCode::Up));
         assert_eq!(app.cursor.line, 63);
     }
 }

@@ -9,5 +9,6 @@ rust-version.workspace = true
 anyhow = "1.0.104"
 ratatui = "0.29.0"
 trakr-core = { workspace = true }
+trakr-editor = { workspace = true }
 trakr-engine = { workspace = true }
 trakr-format = { workspace = true }

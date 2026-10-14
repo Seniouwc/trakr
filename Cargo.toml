@@ -5,7 +5,9 @@ members = [
     "crates/trakr-engine",
     "crates/trakr-format",
     "crates/trakr-xrns",
+    "crates/trakr-editor",
     "crates/trakr-tui",
+    "crates/trakr-gui",
     "crates/trakr",
 ]
 
@@ -13,14 +15,16 @@ members = [
 version = "0.0.1"
 edition = "2021"
 license = "MIT"
-rust-version = "1.80"
+rust-version = "1.81"
 
 [workspace.dependencies]
 trakr-core = { path = "crates/trakr-core" }
 trakr-engine = { path = "crates/trakr-engine", default-features = false }
 trakr-format = { path = "crates/trakr-format" }
 trakr-xrns = { path = "crates/trakr-xrns" }
+trakr-editor = { path = "crates/trakr-editor" }
 trakr-tui = { path = "crates/trakr-tui" }
+trakr-gui = { path = "crates/trakr-gui" }
 
 [profile.release]
 lto = "thin"

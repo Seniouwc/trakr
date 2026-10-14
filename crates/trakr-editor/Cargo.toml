@@ -1,0 +1,11 @@
+[package]
+name = "trakr-editor"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+trakr-core = { workspace = true }
+trakr-engine = { workspace = true }
+trakr-format = { workspace = true }
