@@ -343,6 +343,52 @@ pub enum Interpolation {
     Sinc,
 }
 
+/// What an instrument LFO modulates.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum LfoTarget {
+    /// depth = fraction of full volume (0..1)
+    #[default]
+    Volume,
+    /// depth = swing across the stereo field (0..1)
+    Pan,
+    /// depth = semitones (0..12)
+    Pitch,
+    /// depth = octaves (0..5); needs an instrument filter
+    Cutoff,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum LfoShape {
+    #[default]
+    Sine,
+    Triangle,
+    Saw,
+    Square,
+    Random,
+}
+
+/// A low-frequency oscillator that runs per note.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct InstLfo {
+    pub target: LfoTarget,
+    pub shape: LfoShape,
+    /// Hz, 0.05..30.
+    pub rate: f32,
+    pub depth: f32,
+    /// Seconds for the LFO to reach full depth after the note starts.
+    #[serde(default)]
+    pub fade_in: f32,
+}
+
+impl Default for InstLfo {
+    fn default() -> Self {
+        Self { target: LfoTarget::Volume, shape: LfoShape::Sine, rate: 4.0, depth: 0.3, fade_in: 0.0 }
+    }
+}
+
+/// Most LFOs per instrument.
+pub const MAX_INST_LFOS: usize = 4;
+
 /// What happens to a still-sounding note when a new note starts in the same column.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Nna {
@@ -423,6 +469,15 @@ pub struct Instrument {
     pub phrase_mode: PhraseMode,
     #[serde(default)]
     pub midi_out: Option<MidiOut>,
+    /// Per-note LFOs (at most `MAX_INST_LFOS` are used).
+    #[serde(default)]
+    pub lfos: Vec<InstLfo>,
+    /// How much the filter cutoff follows the played key: 0 = not at all, 1 = one octave per octave (around C-4).
+    #[serde(default)]
+    pub key_track: f32,
+    /// How much a low velocity darkens the note: octaves of cutoff lost at velocity 0 (0..5).
+    #[serde(default)]
+    pub vel_cutoff: f32,
 }
 
 impl Instrument {
@@ -441,6 +496,9 @@ impl Instrument {
             phrases: Vec::new(),
             phrase_mode: PhraseMode::Off,
             midi_out: None,
+            lfos: Vec::new(),
+            key_track: 0.0,
+            vel_cutoff: 0.0,
         }
     }
 

@@ -18,7 +18,8 @@ pub use automation::{AutoTarget, Automation};
 pub use device::{device_info, DeviceInfo, ParamInfo, DEVICES, MODULATORS};
 pub use envelope::Envelope;
 pub use instrument::{
-    FilterMode, Instrument, InstrumentFilter, Interpolation, LoopMode, MidiOut, Nna, Sample,
+    FilterMode, InstLfo, Instrument, InstrumentFilter, Interpolation, LfoShape, LfoTarget, LoopMode, MidiOut,
+    Nna, Sample, MAX_INST_LFOS,
 };
 pub use note::{EffectCmd, NoteColumn, EMPTY, NOTE_EMPTY, NOTE_OFF};
 pub use pattern::{Line, Pattern, PatternTrack, MAX_EFFECT_COLUMNS, MAX_LINES, MAX_NOTE_COLUMNS};

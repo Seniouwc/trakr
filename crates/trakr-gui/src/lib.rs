@@ -8,6 +8,7 @@ mod grid;
 mod input;
 mod menus;
 mod mixer;
+mod modulation_view;
 mod panels;
 mod phrases_view;
 mod prefs_view;
@@ -54,6 +55,7 @@ pub enum Dock {
 pub enum SampleTab {
     Sample,
     Filter,
+    Modulation,
     Env(envelopes::EnvKind),
 }
 

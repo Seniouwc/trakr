@@ -150,6 +150,7 @@ fn every_dock_and_tab_draws_without_panicking() {
     let tabs = [
         SampleTab::Sample,
         SampleTab::Filter,
+        SampleTab::Modulation,
         SampleTab::Env(envelopes::EnvKind::Volume),
         SampleTab::Env(envelopes::EnvKind::Pan),
         SampleTab::Env(envelopes::EnvKind::Pitch),

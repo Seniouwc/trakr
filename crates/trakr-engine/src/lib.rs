@@ -2371,6 +2371,77 @@ mod device_tests {
         assert!(peak(&out[5000..20_000]) > 0.5);
     }
 
+    fn lp_song(cutoff: f32) -> Song {
+        let mut song = song_with(sine(10_000.0, 0.5, 0.8));
+        song.instruments[0].filter =
+            InstrumentFilter { mode: trakr_core::FilterMode::LowPass, cutoff, resonance: 0.707 };
+        song
+    }
+
+    #[test]
+    fn instrument_lfos_modulate_volume_pitch_and_cutoff() {
+        // square volume LFO at 2 Hz, full depth: loud and silent halves
+        let mut song = song_with(vec![1.0; 30_000]);
+        song.instruments[0].lfos.push(trakr_core::InstLfo {
+            target: trakr_core::LfoTarget::Volume,
+            shape: trakr_core::LfoShape::Square,
+            rate: 2.0,
+            depth: 1.0,
+            fade_in: 0.0,
+        });
+        song.instruments[0].samples[0].loop_mode = LoopMode::Forward;
+        let out = render(song, 22_000);
+        let loud = peak(&out[2000..9000]);
+        let quiet = peak(&out[13_000..20_000]);
+        assert!(loud > 1.5 && quiet < 0.1, "{loud} {quiet}");
+        // an LFO with fade-in starts at no depth
+        let mut song = song_with(vec![1.0; 30_000]);
+        song.instruments[0].samples[0].loop_mode = LoopMode::Forward;
+        song.instruments[0].lfos.push(trakr_core::InstLfo {
+            target: trakr_core::LfoTarget::Volume,
+            shape: trakr_core::LfoShape::Square,
+            rate: 2.0,
+            depth: 1.0,
+            fade_in: 1.0,
+        });
+        let out = render(song, 22_000);
+        assert!((out[2000] - 1.0).abs() < 0.3 && out[12_000] < 0.9 || out[12_000] > 1.1);
+        // cutoff LFO with a filter that blocks the tone: opening it lets the tone through
+        let mut song = lp_song(500.0);
+        song.instruments[0].lfos.push(trakr_core::InstLfo {
+            target: trakr_core::LfoTarget::Cutoff,
+            shape: trakr_core::LfoShape::Square,
+            rate: 1.0,
+            depth: 5.0,
+            fade_in: 0.0,
+        });
+        song.instruments[0].samples[0].loop_mode = LoopMode::Forward;
+        let out = render(song, 22_000);
+        assert!(peak(&out[10_000..20_000]) < 0.2 || peak(&out[1000..9000]) > 0.4);
+    }
+
+    #[test]
+    fn key_tracking_and_velocity_move_the_cutoff() {
+        let tone = |track: f32, note: u8, volume: u8, vel_cut: f32| {
+            let mut song = lp_song(2000.0);
+            song.instruments[0].key_track = track;
+            song.instruments[0].vel_cutoff = vel_cut;
+            song.instruments[0].samples[0].base_note = note; // keep the pitch fixed at 10 kHz
+            let n = &mut Arc::make_mut(&mut song.patterns[0]).line_mut(0, 0).notes[0];
+            n.note = note;
+            n.volume = volume;
+            peak(&render(song, 20_000)[5000..20_000])
+        };
+        let flat = tone(0.0, 48, 0x80, 0.0);
+        let tracked_up = tone(1.0, 84, 0x80, 0.0); // three octaves up: cutoff 16 kHz, tone passes
+        let tracked_flat = tone(0.0, 84, 0x80, 0.0);
+        assert!(tracked_up > tracked_flat * 3.0, "{tracked_up} {tracked_flat}");
+        assert!(flat < 0.1);
+        let bright = tone(0.0, 48, 0x80, 0.0);
+        let soft = tone(0.0, 48, 0x20, 3.0);
+        assert!(soft <= bright + 1e-6);
+    }
+
     #[test]
     fn offline_render_includes_devices() {
         let mut impulse = vec![0.0; 100];
@@ -2589,6 +2660,28 @@ mod device_tests {
             };
             inst.nna =
                 *rng.pick(&[trakr_core::Nna::Cut, trakr_core::Nna::NoteOff, trakr_core::Nna::Continue]);
+            for _ in 0..rng.below(6) {
+                inst.lfos.push(trakr_core::InstLfo {
+                    target: *rng.pick(&[
+                        trakr_core::LfoTarget::Volume,
+                        trakr_core::LfoTarget::Pan,
+                        trakr_core::LfoTarget::Pitch,
+                        trakr_core::LfoTarget::Cutoff,
+                    ]),
+                    shape: *rng.pick(&[
+                        trakr_core::LfoShape::Sine,
+                        trakr_core::LfoShape::Triangle,
+                        trakr_core::LfoShape::Saw,
+                        trakr_core::LfoShape::Square,
+                        trakr_core::LfoShape::Random,
+                    ]),
+                    rate: rng.below(100_000) as f32 / 1000.0 - 20.0,
+                    depth: rng.below(100_000) as f32 / 1000.0 - 50.0,
+                    fade_in: rng.below(3000) as f32 / 100.0 - 5.0,
+                });
+            }
+            inst.key_track = rng.below(1000) as f32 / 100.0 - 3.0;
+            inst.vel_cutoff = rng.below(1000) as f32 / 100.0 - 3.0;
             if rng.below(3) == 0 {
                 inst.midi_out = Some(trakr_core::MidiOut {
                     channel: rng.below(40) as u8,

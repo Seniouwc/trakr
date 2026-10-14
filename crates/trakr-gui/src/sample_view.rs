@@ -58,6 +58,9 @@ impl GuiApp {
                 ui.horizontal(|ui| {
                     ui.selectable_value(&mut self.sample_tab, SampleTab::Sample, "Sample");
                     ui.selectable_value(&mut self.sample_tab, SampleTab::Filter, "Filter");
+                    let nl = self.editor.current_instrument().map_or(0, |i| i.lfos.len());
+                    let label = if nl > 0 { format!("LFOs ({nl})") } else { "LFOs".to_string() };
+                    ui.selectable_value(&mut self.sample_tab, SampleTab::Modulation, label);
                     for k in [EnvKind::Volume, EnvKind::Pan, EnvKind::Pitch, EnvKind::Cutoff] {
                         let on = self.editor.current_instrument().is_some_and(|i| match k {
                             EnvKind::Volume => i.volume_env.enabled,
@@ -71,6 +74,10 @@ impl GuiApp {
                 });
                 if self.sample_tab == SampleTab::Filter {
                     self.filter_ui(ui);
+                    return;
+                }
+                if self.sample_tab == SampleTab::Modulation {
+                    self.modulation_ui(ui);
                     return;
                 }
                 if let SampleTab::Env(k) = self.sample_tab {
