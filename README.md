@@ -15,14 +15,15 @@ An open source tracker DAW written in Rust, with a native window (egui) and a te
 - Pattern editor with note, instrument, volume, panning, delay and effect columns
 - Undo/redo, block selection, copy/cut/paste, transpose, reverse, interpolate
 - Sequence editing (insert, clone, delete, reorder), pattern length, add/remove tracks and columns
-- Sample playback with linear interpolation and forward loops
+- Sample import (WAV, AIFF, FLAC, OGG, MP3), sample editing, forward/reverse/ping-pong loops
+- Delay column and timing effects (sample offset, backwards, cut, delay, retrigger)
 - Real-time engine with sequencer, voices and mixer (cpal audio output)
 - Native `.trkr` project format (zip of `song.json` and raw sample data)
 - Best-effort `.xrns` import for interoperability
 
 ## Building
 
-Requirements: a recent stable Rust toolchain (1.80+) and ALSA headers on Linux (`libasound2-dev` on Debian/Ubuntu). With Nix, `nix develop` provides everything.
+Requirements: a recent stable Rust toolchain (1.81+) and ALSA headers on Linux (`libasound2-dev` on Debian/Ubuntu). With Nix, `nix develop` provides everything.
 
 ```
 cargo run -p trakr                 # native window, built-in demo song
@@ -33,7 +34,7 @@ cargo run -p trakr -- song.xrns    # import an XRNS file
 
 ## Keys
 
-The keymap is the same in both frontends.
+The keymap is the same in both frontends. The GUI also has full menus (with these shortcuts shown), a context menu on the grid, mouse selection and a Help > Keyboard reference window.
 
 | Key | Action |
 |---|---|

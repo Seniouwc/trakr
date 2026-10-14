@@ -77,7 +77,7 @@ impl Editor {
     pub fn instrument_set_volume(&mut self, volume: f32) {
         let idx = self.instrument as usize;
         if idx < self.song.instruments.len() {
-            self.checkpoint();
+            self.checkpoint_key("inst_volume");
             self.song_mut().instruments[idx].volume = volume.clamp(0.0, 4.0);
             self.sync();
         }
@@ -102,5 +102,18 @@ impl Editor {
     pub fn preview_note(&mut self, note: u8) {
         let (track, instrument) = (self.cursor.track, self.instrument);
         self.send(Command::NoteOn { track, instrument, note, volume: 1.0 });
+    }
+}
+
+impl Editor {
+    /// Like `edit_sample`, but drags of the same `key` collapse into a single undo step.
+    pub fn edit_sample_coalesced<F: FnOnce(&mut Sample)>(&mut self, key: &'static str, sample: usize, f: F) {
+        let idx = self.instrument as usize;
+        if self.song.instruments.get(idx).and_then(|i| i.samples.get(sample)).is_none() {
+            return;
+        }
+        self.checkpoint_key(key);
+        f(&mut self.song_mut().instruments[idx].samples[sample]);
+        self.sync();
     }
 }

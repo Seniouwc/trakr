@@ -8,7 +8,7 @@ Compiled from memory of Renoise 3.x behavior. Verify each item against the offic
 - [~] Pattern sequence (play order) with song loop; no loop range
 - [~] Sequence editor: insert, clone, delete, reorder, pick pattern per slot work; section markers and pattern matrix do not
 - [~] Pattern length 1..512 editing and pattern names work; resize with content scaling does not
-- [ ] Tick-accurate timing (TPL) and sub-line delay column
+- [~] Sub-line delay column works (1/256 line); tick-quantized timing exists only for the effects `0Q`, `0C`, `0R`; per-tick voice processing (slides, vibrato) does not
 - [ ] Song loop range / pattern loop / block loop
 - [~] Follow playback, play from cursor, play pattern, stop work; play block, panic do not
 - [ ] Song comments, metadata, tags
@@ -31,12 +31,12 @@ Compiled from memory of Renoise 3.x behavior. Verify each item against the offic
 ## Volume, panning, and effect commands
 - [ ] Volume column: 00-80 volume, special commands (verify list: Gxx glide, Uxx/Dxx slide, Ixx/Oxx fade, Axx/Bxx? etc.)
 - [ ] Panning column: 00-80 plus special commands
-- [ ] Per-note effects (verify full list against manual): arpeggio, pitch slide up/down, glide to note, volume slide, cut, delay, retrigger, sample offset, backwards, vibrato, tremolo, auto pan, envelope control, track volume/pan/width
-- [~] Global Z-commands: ZT (BPM) and ZL (LPB) work; pattern break, delay, ghost-note, and the rest do not
+- [~] Per-note effects implemented: `0S` sample offset, `0B` backwards, `0C` cut after xx ticks, `0Q` delay xx ticks, `0R` retrigger every xx ticks (effect column or the per-note slot). Command ids are trakr's own and unverified against Renoise. Still missing (verify full list against manual): arpeggio, pitch slide up/down, glide to note, volume slide, cut, delay, retrigger, sample offset, backwards, vibrato, tremolo, auto pan, envelope control, track volume/pan/width
+- [~] Global Z-commands: ZT (BPM), ZL (LPB), ZB (pattern break to line xx in the next slot) work; delay, ghost-note, and the rest do not
 - [ ] Effect commands as device parameter targets (`Xnn` style device addressing, verify)
 
 ## Samples and instruments
-- [~] Sample playback with linear interpolation, forward loop
+- [~] Sample playback with linear interpolation; forward, reverse and ping-pong loops
 - [x] Import WAV, AIFF, FLAC, OGG, MP3 (symphonia); RX2/REX not required initially
 - [ ] Reverse and ping-pong loop, loop release, one-shot, sustain loop
 - [ ] Interpolation modes (none, linear, cubic, sinc), oversampling

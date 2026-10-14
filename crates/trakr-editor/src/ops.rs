@@ -449,7 +449,7 @@ impl Editor {
         if self.song.patterns[pi].number_of_lines == lines {
             return;
         }
-        self.checkpoint();
+        self.checkpoint_key("pattern_lines");
         Arc::make_mut(&mut self.song_mut().patterns[pi]).number_of_lines = lines;
         self.after_structure_change();
     }
@@ -531,7 +531,7 @@ impl Editor {
     // ---- song settings --------------------------------------------------------
 
     pub fn set_tempo(&mut self, bpm: f32, lpb: u8, tpl: u8) {
-        self.checkpoint();
+        self.checkpoint_key("tempo");
         let s = self.song_mut();
         s.bpm = bpm.clamp(32.0, 999.0);
         s.lpb = lpb.clamp(1, 32);

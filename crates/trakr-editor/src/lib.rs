@@ -109,6 +109,8 @@ pub struct Editor {
     undo: Vec<Snapshot>,
     redo: Vec<Snapshot>,
     needs_sync: bool,
+    /// Key of the last coalescable edit (e.g. dragging a tempo field); cleared by any other checkpoint.
+    last_key: Option<&'static str>,
 }
 
 fn piano_key(c: char) -> Option<u8> {
@@ -173,6 +175,7 @@ impl Editor {
             undo: Vec::new(),
             redo: Vec::new(),
             needs_sync: false,
+            last_key: None,
         };
         app.sync();
         app.dirty = false;
@@ -284,12 +287,21 @@ impl Editor {
 
     /// Call before every user-level mutation of the song.
     fn checkpoint(&mut self) {
+        self.last_key = None;
         let snap = self.snapshot();
         self.undo.push(snap);
         if self.undo.len() > UNDO_LIMIT {
             self.undo.remove(0);
         }
         self.redo.clear();
+    }
+
+    /// Like `checkpoint`, but repeated calls with the same key share one undo step.
+    fn checkpoint_key(&mut self, key: &'static str) {
+        if self.last_key != Some(key) {
+            self.checkpoint();
+            self.last_key = Some(key);
+        }
     }
 
     pub fn can_undo(&self) -> bool {
@@ -304,6 +316,7 @@ impl Editor {
         if let Some(prev) = self.undo.pop() {
             let cur = self.snapshot();
             self.redo.push(cur);
+            self.last_key = None;
             self.restore(prev);
             self.status = "undo".into();
         }
@@ -313,6 +326,7 @@ impl Editor {
         if let Some(next) = self.redo.pop() {
             let cur = self.snapshot();
             self.undo.push(cur);
+            self.last_key = None;
             self.restore(next);
             self.status = "redo".into();
         }
