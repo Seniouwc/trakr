@@ -20,6 +20,9 @@ pub struct Song {
     /// Pattern indices in play order.
     pub sequence: Vec<usize>,
     pub instruments: Vec<Instrument>,
+    /// Inclusive range of sequence slots to loop during playback.
+    #[serde(default)]
+    pub loop_range: Option<(usize, usize)>,
 }
 
 impl Default for Song {
@@ -41,6 +44,7 @@ impl Default for Song {
             patterns: vec![Arc::new(Pattern::new(n, DEFAULT_LINES))],
             sequence: vec![0],
             instruments: Vec::new(),
+            loop_range: None,
         }
     }
 }

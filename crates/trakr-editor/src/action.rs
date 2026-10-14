@@ -62,6 +62,12 @@ pub enum Action {
     InstrumentRemove,
     RecordToggle,
     RenderToSample,
+    FadeInBlock,
+    FadeOutBlock,
+    TrackSolo,
+    LoopStart,
+    LoopEnd,
+    LoopClear,
 }
 
 impl Action {
@@ -118,6 +124,12 @@ impl Action {
             InstrumentRemove => "Remove instrument",
             RecordToggle => "Record sample from input",
             RenderToSample => "Render song to sample",
+            FadeInBlock => "Fade in (volume column)",
+            FadeOutBlock => "Fade out (volume column)",
+            TrackSolo => "Solo track",
+            LoopStart => "Loop range starts here",
+            LoopEnd => "Loop range ends here",
+            LoopClear => "Clear loop range",
         }
     }
 

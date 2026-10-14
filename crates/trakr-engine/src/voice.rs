@@ -1,8 +1,16 @@
 use std::sync::Arc;
-use trakr_core::{LoopMode, Sample};
+use trakr_core::{Envelope, Instrument, LoopMode, Sample};
 
-/// One playing sample. Linear interpolation; forward, reverse and ping-pong loops.
-/// TODO: sinc interpolation, envelopes, NNA, filters.
+/// How fast a voice's gain and pitch follow their targets (smooths ticks, fades and envelopes).
+const SMOOTH_SECONDS: f32 = 0.003;
+/// Envelopes, LFOs and tick targets are re-evaluated about every millisecond.
+fn control_block(rate: u32) -> u32 {
+    (rate / 1000).clamp(1, 64)
+}
+
+/// One playing sample. Linear interpolation; forward, reverse and ping-pong loops; per-tick effects
+/// (slides, glide, vibrato, tremolo, arpeggio, volume slide, fades) and instrument envelopes.
+/// TODO: sinc interpolation, filters, NNA.
 pub struct Voice {
     pub track: usize,
     pub column: usize,
@@ -12,15 +20,51 @@ pub struct Voice {
     pos: f64,
     /// +1 forward, -1 backward.
     dir: f64,
-    step_base: f64,
-    gain: f32,
+    sample_rate: f64,
+    /// Added to a note number to get semitones relative to the sample's native pitch.
+    note_bias: f32,
+    /// Current pitch in semitones relative to the sample's native pitch (slides and glide move it).
+    semis: f32,
+    glide: Option<(f32, f32)>,
+    slide: f32,
+    vib: (f32, f32),
+    vib_phase: f32,
+    arp: Option<(f32, f32)>,
+    arp_offset: f32,
+    trem: (f32, f32),
+    trem_phase: f32,
+    trem_gain: f32,
+    vslide: f32,
+    /// Gain from fades and volume slides, 0..=2.
+    dyn_gain: f32,
+    fade: Option<(f32, f32)>,
+    /// Gain from the volume column (and the initial note volume).
+    col_vol: f32,
+    base_gain: f32,
     pan: f32,
     loop_mode: LoopMode,
     loop_start: usize,
     loop_end: usize,
     finished: bool,
     releasing: bool,
-    fade: f32,
+    /// 5 ms click-free ending; starts once the voice is released and its volume envelope is done.
+    ending: bool,
+    end_fade: f32,
+    age_frames: u64,
+    released_at: Option<f32>,
+    vol_env: Arc<Envelope>,
+    pan_env: Arc<Envelope>,
+    pitch_env: Arc<Envelope>,
+    gm_cur: f32,
+    gm_target: f32,
+    step_cur: f64,
+    step_target: f64,
+    pan_now: f32,
+    ctr: u32,
+    /// Jump straight to the targets on the first control update instead of smoothing from zero.
+    snap: bool,
+    /// An effect command was applied on the current line; its slides and fades start on tick 1.
+    fresh_fx: bool,
 }
 
 /// Per-trigger options from effect commands.
@@ -31,19 +75,23 @@ pub struct TriggerOpts {
     pub backwards: bool,
 }
 
+fn nibbles(amount: u8) -> (f32, f32) {
+    ((amount >> 4) as f32, (amount & 15) as f32)
+}
+
 impl Voice {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         track: usize,
         column: usize,
+        inst: &Instrument,
         s: &Sample,
-        inst_volume: f32,
         note: u8,
         vol: f32,
         pan: f32,
         opts: TriggerOpts,
     ) -> Self {
-        let semis = note as f64 - s.base_note as f64 + s.fine_tune as f64 / 128.0;
+        let bias = -(s.base_note as f32) + s.fine_tune as f32 / 128.0;
         let frames = s.frames();
         let loop_end = s.loop_end.min(frames);
         let has_loop = s.loop_mode != LoopMode::Off && loop_end > s.loop_start;
@@ -56,7 +104,7 @@ impl Voice {
                 frames as f64 - 1.0
             };
         }
-        Self {
+        let v = Self {
             track,
             column,
             data: s.data.clone(),
@@ -64,24 +112,199 @@ impl Voice {
             frames,
             pos: pos.max(0.0),
             dir: if reverse { -1.0 } else { 1.0 },
-            step_base: s.sample_rate as f64 * 2f64.powf(semis / 12.0),
-            gain: vol * s.volume * inst_volume,
+            sample_rate: s.sample_rate as f64,
+            note_bias: bias,
+            semis: note as f32 + bias,
+            glide: None,
+            slide: 0.0,
+            vib: (0.0, 0.0),
+            vib_phase: 0.0,
+            arp: None,
+            arp_offset: 0.0,
+            trem: (0.0, 0.0),
+            trem_phase: 0.0,
+            trem_gain: 1.0,
+            vslide: 0.0,
+            dyn_gain: 1.0,
+            fade: None,
+            col_vol: vol,
+            base_gain: s.volume * inst.volume,
             pan: (pan + s.panning).clamp(-1.0, 1.0),
             loop_mode: s.loop_mode,
             loop_start: s.loop_start,
             loop_end,
             finished: frames == 0,
             releasing: false,
-            fade: 1.0,
-        }
+            ending: false,
+            end_fade: 1.0,
+            age_frames: 0,
+            released_at: None,
+            vol_env: inst.volume_env.clone(),
+            pan_env: inst.pan_env.clone(),
+            pitch_env: inst.pitch_env.clone(),
+            gm_cur: 0.0,
+            gm_target: 0.0,
+            step_cur: 0.0,
+            step_target: 0.0,
+            pan_now: 0.0,
+            ctr: 0,
+            snap: true,
+            fresh_fx: false,
+        };
+        v
     }
 
     pub fn release(&mut self) {
+        if self.releasing {
+            return;
+        }
         self.releasing = true;
+        self.released_at = Some(self.age_frames as f32);
+        if !self.vol_env.enabled {
+            self.ending = true;
+        }
+    }
+
+    pub fn is_releasing(&self) -> bool {
+        self.releasing
     }
 
     pub fn alive(&self) -> bool {
         !self.finished
+    }
+
+    /// Pitch (in semitones relative to native) that `note` would have on this voice's sample.
+    pub fn semis_for_note(&self, note: u8) -> f32 {
+        note as f32 + self.note_bias
+    }
+
+    pub fn set_col_volume(&mut self, v: f32) {
+        self.col_vol = v;
+    }
+
+    pub fn set_pan(&mut self, p: f32) {
+        self.pan = p.clamp(-1.0, 1.0);
+    }
+
+    /// Slide toward `target` semitones at `speed`/16 semitone per tick (0 jumps there).
+    pub fn glide_to(&mut self, target: f32, speed: u8) {
+        if speed == 0 {
+            self.semis = target;
+            self.glide = None;
+        } else {
+            self.glide = Some((target, speed as f32 / 16.0));
+        }
+    }
+
+    /// Start or change a per-tick effect on this voice. Unknown ids are ignored.
+    pub fn apply_effect(&mut self, id: [u8; 2], amount: u8) {
+        let (x, y) = nibbles(amount);
+        self.fresh_fx = true;
+        match &id {
+            b"0U" => self.slide = amount as f32 / 16.0,
+            b"0D" => self.slide = -(amount as f32) / 16.0,
+            b"0V" => self.vib = (x, y / 8.0),
+            b"0T" => {
+                self.trem = (x, y / 15.0);
+                if amount == 0 {
+                    self.trem_gain = 1.0;
+                }
+            }
+            b"0A" => {
+                self.arp = (amount != 0).then_some((x, y));
+                if amount == 0 {
+                    self.arp_offset = 0.0;
+                }
+            }
+            b"0W" => self.vslide = (x - y) / 64.0,
+            b"0I" if amount > 0 => {
+                self.dyn_gain = 0.0;
+                self.fade = Some((1.0, 1.0 / amount as f32));
+            }
+            b"0O" if amount > 0 => self.fade = Some((0.0, 1.0 / amount as f32)),
+            _ => {}
+        }
+    }
+
+    /// Advance per-tick effects. `tick` is the tick index within the line (slides and fades start on tick 1 of the line that issues them).
+    pub fn tick(&mut self, tick: u8) {
+        let skip = tick == 0 && self.fresh_fx;
+        self.fresh_fx = false;
+        if !skip {
+            self.semis += self.slide;
+            if let Some((target, speed)) = self.glide {
+                let d = target - self.semis;
+                if d.abs() <= speed {
+                    self.semis = target;
+                    self.glide = None;
+                } else {
+                    self.semis += speed * d.signum();
+                }
+            }
+            self.dyn_gain = (self.dyn_gain + self.vslide).clamp(0.0, 2.0);
+        }
+        self.arp_offset = match self.arp {
+            Some((x, y)) => match tick % 3 {
+                1 => x,
+                2 => y,
+                _ => 0.0,
+            },
+            None => 0.0,
+        };
+        if let (Some((target, step)), false) = (self.fade, skip) {
+            if self.dyn_gain < target {
+                self.dyn_gain = (self.dyn_gain + step).min(target);
+            } else {
+                self.dyn_gain = (self.dyn_gain - step).max(target);
+            }
+            if self.dyn_gain == target {
+                self.fade = None;
+                if target == 0.0 {
+                    self.release();
+                    self.ending = true;
+                }
+            }
+        }
+    }
+
+    fn age_secs(&self, rate: u32) -> f32 {
+        self.age_frames as f32 / rate as f32
+    }
+
+    /// Recompute smoothing targets from effects and envelopes.
+    fn retarget(&mut self, rate: u32) {
+        let age = self.age_secs(rate);
+        let rel = self.released_at.map(|f| f / rate as f32);
+        // LFOs run in real time (speed nibble x = x * 0.5 Hz), independent of tempo.
+        let dt = control_block(rate) as f32 / rate as f32;
+        self.vib_phase = (self.vib_phase + self.vib.0 * 0.5 * dt).fract();
+        self.trem_phase = (self.trem_phase + self.trem.0 * 0.5 * dt).fract();
+        self.trem_gain =
+            1.0 - self.trem.1 * (0.5 + 0.5 * (self.trem_phase * std::f32::consts::TAU).sin());
+        let mut semis = self.semis + self.arp_offset;
+        if self.vib.1 > 0.0 {
+            semis += self.vib.1 * (self.vib_phase * std::f32::consts::TAU).sin();
+        }
+        if self.pitch_env.enabled {
+            let t = self.pitch_env.effective_time(age, rel);
+            semis += (self.pitch_env.value_at(t) - 0.5) * 24.0;
+        }
+        self.step_target = self.sample_rate * 2f64.powf(semis as f64 / 12.0) / rate as f64;
+        let mut gain = self.col_vol * self.dyn_gain * self.trem_gain * self.base_gain;
+        if self.vol_env.enabled {
+            let t = self.vol_env.effective_time(age, rel);
+            gain *= self.vol_env.value_at(t);
+            if rel.is_some() && t >= self.vol_env.end_time() {
+                self.ending = true;
+            }
+        }
+        self.gm_target = gain;
+        let mut pan = self.pan;
+        if self.pan_env.enabled {
+            let t = self.pan_env.effective_time(age, rel);
+            pan += (self.pan_env.value_at(t) - 0.5) * 2.0;
+        }
+        self.pan_now = pan.clamp(-1.0, 1.0);
     }
 
     #[inline]
@@ -89,22 +312,37 @@ impl Voice {
         self.data.get(i * self.channels + ch.min(self.channels - 1)).copied().unwrap_or(0.0)
     }
 
-    /// Add this voice into interleaved stereo `buf`.
-    pub fn mix(&mut self, buf: &mut [f32], engine_rate: u32, track_vol: f32, track_pan: f32) {
-        let step = self.step_base / engine_rate as f64;
-        let pan = (self.pan + track_pan).clamp(-1.0, 1.0);
-        let (gl, gr) = ((1.0 - pan).min(1.0), (1.0 + pan).min(1.0));
-        let g = self.gain * track_vol;
-        let fade_step = 1.0 / (engine_rate as f32 * 0.005); // 5 ms release
+    /// Add this voice into interleaved stereo `buf`; returns the peak it contributed.
+    pub fn mix(&mut self, buf: &mut [f32], engine_rate: u32, track_vol: f32, track_pan: f32) -> f32 {
+        let k = 1.0 - (-1.0 / (engine_rate as f32 * SMOOTH_SECONDS)).exp();
+        let k64 = k as f64;
+        let end_step = 1.0 / (engine_rate as f32 * 0.005); // 5 ms release
         let looping = self.loop_mode != LoopMode::Off && self.loop_end > self.loop_start;
         let len = (self.loop_end - self.loop_start.min(self.loop_end)) as f64;
+        // Without a volume envelope, a released voice plays out past its loop; with one, it keeps looping.
+        let stop_loop_on_release = !self.vol_env.enabled;
+        let block = control_block(engine_rate);
+        let mut peak = 0.0f32;
         for out in buf.chunks_exact_mut(2) {
             if self.finished {
-                return;
+                return peak;
             }
+            if self.ctr == 0 {
+                self.retarget(engine_rate);
+                if self.snap {
+                    self.snap = false;
+                    self.gm_cur = self.gm_target;
+                    self.step_cur = self.step_target;
+                }
+            }
+            self.ctr = (self.ctr + 1) % block;
+            self.age_frames += 1;
+            self.gm_cur += (self.gm_target - self.gm_cur) * k;
+            self.step_cur += (self.step_target - self.step_cur) * k64;
+
             if self.pos < 0.0 || self.pos as usize >= self.frames {
                 self.finished = true;
-                return;
+                return peak;
             }
             let i = self.pos as usize;
             let frac = (self.pos - i as f64) as f32;
@@ -112,19 +350,23 @@ impl Voice {
             let l = self.frame(i, 0) * (1.0 - frac) + self.frame(j, 0) * frac;
             let r =
                 if self.channels > 1 { self.frame(i, 1) * (1.0 - frac) + self.frame(j, 1) * frac } else { l };
-            if self.releasing {
-                self.fade -= fade_step;
-                if self.fade <= 0.0 {
+            if self.ending {
+                self.end_fade -= end_step;
+                if self.end_fade <= 0.0 {
                     self.finished = true;
-                    return;
+                    return peak;
                 }
             }
-            let a = g * self.fade;
-            out[0] += l * a * gl;
-            out[1] += r * a * gr;
+            let pan = (self.pan_now + track_pan).clamp(-1.0, 1.0);
+            let (gl, gr) = ((1.0 - pan).min(1.0), (1.0 + pan).min(1.0));
+            let a = self.gm_cur * track_vol * self.end_fade;
+            let (ol, or) = (l * a * gl, r * a * gr);
+            out[0] += ol;
+            out[1] += or;
+            peak = peak.max(ol.abs()).max(or.abs());
 
-            self.pos += step * self.dir;
-            if looping && !self.releasing {
+            self.pos += self.step_cur * self.dir;
+            if looping && !(self.releasing && stop_loop_on_release) {
                 let (ls, le) = (self.loop_start as f64, self.loop_end as f64);
                 match self.loop_mode {
                     LoopMode::Forward if self.pos >= le => self.pos -= len,
@@ -142,5 +384,6 @@ impl Voice {
                 }
             }
         }
+        peak
     }
 }

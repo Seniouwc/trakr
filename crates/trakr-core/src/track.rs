@@ -36,6 +36,9 @@ pub struct Track {
     /// -1.0 (left) .. 1.0 (right).
     pub panning: f32,
     pub mute: MuteState,
+    /// When any track is soloed, only soloed tracks (and the master) are heard.
+    #[serde(default)]
+    pub solo: bool,
     pub color: Option<[u8; 3]>,
     pub devices: Vec<DeviceSpec>,
     /// Index of the owning group track, if any.
@@ -52,6 +55,7 @@ impl Track {
             volume: 1.0,
             panning: 0.0,
             mute: MuteState::Active,
+            solo: false,
             color: None,
             devices: Vec::new(),
             group: None,

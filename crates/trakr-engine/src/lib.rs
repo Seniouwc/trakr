@@ -66,12 +66,29 @@ pub trait InputRecorder {
     fn drain(&mut self, out: &mut Vec<f32>);
 }
 
-/// Playback position published by the audio thread.
-#[derive(Default)]
+/// Most tracks the level meters cover.
+pub const MAX_METER_TRACKS: usize = 64;
+
+/// Playback position and level meters published by the audio thread.
 pub struct SharedPos {
     pub playing: AtomicBool,
     pub seq_pos: AtomicU32,
     pub line: AtomicU32,
+    /// Per-track peak of the most recent render call, as f32 bits.
+    meters: Vec<AtomicU32>,
+    master: [AtomicU32; 2],
+}
+
+impl Default for SharedPos {
+    fn default() -> Self {
+        Self {
+            playing: AtomicBool::new(false),
+            seq_pos: AtomicU32::new(0),
+            line: AtomicU32::new(0),
+            meters: (0..MAX_METER_TRACKS).map(|_| AtomicU32::new(0)).collect(),
+            master: [AtomicU32::new(0), AtomicU32::new(0)],
+        }
+    }
 }
 
 impl SharedPos {
@@ -80,6 +97,19 @@ impl SharedPos {
             self.playing.load(Ordering::Relaxed),
             self.seq_pos.load(Ordering::Relaxed) as usize,
             self.line.load(Ordering::Relaxed) as u16,
+        )
+    }
+
+    /// Peak (0..) of a track during the last audio buffer.
+    pub fn track_peak(&self, track: usize) -> f32 {
+        self.meters.get(track).map_or(0.0, |m| f32::from_bits(m.load(Ordering::Relaxed)))
+    }
+
+    /// (left, right) peak of the final mix during the last audio buffer.
+    pub fn master_peak(&self) -> (f32, f32) {
+        (
+            f32::from_bits(self.master[0].load(Ordering::Relaxed)),
+            f32::from_bits(self.master[1].load(Ordering::Relaxed)),
         )
     }
 }
@@ -126,6 +156,8 @@ pub fn create(sample_rate: u32) -> (Engine, EngineHandle) {
         events: Vec::with_capacity(MAX_EVENTS),
         pending_break: None,
         stop_at_end: false,
+        tick: 0,
+        frames_to_tick: 0.0,
     };
     (engine, EngineHandle { tx, garbage: grx, pos, sample_rate })
 }
@@ -148,25 +180,41 @@ pub struct Engine {
     /// Line to jump to in the next pattern slot (ZB command).
     pending_break: Option<u16>,
     stop_at_end: bool,
+    /// Tick index within the current line and frames until the next tick.
+    tick: u8,
+    frames_to_tick: f64,
 }
 
 impl Engine {
+    fn frames_per_tick(&self) -> f64 {
+        Song::frames_per_line(self.bpm, self.lpb, self.sample_rate) / self.song.tpl.max(1) as f64
+    }
+
     /// Render interleaved stereo f32 into `out` (`out.len()` must be even).
     pub fn render(&mut self, out: &mut [f32]) {
         self.drain_commands();
         out.fill(0.0);
         let total = out.len() / 2;
         let mut done = 0;
+        let mut meters = [0.0f32; MAX_METER_TRACKS];
+        let any_solo = self.song.tracks.iter().any(|t| t.solo);
         while done < total {
             if self.playing && self.frames_to_line <= 0.0 {
                 self.trigger_line();
                 self.frames_to_line += Song::frames_per_line(self.bpm, self.lpb, self.sample_rate);
+                self.tick = 0;
+                self.frames_to_tick = self.frames_per_tick();
+                for v in &mut self.voices {
+                    v.tick(0);
+                }
                 self.advance_line();
             }
             self.fire_due_events();
             let mut chunk = total - done;
             if self.playing {
-                chunk = chunk.min((self.frames_to_line.ceil() as usize).max(1));
+                chunk = chunk
+                    .min((self.frames_to_line.ceil() as usize).max(1))
+                    .min((self.frames_to_tick.ceil() as usize).max(1));
             }
             for e in &self.events {
                 chunk = chunk.min((e.at.ceil() as usize).max(1));
@@ -175,19 +223,51 @@ impl Engine {
             for v in &mut self.voices {
                 let track = self.song.tracks.get(v.track);
                 let (vol, pan) = track.map_or((1.0, 0.0), |t| {
-                    (if t.mute == MuteState::Active { t.volume } else { 0.0 }, t.panning)
+                    let audible = t.mute == MuteState::Active && (!any_solo || t.solo);
+                    (if audible { t.volume } else { 0.0 }, t.panning)
                 });
-                v.mix(buf, self.sample_rate, vol, pan);
+                let peak = v.mix(buf, self.sample_rate, vol, pan);
+                if let Some(m) = meters.get_mut(v.track) {
+                    *m = m.max(peak);
+                }
             }
             self.voices.retain(|v| v.alive());
             if self.playing {
                 self.frames_to_line -= chunk as f64;
+                self.frames_to_tick -= chunk as f64;
+                while self.frames_to_tick <= 0.0 && self.frames_to_line > 0.0 {
+                    self.tick = self.tick.saturating_add(1);
+                    for v in &mut self.voices {
+                        v.tick(self.tick);
+                    }
+                    self.frames_to_tick += self.frames_per_tick();
+                }
             }
             for e in &mut self.events {
                 e.at -= chunk as f64;
             }
             done += chunk;
         }
+
+        // Master track volume, then meters.
+        let master_vol = self
+            .song
+            .tracks
+            .iter()
+            .find(|t| t.kind == trakr_core::TrackKind::Master)
+            .map_or(1.0, |t| if t.mute == MuteState::Active { t.volume } else { 0.0 });
+        let (mut pl, mut pr) = (0.0f32, 0.0f32);
+        for f in out.chunks_exact_mut(2) {
+            f[0] *= master_vol;
+            f[1] *= master_vol;
+            pl = pl.max(f[0].abs());
+            pr = pr.max(f[1].abs());
+        }
+        for (slot, p) in self.pos.meters.iter().zip(meters) {
+            slot.store(p.to_bits(), Ordering::Relaxed);
+        }
+        self.pos.master[0].store(pl.to_bits(), Ordering::Relaxed);
+        self.pos.master[1].store(pr.to_bits(), Ordering::Relaxed);
     }
 
     fn fire_due_events(&mut self) {
@@ -294,11 +374,12 @@ impl Engine {
         pan: f32,
         opts: TriggerOpts,
     ) {
-        let Some(sample) =
-            self.song.instruments.get(inst as usize).and_then(|i| i.sample_for(note).map(|s| (s, i.volume)))
-        else {
+        let song = self.song.clone(); // refcount bump only
+        let Some(instrument) = song.instruments.get(inst as usize) else { return };
+        let Some(sample) = instrument.sample_for(note) else { return };
+        if song.tracks.get(track).is_some_and(|t| t.mute == MuteState::Off) {
             return;
-        };
+        }
         // Same track+column: cut the previous voice (NNA = cut). TODO: NNA modes.
         for v in self.voices.iter_mut().filter(|v| v.track == track && v.column == column) {
             v.release();
@@ -306,7 +387,7 @@ impl Engine {
         if self.voices.len() >= MAX_VOICES {
             self.voices.remove(0);
         }
-        self.voices.push(Voice::new(track, column, sample.0, sample.1, note, vol, pan, opts));
+        self.voices.push(Voice::new(track, column, instrument, sample, note, vol, pan, opts));
     }
 
     fn trigger_line(&mut self) {
@@ -338,6 +419,7 @@ impl Engine {
                 globals(fx, self);
             }
 
+            let track_glide = line.effects.iter().find(|e| &e.id == b"0G").map(|e| e.amount);
             for (ci, col) in line.notes.iter().enumerate() {
                 if col.note == NOTE_OFF {
                     let at = col.delay as f64 / 256.0 * fpl;
@@ -351,6 +433,19 @@ impl Engine {
                 } else if col.note != NOTE_EMPTY && col.instrument != EMPTY {
                     let vol = if col.volume <= 0x80 { col.volume as f32 / 128.0 } else { 1.0 };
                     let pan = if col.panning <= 0x80 { col.panning as f32 / 64.0 - 1.0 } else { 0.0 };
+                    // Glide: retarget the sounding note in this column instead of retriggering.
+                    let glide = if &col.effect.id == b"0G" { Some(col.effect.amount) } else { track_glide };
+                    if let Some(speed) = glide {
+                        if let Some(v) = self
+                            .voices
+                            .iter_mut()
+                            .find(|v| v.track == ti && v.column == ci && !v.is_releasing())
+                        {
+                            let target = v.semis_for_note(col.note);
+                            v.glide_to(target, speed);
+                            continue;
+                        }
+                    }
                     let opts = TriggerOpts { offset, backwards };
                     let at = col.delay as f64 / 256.0 * fpl + delay_ticks as f64 * fpt;
                     let kind = EventKind::NoteOn { inst: col.instrument, note: col.note, vol, pan, opts };
@@ -371,6 +466,30 @@ impl Engine {
                             t += r as f64 * fpt;
                         }
                     }
+                } else if col.note == NOTE_EMPTY {
+                    // Volume and panning columns on a line without a note change the sounding note.
+                    for v in self.voices.iter_mut().filter(|v| v.track == ti && v.column == ci) {
+                        if col.volume <= 0x80 {
+                            v.set_col_volume(col.volume as f32 / 128.0);
+                        }
+                        if col.panning <= 0x80 {
+                            v.set_pan(col.panning as f32 / 64.0 - 1.0);
+                        }
+                    }
+                }
+            }
+
+            // Per-tick effects: track-wide from the effect columns, per-column from the note slots.
+            for fx in line.effects.iter().filter(|e| !e.is_empty()) {
+                for v in self.voices.iter_mut().filter(|v| v.track == ti && !v.is_releasing()) {
+                    v.apply_effect(fx.id, fx.amount);
+                }
+            }
+            for (ci, col) in line.notes.iter().enumerate().filter(|(_, c)| !c.effect.is_empty()) {
+                for v in
+                    self.voices.iter_mut().filter(|v| v.track == ti && v.column == ci && !v.is_releasing())
+                {
+                    v.apply_effect(col.effect.id, col.effect.amount);
                 }
             }
         }
@@ -386,11 +505,16 @@ impl Engine {
         if self.line >= lines || brk.is_some() {
             self.line = 0;
             if !self.loop_pattern {
-                self.seq_pos += 1;
-                if self.seq_pos >= self.song.sequence.len() {
-                    self.seq_pos = 0; // TODO: song loop range
-                    if self.stop_at_end {
-                        self.playing = false;
+                match self.song.loop_range {
+                    Some((a, b)) if self.seq_pos == b && a <= b => self.seq_pos = a,
+                    _ => {
+                        self.seq_pos += 1;
+                        if self.seq_pos >= self.song.sequence.len() {
+                            self.seq_pos = 0;
+                            if self.stop_at_end {
+                                self.playing = false;
+                            }
+                        }
                     }
                 }
             }
@@ -405,6 +529,13 @@ impl Engine {
 /// Render `song` once through the sequence (plus ring-out) to interleaved stereo f32, offline.
 /// Stops at the end of the song, when everything has decayed, or after `max_seconds`.
 pub fn render_song(song: Arc<Song>, sample_rate: u32, max_seconds: f32) -> Vec<f32> {
+    let song = if song.loop_range.is_some() {
+        let mut s = (*song).clone();
+        s.loop_range = None; // an offline render plays the whole song once
+        Arc::new(s)
+    } else {
+        song
+    };
     let (mut engine, mut handle) = create(sample_rate);
     handle.send(Command::SetSong(song));
     handle.send(Command::SetStopAtEnd(true));
@@ -608,5 +739,221 @@ mod sequencer_tests {
         engine.render(&mut out);
         // line 1 at frame 900 (old pace already scheduled), then 500 frames per line: line 2 at 1400
         assert!(h.pos.get().2 >= 2);
+    }
+
+    // ---- per-tick effects, envelopes, mixer ----
+
+    /// Song with a long ramp sample (value = frame / 100000) so output slope reveals pitch, or a
+    /// constant sample so output level reveals gain. BPM 60 / LPB 1 / TPL 4: line = 1000 frames, tick = 250.
+    fn ramp_song() -> Song {
+        song_with((0..100_000).map(|i| i as f32 / 100_000.0).collect(), LoopMode::Off)
+    }
+
+    fn hold_song() -> Song {
+        song_with(vec![1.0; 100_000], LoopMode::Off)
+    }
+
+    fn put_t(song: &mut Song, track: usize, line: u16, f: impl FnOnce(&mut trakr_core::Line)) {
+        f(Arc::make_mut(&mut song.patterns[0]).line_mut(track, line));
+    }
+
+    fn fx(id: &[u8; 2], amount: u8) -> EffectCmd {
+        EffectCmd { id: *id, amount }
+    }
+
+    /// Output slope (per frame, x 1e5) around frame `at`.
+    fn slope(out: &[f32], at: usize) -> f32 {
+        (out[at + 10] - out[at - 10]) / 20.0 * 100_000.0
+    }
+
+    #[test]
+    fn pitch_slide_up_and_down() {
+        for (id, up) in [(b"0U", true), (b"0D", false)] {
+            let mut song = ramp_song();
+            put(&mut song, 0, |l| {
+                note(&mut l.notes[0]);
+                l.effects[0] = fx(id, 0x10); // one semitone per tick
+            });
+            let out = render(song, 1000);
+            let (a, b) = (slope(&out, 100), slope(&out, 900));
+            assert!((a - 1.0).abs() < 0.05, "start slope {a}");
+            if up {
+                assert!(b > a * 1.15, "slide up: {a} -> {b}");
+            } else {
+                assert!(b < a * 0.9, "slide down: {a} -> {b}");
+            }
+        }
+    }
+
+    #[test]
+    fn glide_reaches_the_new_note_without_retriggering() {
+        let mut song = ramp_song();
+        put(&mut song, 0, |l| note(&mut l.notes[0]));
+        put(&mut song, 1, |l| {
+            l.notes[0].note = 60; // an octave up
+            l.notes[0].instrument = 0;
+            l.notes[0].effect = fx(b"0G", 0x40); // 4 semitones per tick
+        });
+        let out = render(song, 2000);
+        // no retrigger: the ramp keeps climbing instead of restarting near zero at frame 1000
+        assert!(out[1100] > out[900]);
+        let (a, b) = (slope(&out, 900), slope(&out, 1900));
+        assert!((b / a - 2.0).abs() < 0.15, "glide ended at {b} vs start {a}");
+    }
+
+    #[test]
+    fn vibrato_wobbles_the_pitch() {
+        let mut song = ramp_song();
+        put(&mut song, 0, |l| {
+            note(&mut l.notes[0]);
+            l.effects[0] = fx(b"0V", 0x4F); // 2 Hz, ~1.9 semitones
+        });
+        let out = render(song, 1000);
+        let slopes: Vec<f32> = (1..19).map(|i| slope(&out, i * 50)).collect();
+        let (lo, hi) = slopes.iter().fold((f32::MAX, f32::MIN), |(l, h), s| (l.min(*s), h.max(*s)));
+        assert!(hi / lo > 1.1, "vibrato range {lo}..{hi}");
+    }
+
+    #[test]
+    fn arpeggio_cycles_pitch_per_tick() {
+        let mut song = ramp_song();
+        put(&mut song, 0, |l| {
+            note(&mut l.notes[0]);
+            l.effects[0] = fx(b"0A", 0x0C); // base, +0, +12 over ticks 0, 1, 2
+        });
+        let out = render(song, 1000);
+        let (base, up) = (slope(&out, 100), slope(&out, 650));
+        assert!((up / base - 2.0).abs() < 0.2, "arp {base} -> {up}");
+    }
+
+    #[test]
+    fn fade_in_and_out() {
+        let mut song = hold_song();
+        put(&mut song, 0, |l| {
+            note(&mut l.notes[0]);
+            l.effects[0] = fx(b"0I", 4);
+        });
+        let out = render(song, 1100);
+        assert!(out[100] < out[500] && out[500] < out[900], "{} {} {}", out[100], out[500], out[900]);
+        assert!(out[1050] > 0.9);
+
+        let mut song = hold_song();
+        put(&mut song, 0, |l| {
+            note(&mut l.notes[0]);
+            l.effects[0] = fx(b"0O", 2);
+        });
+        let out = render(song, 1000);
+        assert!(out[100] > 0.7);
+        assert!(out[700].abs() < 0.01, "still audible: {}", out[700]);
+    }
+
+    #[test]
+    fn volume_slide_and_tremolo() {
+        let mut song = hold_song();
+        put(&mut song, 0, |l| {
+            note(&mut l.notes[0]);
+            l.effects[0] = fx(b"0W", 0x08); // down 8/64 per tick
+        });
+        let out = render(song, 1000);
+        assert!(out[900] < out[100] * 0.8, "{} -> {}", out[100], out[900]);
+
+        let mut song = hold_song();
+        put(&mut song, 0, |l| {
+            note(&mut l.notes[0]);
+            l.effects[0] = fx(b"0T", 0x4F);
+        });
+        let out = render(song, 1000);
+        let (lo, hi) = out[50..900].iter().fold((f32::MAX, f32::MIN), |(l, h), s| (l.min(*s), h.max(*s)));
+        assert!(hi - lo > 0.3, "tremolo range {lo}..{hi}");
+    }
+
+    #[test]
+    fn volume_column_changes_a_sounding_note() {
+        let mut song = hold_song();
+        put(&mut song, 0, |l| note(&mut l.notes[0]));
+        put(&mut song, 1, |l| l.notes[0].volume = 0x40); // half volume, no new note
+        let out = render(song, 1500);
+        assert!(out[500] > 0.9);
+        assert!((out[1400] - 0.5).abs() < 0.05, "{}", out[1400]);
+    }
+
+    #[test]
+    fn volume_envelope_with_sustain_and_release() {
+        let mut song = hold_song();
+        Arc::make_mut(&mut song.instruments[0].volume_env).clone_from(&trakr_core::Envelope::adsr(0.1, 0.1, 0.5, 0.2));
+        put(&mut song, 0, |l| note(&mut l.notes[0]));
+        put(&mut song, 1, |l| l.notes[0].note = NOTE_OFF);
+        let out = render(song, 1500);
+        assert!((out[50] - 0.5).abs() < 0.08, "attack {}", out[50]);
+        assert!((out[600] - 0.5).abs() < 0.05, "sustain {}", out[600]);
+        assert!(out[1100] > 0.1 && out[1100] < 0.4, "release {}", out[1100]);
+        assert!(out[1400].abs() < 0.01, "after end {}", out[1400]);
+    }
+
+    #[test]
+    fn pitch_envelope_bends_the_note() {
+        let mut song = ramp_song();
+        let mut env = trakr_core::Envelope::default();
+        env.enabled = true;
+        env.points = vec![(0.0, 0.5), (0.5, 1.0)]; // 0 -> +12 semitones over half a second
+        *Arc::make_mut(&mut song.instruments[0].pitch_env) = env;
+        put(&mut song, 0, |l| note(&mut l.notes[0]));
+        let out = render(song, 600);
+        assert!(slope(&out, 450) > slope(&out, 60) * 1.7);
+    }
+
+    #[test]
+    fn solo_off_and_master_volume() {
+        let mut song = hold_song();
+        put_t(&mut song, 1, 0, |l| note(&mut l.notes[0]));
+        song.tracks[0].solo = true; // track 1 (index 1) is not soloed
+        assert_eq!(first_nonzero(&render(song.clone(), 200)), None);
+        song.tracks[0].solo = false;
+        assert!(first_nonzero(&render(song.clone(), 200)).is_some());
+        song.tracks[1].mute = MuteState::Off;
+        assert_eq!(first_nonzero(&render(song.clone(), 200)), None);
+        song.tracks[1].mute = MuteState::Active;
+        let n = song.tracks.len();
+        song.tracks[n - 1].volume = 0.5; // master
+        let out = render(song, 200);
+        assert!((out[100] - 0.5).abs() < 0.01);
+    }
+
+    #[test]
+    fn meters_report_track_and_master_levels() {
+        let mut song = hold_song();
+        put_t(&mut song, 1, 0, |l| note(&mut l.notes[0]));
+        let (mut engine, mut h) = create(RATE);
+        h.send(Command::SetSong(Arc::new(song)));
+        h.send(Command::Play { seq_pos: 0, line: 0, loop_pattern: false });
+        let mut out = vec![0.0; 2 * 300];
+        engine.render(&mut out);
+        assert!(h.pos.track_peak(1) > 0.4);
+        assert_eq!(h.pos.track_peak(0), 0.0);
+        assert!(h.pos.master_peak().0 > 0.4);
+    }
+
+    #[test]
+    fn loop_range_repeats_slots() {
+        let mut song = hold_song();
+        for _ in 0..2 {
+            song.patterns.push(Arc::new(trakr_core::Pattern::new(song.tracks.len(), 2)));
+        }
+        Arc::make_mut(&mut song.patterns[0]).number_of_lines = 2;
+        song.sequence = vec![0, 1, 2];
+        song.loop_range = Some((1, 2));
+        let (mut engine, mut h) = create(RATE);
+        h.send(Command::SetSong(Arc::new(song)));
+        h.send(Command::Play { seq_pos: 0, line: 0, loop_pattern: false });
+        let mut seen_after_start = Vec::new();
+        for i in 0..20 {
+            let mut out = vec![0.0; 2 * 1000];
+            engine.render(&mut out);
+            if i >= 4 {
+                seen_after_start.push(h.pos.get().1);
+            }
+        }
+        assert!(seen_after_start.iter().all(|&s| s == 1 || s == 2), "{seen_after_start:?}");
+        assert!(seen_after_start.contains(&1) && seen_after_start.contains(&2));
     }
 }

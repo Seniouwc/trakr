@@ -1,3 +1,4 @@
+use crate::envelope::Envelope;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
@@ -330,11 +331,27 @@ pub struct Instrument {
     pub name: String,
     pub samples: Vec<Sample>,
     pub volume: f32,
+    /// Volume multiplier over note time.
+    #[serde(default)]
+    pub volume_env: Arc<Envelope>,
+    /// Panning over note time (0 = left, 0.5 = center, 1 = right).
+    #[serde(default)]
+    pub pan_env: Arc<Envelope>,
+    /// Pitch over note time in semitones: 0.5 = no change, range +-12.
+    #[serde(default)]
+    pub pitch_env: Arc<Envelope>,
 }
 
 impl Instrument {
     pub fn new(name: impl Into<String>) -> Self {
-        Self { name: name.into(), samples: Vec::new(), volume: 1.0 }
+        Self {
+            name: name.into(),
+            samples: Vec::new(),
+            volume: 1.0,
+            volume_env: Arc::default(),
+            pan_env: Arc::default(),
+            pitch_env: Arc::default(),
+        }
     }
 
     /// First sample whose key range contains `note`.

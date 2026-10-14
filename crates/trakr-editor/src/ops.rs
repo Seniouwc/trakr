@@ -413,7 +413,10 @@ impl Editor {
         }
         self.checkpoint();
         let at = self.seq_pos;
-        self.song_mut().sequence.remove(at);
+        let song = self.song_mut();
+        song.sequence.remove(at);
+        let n = song.sequence.len();
+        song.loop_range = song.loop_range.map(|(a, b)| (a.min(n - 1), b.min(n - 1)));
         self.after_structure_change();
     }
 
@@ -528,6 +531,95 @@ impl Editor {
         self.after_structure_change();
     }
 
+    /// Write a linear volume ramp into the volume column over the selected lines (0 -> full for a
+    /// fade in, full -> 0 for a fade out). Works on empty lines too: the volume column changes a
+    /// sounding note. Needs a selection of at least two lines.
+    pub fn fade_block(&mut self, fade_in: bool) {
+        if !self.need_edit() {
+            return;
+        }
+        let Some(b) = self.selection().filter(|b| b.line1 > b.line0) else {
+            self.status = "select at least two lines (Shift+arrows) to fade".into();
+            return;
+        };
+        let mut rows = self.read_block(b);
+        let n = rows.len() - 1;
+        for (r, row) in rows.iter_mut().enumerate() {
+            let t = r as f32 / n as f32;
+            let t = if fade_in { t } else { 1.0 - t };
+            for cell in row.iter_mut() {
+                if let Cell::Note(note) = cell {
+                    note.volume = (0x80 as f32 * t).round() as u8;
+                }
+            }
+        }
+        self.write_block(b.col0, b.line0, &rows);
+        self.status = if fade_in { "faded in".into() } else { "faded out".into() };
+    }
+
+    // ---- mixer ------------------------------------------------------------------
+
+    pub fn set_track_volume(&mut self, track: usize, volume: f32) {
+        if track < self.song.tracks.len() {
+            self.checkpoint_key("track_volume");
+            self.song_mut().tracks[track].volume = volume.clamp(0.0, 4.0);
+            self.sync();
+        }
+    }
+
+    pub fn set_track_panning(&mut self, track: usize, panning: f32) {
+        if track < self.song.tracks.len() {
+            self.checkpoint_key("track_pan");
+            self.song_mut().tracks[track].panning = panning.clamp(-1.0, 1.0);
+            self.sync();
+        }
+    }
+
+    pub fn track_toggle_mute_at(&mut self, track: usize) {
+        if track < self.song.tracks.len() {
+            self.checkpoint();
+            let tr = &mut self.song_mut().tracks[track];
+            tr.mute = if tr.mute == MuteState::Active { MuteState::Muted } else { MuteState::Active };
+            self.sync();
+        }
+    }
+
+    pub fn track_toggle_solo(&mut self, track: usize) {
+        if track < self.song.tracks.len() {
+            self.checkpoint();
+            let tr = &mut self.song_mut().tracks[track];
+            tr.solo = !tr.solo;
+            self.sync();
+        }
+    }
+
+    // ---- loop range ---------------------------------------------------------------------
+
+    pub fn loop_range(&self) -> Option<(usize, usize)> {
+        self.song.loop_range
+    }
+
+    /// Set the start (`start = true`) or end of the song loop range to the current slot.
+    pub fn set_loop_edge(&mut self, start: bool) {
+        self.checkpoint();
+        let here = self.seq_pos;
+        let last = self.song.sequence.len() - 1;
+        let (a, b) = self.song.loop_range.unwrap_or((here, here));
+        let range = if start { (here, b.max(here).min(last)) } else { (a.min(here), here) };
+        self.song_mut().loop_range = Some(range);
+        self.status = format!("loop range: slots {:02X} to {:02X}", range.0, range.1);
+        self.sync();
+    }
+
+    pub fn clear_loop(&mut self) {
+        if self.song.loop_range.is_some() {
+            self.checkpoint();
+            self.song_mut().loop_range = None;
+            self.status = "loop range cleared".into();
+            self.sync();
+        }
+    }
+
     // ---- song settings --------------------------------------------------------
 
     pub fn set_tempo(&mut self, bpm: f32, lpb: u8, tpl: u8) {
@@ -608,6 +700,15 @@ impl Editor {
             StepDown => self.edit_step = self.edit_step.saturating_sub(1),
             StepUp => self.edit_step = (self.edit_step + 1).min(64),
             InstrumentRemove => self.instrument_remove(),
+            FadeInBlock => self.fade_block(true),
+            FadeOutBlock => self.fade_block(false),
+            TrackSolo => {
+                let t = self.cursor.track;
+                self.track_toggle_solo(t);
+            }
+            LoopStart => self.set_loop_edge(true),
+            LoopEnd => self.set_loop_edge(false),
+            LoopClear => self.clear_loop(),
             RecordToggle => self.record_toggle(),
             RenderToSample => self.render_to_sample(),
             InstrumentPrev => {

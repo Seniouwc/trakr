@@ -118,3 +118,17 @@ impl Editor {
         self.sync();
     }
 }
+
+impl Editor {
+    /// Edit the selected instrument; repeated calls with the same `key` (e.g. dragging an envelope
+    /// point) share one undo step.
+    pub fn edit_instrument<F: FnOnce(&mut Instrument)>(&mut self, key: &'static str, f: F) {
+        let idx = self.instrument as usize;
+        if idx >= self.song.instruments.len() {
+            return;
+        }
+        self.checkpoint_key(key);
+        f(&mut self.song_mut().instruments[idx]);
+        self.sync();
+    }
+}

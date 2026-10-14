@@ -314,3 +314,60 @@ fn export_sample_writes_a_readable_wav() {
     assert_eq!(back.frames(), app.current_sample().unwrap().frames());
     let _ = std::fs::remove_file(path);
 }
+
+#[test]
+fn fade_block_writes_volume_ramp() {
+    let mut app = ed();
+    app.edit_mode = true;
+    put(&mut app, 0, 48);
+    app.set_cursor(0, 0, 0, 0);
+    for _ in 0..4 {
+        app.on_key(KeyEvent::shift(KeyCode::Down));
+    }
+    app.do_action(Action::FadeInBlock);
+    let vol = |l: u16| app.song.patterns[0].line(0, l).map_or(0xFF, |x| x.notes[0].volume);
+    assert_eq!((vol(0), vol(2), vol(4)), (0, 0x40, 0x80));
+    app.do_action(Action::FadeOutBlock);
+    let vol = |l: u16| app.song.patterns[0].line(0, l).map_or(0xFF, |x| x.notes[0].volume);
+    assert_eq!((vol(0), vol(2), vol(4)), (0x80, 0x40, 0));
+    app.undo();
+    let vol = |l: u16| app.song.patterns[0].line(0, l).map_or(0xFF, |x| x.notes[0].volume);
+    assert_eq!(vol(4), 0x80);
+}
+
+#[test]
+fn mixer_and_loop_range() {
+    let mut app = ed();
+    app.set_track_volume(1, 0.5);
+    app.set_track_volume(1, 0.7); // drag: one undo step
+    assert_eq!(app.song.tracks[1].volume, 0.7);
+    app.undo();
+    assert_eq!(app.song.tracks[1].volume, 1.0);
+    app.track_toggle_solo(2);
+    assert!(app.song.tracks[2].solo);
+    app.track_toggle_mute_at(3);
+    assert_eq!(app.song.tracks[3].mute, trakr_core::MuteState::Muted);
+
+    app.do_action(Action::SeqInsert);
+    app.do_action(Action::SeqInsert);
+    app.seq_goto(1);
+    app.do_action(Action::LoopStart);
+    app.seq_goto(2);
+    app.do_action(Action::LoopEnd);
+    assert_eq!(app.loop_range(), Some((1, 2)));
+    app.do_action(Action::SeqDelete);
+    assert_eq!(app.loop_range(), Some((1, 1)));
+    app.do_action(Action::LoopClear);
+    assert_eq!(app.loop_range(), None);
+}
+
+#[test]
+fn edit_instrument_envelope_is_undoable() {
+    let mut app = Editor::new(Song::demo(), None, None);
+    app.edit_instrument("env", |i| {
+        *std::sync::Arc::make_mut(&mut i.volume_env) = trakr_core::Envelope::adsr(0.1, 0.1, 0.5, 0.2);
+    });
+    assert!(app.current_instrument().unwrap().volume_env.enabled);
+    app.undo();
+    assert!(!app.current_instrument().unwrap().volume_env.enabled);
+}
