@@ -37,7 +37,7 @@ Compiled from memory of Renoise 3.x behavior. Verify each item against the offic
 
 ## Samples and instruments
 - [~] Sample playback with linear interpolation, forward loop
-- [ ] Import WAV, AIFF, FLAC, OGG, MP3; RX2/REX not required initially
+- [x] Import WAV, AIFF, FLAC, OGG, MP3 (symphonia); RX2/REX not required initially
 - [ ] Reverse and ping-pong loop, loop release, one-shot, sustain loop
 - [ ] Interpolation modes (none, linear, cubic, sinc), oversampling
 - [ ] Sample editor: waveform, selection, cut/copy/paste, fades, normalize, DC offset, reverse, crop, silence, resample, bit-depth/dither on export

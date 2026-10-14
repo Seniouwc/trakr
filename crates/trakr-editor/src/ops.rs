@@ -607,8 +607,12 @@ impl Editor {
             OctaveUp => self.octave = (self.octave + 1).min(8),
             StepDown => self.edit_step = self.edit_step.saturating_sub(1),
             StepUp => self.edit_step = (self.edit_step + 1).min(64),
+            InstrumentRemove => self.instrument_remove(),
             InstrumentPrev => self.instrument = self.instrument.saturating_sub(1),
-            InstrumentNext => self.instrument = self.instrument.saturating_add(1).min(0xFE),
+            InstrumentNext => {
+                let max = self.song.instruments.len().saturating_sub(1).min(0xFE) as u8;
+                self.instrument = (self.instrument + 1).min(max);
+            }
         }
     }
 }

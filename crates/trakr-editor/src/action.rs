@@ -59,6 +59,7 @@ pub enum Action {
     StepUp,
     InstrumentPrev,
     InstrumentNext,
+    InstrumentRemove,
 }
 
 impl Action {
@@ -112,6 +113,7 @@ impl Action {
             StepUp => "Edit step up",
             InstrumentPrev => "Previous instrument",
             InstrumentNext => "Next instrument",
+            InstrumentRemove => "Remove instrument",
         }
     }
 

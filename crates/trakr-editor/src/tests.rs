@@ -198,3 +198,24 @@ fn clear_selection_needs_edit_mode() {
     app.do_action(Action::Clear);
     assert_eq!(note_at(&app, 0, 0), 10);
 }
+
+#[test]
+fn instrument_remove_remaps_notes() {
+    let mut app = Editor::new(Song::demo(), None, None);
+    app.do_action(Action::InstrumentRemove); // removes instrument 0
+    assert!(app.song.instruments.is_empty());
+    assert_eq!(app.song.patterns[0].line(0, 0).unwrap().notes[0].instrument, EMPTY);
+    app.undo();
+    assert_eq!(app.song.instruments.len(), 1);
+    assert_eq!(app.song.patterns[0].line(0, 0).unwrap().notes[0].instrument, 0);
+}
+
+#[test]
+fn edit_sample_is_undoable() {
+    let mut app = Editor::new(Song::demo(), None, None);
+    let before = app.song.instruments[0].samples[0].data[1000];
+    app.edit_sample(0, |s| s.reverse());
+    assert_ne!(app.song.instruments[0].samples[0].data[1000], before);
+    app.undo();
+    assert_eq!(app.song.instruments[0].samples[0].data[1000], before);
+}

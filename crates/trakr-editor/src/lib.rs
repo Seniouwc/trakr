@@ -2,6 +2,7 @@
 //! Both the TUI and the GUI are thin renderers over [`Editor`].
 
 mod action;
+mod instruments;
 mod io;
 mod keys;
 mod ops;

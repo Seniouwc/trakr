@@ -5,6 +5,7 @@ members = [
     "crates/trakr-engine",
     "crates/trakr-format",
     "crates/trakr-xrns",
+    "crates/trakr-sample",
     "crates/trakr-editor",
     "crates/trakr-tui",
     "crates/trakr-gui",
@@ -22,6 +23,7 @@ trakr-core = { path = "crates/trakr-core" }
 trakr-engine = { path = "crates/trakr-engine", default-features = false }
 trakr-format = { path = "crates/trakr-format" }
 trakr-xrns = { path = "crates/trakr-xrns" }
+trakr-sample = { path = "crates/trakr-sample" }
 trakr-editor = { path = "crates/trakr-editor" }
 trakr-tui = { path = "crates/trakr-tui" }
 trakr-gui = { path = "crates/trakr-gui" }

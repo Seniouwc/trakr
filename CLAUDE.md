@@ -29,6 +29,7 @@ New commands go into `trakr-editor::Action` (label + shortcut) so menus, keys an
 | `trakr-core` | Data model only: Song, Pattern (sparse lines), Track, Instrument, Sample, note/effect types. No IO, no audio, no UI. |
 | `trakr-engine` | Real-time engine: sequencer, voices, mixer, command queue, cpal backend (feature `audio`). |
 | `trakr-format` | Native `.trkr` (zip: `song.json` + raw f32 samples). Versioned via `FORMAT_VERSION`. |
+| `trakr-sample` | Audio file decoding (symphonia) into `Sample`. |
 | `trakr-xrns` | Best-effort `.xrns` importer. Element names are from memory, unverified against real files. |
 | `trakr-editor` | Frontend-neutral `Editor`: cursor, cell entry, transport keys, save. Own `KeyEvent` type; no UI deps. All editing behavior lives here. |
 | `trakr-tui` | ratatui frontend: key translation + rendering only. |
@@ -49,7 +50,7 @@ Dependency direction: core <- engine/format/xrns <- editor <- tui/gui <- trakr. 
 
 - UI to engine sync sends an `Arc<Song>` snapshot on every edit (`Editor::sync`), cheap because `Song.patterns` are `Arc<Pattern>` (an edit clones only the touched pattern). Undo is snapshot-based (`Snapshot`, 500 deep). Incremental edit commands would need dense or preallocated pattern storage in the engine (BTreeMap inserts allocate); not done.
 - Engine ignores: delay column, volume/panning column commands, most effect commands (only `ZT`, `ZL` work), NNA modes, ticks, envelopes, filters, loop modes other than forward, DSP devices, automation, track mute/solo.
-- No sample import yet (only generated demo sample), no song loop range, no pattern clipboard/selection.
+- No song loop range. Sample editing ops exist (normalize/reverse/fade/trim/mono); no slices, no resampling on import.
 - TUI keymap is mine, not Renoise's, apart from the tracker-style piano layout, F1/F2 octave, backtick note-off. Terminals cannot report key release or distinguish left/right modifiers; design around that.
 
 ## Conventions
