@@ -3,6 +3,7 @@ use crate::note::{parse_note, EMPTY};
 use crate::pattern::{Pattern, DEFAULT_LINES};
 use crate::track::{Track, TrackKind};
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Song {
@@ -14,7 +15,8 @@ pub struct Song {
     pub tpl: u8,
     /// Song track order. Sequencer tracks first, master after them, sends last.
     pub tracks: Vec<Track>,
-    pub patterns: Vec<Pattern>,
+    /// Shared so that snapshots sent to the engine are cheap and an edit clones only the touched pattern.
+    pub patterns: Vec<Arc<Pattern>>,
     /// Pattern indices in play order.
     pub sequence: Vec<usize>,
     pub instruments: Vec<Instrument>,
@@ -36,7 +38,7 @@ impl Default for Song {
             lpb: 4,
             tpl: 12,
             tracks,
-            patterns: vec![Pattern::new(n, DEFAULT_LINES)],
+            patterns: vec![Arc::new(Pattern::new(n, DEFAULT_LINES))],
             sequence: vec![0],
             instruments: Vec::new(),
         }
@@ -50,7 +52,7 @@ impl Song {
     }
 
     pub fn pattern_at(&self, seq_pos: usize) -> Option<&Pattern> {
-        self.patterns.get(*self.sequence.get(seq_pos)?)
+        self.patterns.get(*self.sequence.get(seq_pos)?).map(|p| &**p)
     }
 
     /// A small audible song: one decaying sine instrument and an arpeggio.
@@ -67,7 +69,7 @@ impl Song {
         inst.samples.push(Sample::new("sine", rate, 1, data));
         song.instruments.push(inst);
 
-        let pat = &mut song.patterns[0];
+        let pat = Arc::make_mut(&mut song.patterns[0]);
         for (i, name) in ["C-4", "E-4", "G-4", "C-5"].iter().cycle().take(16).enumerate() {
             let col = &mut pat.line_mut(0, (i * 4) as u16).notes[0];
             col.note = parse_note(name).unwrap();

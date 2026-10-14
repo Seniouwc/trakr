@@ -1,42 +1,32 @@
-//! Frontend-neutral editor state and input handling, shared by the TUI and GUI.
+//! Frontend-neutral editor: cursor, cell entry, selection, undo, transport and song operations.
+//! Both the TUI and the GUI are thin renderers over [`Editor`].
+
+mod action;
+mod io;
+mod keys;
+mod ops;
+
+pub use action::Action;
+pub use io::load_song;
+pub use keys::{KeyCode, KeyEvent};
+pub use ops::{Cell, Clipboard};
 
 use std::path::PathBuf;
 use std::sync::Arc;
 use trakr_core::note::note_name;
-use trakr_core::{Line, Song, EMPTY, NOTE_EMPTY, NOTE_OFF};
+use trakr_core::{Instrument, Line, Pattern, Song, Track, EMPTY, NOTE_OFF};
 use trakr_engine::{Command, EngineHandle};
 
-/// Frontend-neutral key codes. Each frontend translates its native events into these.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum KeyCode {
-    Char(char),
-    F(u8),
-    Up,
-    Down,
-    Left,
-    Right,
-    PageUp,
-    PageDown,
-    Home,
-    End,
-    Tab,
-    BackTab,
-    Backspace,
-    Delete,
-}
+/// Sub-field counts: note column = note, inst(2), vol(2), pan(2), delay(2); effect column = id(2), amount(2).
+pub const NOTE_SUBS: usize = 9;
+pub const FX_SUBS: usize = 4;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct KeyEvent {
-    pub code: KeyCode,
-    pub ctrl: bool,
-    pub alt: bool,
-}
+/// Character ranges of each sub-field inside the text from [`cell_text`], for cursor highlighting.
+pub const NOTE_HL: [(usize, usize); NOTE_SUBS] =
+    [(0, 3), (4, 5), (5, 6), (7, 8), (8, 9), (10, 11), (11, 12), (13, 14), (14, 15)];
+pub const FX_HL: [(usize, usize); FX_SUBS] = [(0, 1), (1, 2), (2, 3), (3, 4)];
 
-impl KeyEvent {
-    pub fn new(code: KeyCode) -> Self {
-        Self { code, ctrl: false, alt: false }
-    }
-}
+const UNDO_LIMIT: usize = 500;
 
 /// Text for one column of a line: a note column ("C-4 01 40 80 00") or an effect column ("0A40").
 pub fn cell_text(line: Option<&Line>, c: usize, notes: usize) -> String {
@@ -67,22 +57,34 @@ pub fn cell_text(line: Option<&Line>, c: usize, notes: usize) -> String {
     }
 }
 
-/// Sub-field counts: note column = note, inst(2), vol(2), pan(2), delay(2); effect column = id(2), amount(2).
-pub const NOTE_SUBS: usize = 9;
-pub const FX_SUBS: usize = 4;
-
-/// Character ranges of each sub-field inside the text from [`cell_text`], for cursor highlighting.
-pub const NOTE_HL: [(usize, usize); NOTE_SUBS] =
-    [(0, 3), (4, 5), (5, 6), (7, 8), (8, 9), (10, 11), (11, 12), (13, 14), (14, 15)];
-pub const FX_HL: [(usize, usize); FX_SUBS] = [(0, 1), (1, 2), (2, 3), (3, 4)];
-
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Cursor {
     pub track: usize,
     /// Note columns first, then effect columns.
     pub col: usize,
     pub sub: usize,
     pub line: u16,
+}
+
+/// Everything an undoable edit can change. Patterns are `Arc`s, so a snapshot is cheap.
+#[derive(Clone)]
+struct Snapshot {
+    patterns: Vec<Arc<Pattern>>,
+    sequence: Vec<usize>,
+    tracks: Vec<Track>,
+    instruments: Vec<Instrument>,
+    bpm: f32,
+    lpb: u8,
+    tpl: u8,
+}
+
+/// Rectangular block in flattened-column space (all visible columns of all tracks, left to right).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Block {
+    pub col0: usize,
+    pub col1: usize,
+    pub line0: u16,
+    pub line1: u16,
 }
 
 pub struct Editor {
@@ -93,11 +95,19 @@ pub struct Editor {
     pub edit_step: u16,
     pub instrument: u8,
     pub edit_mode: bool,
+    /// When true, the cursor tracks the playhead while the song plays.
+    pub follow: bool,
     pub engine: Option<EngineHandle>,
     pub status: String,
     pub path: Option<PathBuf>,
     pub dirty: bool,
     pub quit: bool,
+    pub clipboard: Option<Clipboard>,
+    /// Selection anchor as (flattened column, line); the other corner is the cursor.
+    anchor: Option<(usize, u16)>,
+    undo: Vec<Snapshot>,
+    redo: Vec<Snapshot>,
+    needs_sync: bool,
 }
 
 fn piano_key(c: char) -> Option<u8> {
@@ -151,11 +161,17 @@ impl Editor {
             edit_step: 1,
             instrument: 0,
             edit_mode: false,
+            follow: true,
             engine,
             status,
             path,
             dirty: false,
             quit: false,
+            clipboard: None,
+            anchor: None,
+            undo: Vec::new(),
+            redo: Vec::new(),
+            needs_sync: false,
         };
         app.sync();
         app.dirty = false;
@@ -191,18 +207,43 @@ impl Editor {
         self.pattern_index().and_then(|i| self.song.patterns.get(i)).map_or(1, |p| p.number_of_lines)
     }
 
+    /// Playhead as (playing, sequence slot, line); `(false, 0, 0)` without an audio engine.
+    pub fn playhead(&self) -> (bool, usize, u16) {
+        self.engine.as_ref().map_or((false, 0, 0), |e| e.pos.get())
+    }
+
     // ---- engine glue ----------------------------------------------------
 
+    /// Mark the song changed and push a snapshot to the engine (retried in `tick` if the queue is full).
     fn sync(&mut self) {
         self.dirty = true;
+        self.needs_sync = true;
+        self.flush_sync();
+    }
+
+    fn flush_sync(&mut self) {
+        if !self.needs_sync {
+            return;
+        }
         if let Some(e) = &mut self.engine {
-            e.send(Command::SetSong(self.song.clone()));
+            if e.send(Command::SetSong(self.song.clone())) {
+                self.needs_sync = false;
+            }
+        } else {
+            self.needs_sync = false;
         }
     }
 
+    /// Call regularly (every frame): retries a failed sync, frees engine garbage, follows the playhead.
     pub fn tick(&mut self) {
+        self.flush_sync();
         if let Some(e) = &mut self.engine {
             e.collect_garbage();
+        }
+        let (playing, seq, line) = self.playhead();
+        if playing && self.follow && seq < self.song.sequence.len() {
+            self.seq_pos = seq;
+            self.cursor.line = line.min(self.lines_in_pattern().saturating_sub(1));
         }
     }
 
@@ -212,18 +253,108 @@ impl Editor {
         }
     }
 
+    // ---- undo support ---------------------------------------------------
+
+    fn snapshot(&self) -> Snapshot {
+        let s = &self.song;
+        Snapshot {
+            patterns: s.patterns.clone(),
+            sequence: s.sequence.clone(),
+            tracks: s.tracks.clone(),
+            instruments: s.instruments.clone(),
+            bpm: s.bpm,
+            lpb: s.lpb,
+            tpl: s.tpl,
+        }
+    }
+
+    fn restore(&mut self, snap: Snapshot) {
+        let s = Arc::make_mut(&mut self.song);
+        s.patterns = snap.patterns;
+        s.sequence = snap.sequence;
+        s.tracks = snap.tracks;
+        s.instruments = snap.instruments;
+        s.bpm = snap.bpm;
+        s.lpb = snap.lpb;
+        s.tpl = snap.tpl;
+        self.clamp_cursor();
+        self.sync();
+    }
+
+    /// Call before every user-level mutation of the song.
+    fn checkpoint(&mut self) {
+        let snap = self.snapshot();
+        self.undo.push(snap);
+        if self.undo.len() > UNDO_LIMIT {
+            self.undo.remove(0);
+        }
+        self.redo.clear();
+    }
+
+    pub fn can_undo(&self) -> bool {
+        !self.undo.is_empty()
+    }
+
+    pub fn can_redo(&self) -> bool {
+        !self.redo.is_empty()
+    }
+
+    pub fn undo(&mut self) {
+        if let Some(prev) = self.undo.pop() {
+            let cur = self.snapshot();
+            self.redo.push(cur);
+            self.restore(prev);
+            self.status = "undo".into();
+        }
+    }
+
+    pub fn redo(&mut self) {
+        if let Some(next) = self.redo.pop() {
+            let cur = self.snapshot();
+            self.undo.push(cur);
+            self.restore(next);
+            self.status = "redo".into();
+        }
+    }
+
+    fn song_mut(&mut self) -> &mut Song {
+        Arc::make_mut(&mut self.song)
+    }
+
+    fn clamp_cursor(&mut self) {
+        if self.seq_pos >= self.song.sequence.len() {
+            self.seq_pos = self.song.sequence.len().saturating_sub(1);
+        }
+        self.cursor.track = self.cursor.track.min(self.song.tracks.len() - 1);
+        let (n, f) = self.cols(self.cursor.track);
+        self.cursor.col = self.cursor.col.min(n + f - 1);
+        self.cursor.sub = self.cursor.sub.min(self.subs(self.cursor.track, self.cursor.col) - 1);
+        self.cursor.line = self.cursor.line.min(self.lines_in_pattern().saturating_sub(1));
+        if let Some((_, l)) = self.anchor {
+            if l >= self.lines_in_pattern() {
+                self.anchor = None;
+            }
+        }
+    }
+
+    /// Edit the line under the cursor (undoable).
     fn edit<F: FnOnce(&mut Line)>(&mut self, f: F) {
         let Some(pi) = self.pattern_index() else { return };
+        self.checkpoint();
         let (t, l) = (self.cursor.track, self.cursor.line);
         let song = Arc::make_mut(&mut self.song);
         let Some(p) = song.patterns.get_mut(pi) else { return };
+        let p = Arc::make_mut(p);
         f(p.line_mut(t, l));
+        if p.line(t, l).is_some_and(Line::is_empty) {
+            p.tracks[t].lines.remove(&l);
+        }
         self.sync();
     }
 
     // ---- movement -------------------------------------------------------
 
-    fn move_lines(&mut self, delta: i32) {
+    pub fn move_lines(&mut self, delta: i32) {
         let mut line = self.cursor.line as i32 + delta;
         let mut seq = self.seq_pos as i32;
         let nseq = self.song.sequence.len().max(1) as i32;
@@ -296,29 +427,45 @@ impl Editor {
         self.cursor.sub = 0;
     }
 
+    /// Place the cursor (e.g. from a mouse click). Out-of-range values are clamped.
+    pub fn set_cursor(&mut self, track: usize, col: usize, sub: usize, line: u16) {
+        self.anchor = None;
+        self.cursor.track = track;
+        self.cursor.col = col;
+        self.cursor.sub = sub;
+        self.cursor.line = line;
+        self.clamp_cursor();
+    }
+
     // ---- input ----------------------------------------------------------
 
     pub fn on_key(&mut self, k: KeyEvent) {
-        let ctrl = k.ctrl;
+        if let Some(a) = Action::from_key(k) {
+            // Plain Delete/Backspace/Space only act as commands in the cases below.
+            self.do_action(a);
+            return;
+        }
+        let moving = matches!(
+            k.code,
+            KeyCode::Up
+                | KeyCode::Down
+                | KeyCode::Left
+                | KeyCode::Right
+                | KeyCode::PageUp
+                | KeyCode::PageDown
+                | KeyCode::Home
+                | KeyCode::End
+                | KeyCode::Tab
+                | KeyCode::BackTab
+        );
+        if moving {
+            if k.shift {
+                self.begin_selection();
+            } else {
+                self.anchor = None;
+            }
+        }
         match k.code {
-            KeyCode::Char('q') if ctrl => self.quit = true,
-            KeyCode::Char('s') if ctrl => self.save(),
-            KeyCode::F(5) => self.send(Command::Play { seq_pos: 0, line: 0, loop_pattern: false }),
-            KeyCode::F(6) => {
-                let seq_pos = self.seq_pos;
-                self.send(Command::Play { seq_pos, line: 0, loop_pattern: true });
-            }
-            KeyCode::F(7) => {
-                let (seq_pos, line) = (self.seq_pos, self.cursor.line);
-                self.send(Command::Play { seq_pos, line, loop_pattern: false });
-            }
-            KeyCode::F(8) => self.send(Command::Stop),
-            KeyCode::F(1) => self.octave = self.octave.saturating_sub(1),
-            KeyCode::F(2) => self.octave = (self.octave + 1).min(8),
-            KeyCode::F(3) => self.edit_step = self.edit_step.saturating_sub(1),
-            KeyCode::F(4) => self.edit_step = (self.edit_step + 1).min(64),
-            KeyCode::F(9) => self.instrument = self.instrument.saturating_sub(1),
-            KeyCode::F(10) => self.instrument = self.instrument.saturating_add(1).min(0xFE),
             KeyCode::Up => self.move_lines(-1),
             KeyCode::Down => self.move_lines(1),
             KeyCode::PageUp => self.move_lines(-16),
@@ -329,12 +476,7 @@ impl Editor {
             KeyCode::Right => self.right(),
             KeyCode::Tab => self.change_track(1),
             KeyCode::BackTab => self.change_track(-1),
-            KeyCode::Backspace | KeyCode::Delete => self.clear_field(),
-            KeyCode::Char(' ') => {
-                self.edit_mode = !self.edit_mode;
-                self.status = if self.edit_mode { "edit mode on".into() } else { "edit mode off".into() };
-            }
-            KeyCode::Char(c) if !ctrl && !k.alt => self.type_char(c),
+            KeyCode::Char(c) if !k.ctrl && !k.alt => self.type_char(c),
             _ => {}
         }
     }
@@ -440,93 +582,7 @@ impl Editor {
             self.step_down();
         }
     }
-
-    fn clear_field(&mut self) {
-        if !self.edit_mode {
-            return;
-        }
-        let Cursor { track, col, sub, .. } = self.cursor;
-        let (notes, _) = self.cols(track);
-        self.edit(|l| {
-            if col < notes {
-                let n = &mut l.notes[col];
-                match sub {
-                    0 => {
-                        n.note = NOTE_EMPTY;
-                        n.instrument = EMPTY;
-                        n.volume = EMPTY;
-                        n.panning = EMPTY;
-                        n.delay = 0;
-                    }
-                    1 | 2 => n.instrument = EMPTY,
-                    3 | 4 => n.volume = EMPTY,
-                    5 | 6 => n.panning = EMPTY,
-                    _ => n.delay = 0,
-                }
-            } else {
-                l.effects[col - notes] = Default::default();
-            }
-        });
-        self.step_down();
-    }
-
-    fn save(&mut self) {
-        let path = self.path.clone().unwrap_or_else(|| PathBuf::from("untitled.trkr"));
-        let mut song = (*self.song).clone();
-        song.patterns.iter_mut().for_each(|p| p.compact());
-        match trakr_format::save_path(&song, &path) {
-            Ok(()) => {
-                self.status = format!("saved {}", path.display());
-                self.path = Some(path);
-                self.dirty = false;
-            }
-            Err(e) => self.status = format!("save failed: {e}"),
-        }
-    }
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn key(c: char) -> KeyEvent {
-        KeyEvent::new(KeyCode::Char(c))
-    }
-
-    #[test]
-    fn note_entry_writes_and_advances() {
-        let mut app = Editor::new(Song::default(), None, None);
-        app.on_key(key(' '));
-        app.on_key(key('z'));
-        let line = app.song.patterns[0].line(0, 0).unwrap();
-        assert_eq!(line.notes[0].note, 48);
-        assert_eq!(line.notes[0].instrument, 0);
-        assert_eq!(app.cursor.line, 1);
-    }
-
-    #[test]
-    fn nothing_written_when_edit_mode_off() {
-        let mut app = Editor::new(Song::default(), None, None);
-        app.on_key(key('z'));
-        assert!(app.song.patterns[0].line(0, 0).is_none());
-    }
-
-    #[test]
-    fn hex_entry_in_volume_column() {
-        let mut app = Editor::new(Song::default(), None, None);
-        app.on_key(key(' '));
-        for _ in 0..3 {
-            app.on_key(KeyEvent::new(KeyCode::Right));
-        }
-        app.on_key(key('4'));
-        app.on_key(key('0'));
-        assert_eq!(app.song.patterns[0].line(0, 0).unwrap().notes[0].volume, 0x40);
-    }
-
-    #[test]
-    fn down_wraps_through_sequence() {
-        let mut app = Editor::new(Song::default(), None, None);
-        app.on_key(KeyEvent::new(KeyCode::Up));
-        assert_eq!(app.cursor.line, 63);
-    }
-}
+mod tests;

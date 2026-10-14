@@ -102,7 +102,7 @@ pub fn import_xml(xml: &str) -> Result<Song, XrnsError> {
                     read_pattern_track(&mut pat, ti, pt);
                 }
             }
-            song.patterns.push(pat);
+            song.patterns.push(std::sync::Arc::new(pat));
         }
     }
 

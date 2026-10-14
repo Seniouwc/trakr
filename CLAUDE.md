@@ -14,6 +14,14 @@ cargo test -p trakr-engine --no-default-features   # headless engine tests (no A
 ```
 System dependency: ALSA headers (`libasound2-dev`, or `nix develop` using flake.nix).
 
+## Product goals
+
+1. **Easy to learn.** A new user should be productive in minutes: every command is in a menu with its shortcut shown, status messages explain why something did nothing (e.g. "edit mode is off"), defaults are sensible, and the demo song works out of the box. Prefer one obvious way to do a thing.
+2. **Powerful, no ceiling.** Keyboard-first speed and full Renoise-class depth (see docs/PARITY.md). Ease of learning must never remove capability; hide depth behind discoverable menus and shortcuts instead.
+3. **Raw and direct.** Plain tracker conventions, no wizards, no modal hand-holding. The pattern editor is the center of the app, with the scrolling playhead view and the sequence list always visible.
+
+New commands go into `trakr-editor::Action` (label + shortcut) so menus, keys and help stay in sync.
+
 ## Layout
 
 | crate | role |
@@ -39,7 +47,7 @@ Dependency direction: core <- engine/format/xrns <- editor <- tui/gui <- trakr. 
 
 ## Known scaffold shortcuts (fix these early)
 
-- UI to engine sync sends a whole `Arc<Song>` snapshot on every edit (`App::sync`). Replace with incremental edit commands plus an undo/redo command stack (see docs/ARCHITECTURE.md).
+- UI to engine sync sends an `Arc<Song>` snapshot on every edit (`Editor::sync`), cheap because `Song.patterns` are `Arc<Pattern>` (an edit clones only the touched pattern). Undo is snapshot-based (`Snapshot`, 500 deep). Incremental edit commands would need dense or preallocated pattern storage in the engine (BTreeMap inserts allocate); not done.
 - Engine ignores: delay column, volume/panning column commands, most effect commands (only `ZT`, `ZL` work), NNA modes, ticks, envelopes, filters, loop modes other than forward, DSP devices, automation, track mute/solo.
 - No sample import yet (only generated demo sample), no song loop range, no pattern clipboard/selection.
 - TUI keymap is mine, not Renoise's, apart from the tracker-style piano layout, F1/F2 octave, backtick note-off. Terminals cannot report key release or distinguish left/right modifiers; design around that.
@@ -54,4 +62,4 @@ Dependency direction: core <- engine/format/xrns <- editor <- tui/gui <- trakr. 
 
 ## Suggested order of work
 
-See docs/ROADMAP.md. Next up: undo/redo + incremental edit commands, selection/clipboard, sample import (symphonia), tick-accurate sequencer with the full effect set.
+See docs/ROADMAP.md. Editor core (undo, selection, clipboard, block/sequence/track ops) is done; see ROADMAP for what is next.

@@ -4,9 +4,17 @@ An open source tracker DAW written in Rust, with a native window (egui) and a te
 
 **Status: early scaffold (v0.0.1).** The core model, a basic audio engine, a terminal UI, a native project format and a minimal XRNS importer work. Most sequencer effects, DSP, automation and plugin hosting are not implemented yet. See the [roadmap](docs/ROADMAP.md) and [parity checklist](docs/PARITY.md).
 
+## Goals
+
+- **Easy to learn:** everything is in a menu with its shortcut, messages say why a key did nothing, and the demo song plays out of the box.
+- **Powerful:** keyboard-first workflow and Renoise-class depth over time. Learning ease never removes capability.
+- **Raw and direct:** plain tracker conventions; the pattern editor and sequence list are always in front of you.
+
 ## Features
 
 - Pattern editor with note, instrument, volume, panning, delay and effect columns
+- Undo/redo, block selection, copy/cut/paste, transpose, reverse, interpolate
+- Sequence editing (insert, clone, delete, reorder), pattern length, add/remove tracks and columns
 - Sample playback with linear interpolation and forward loops
 - Real-time engine with sequencer, voices and mixer (cpal audio output)
 - Native `.trkr` project format (zip of `song.json` and raw sample data)

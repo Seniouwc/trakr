@@ -87,6 +87,7 @@ pub fn draw(f: &mut Frame, app: &App) {
     if nlines >= height && top + height > nlines {
         top = nlines - height;
     }
+    let sel = app.selection();
     let pat = app.pattern_index().and_then(|i| s.patterns.get(i));
     let lpb = s.lpb.max(1) as usize;
 
@@ -123,8 +124,13 @@ pub fn draw(f: &mut Frame, app: &App) {
         for &t in &tracks {
             let (n, fxn) = app.cols(t);
             let line = pat.and_then(|p| p.line(t, li as u16));
+            let flat0 = app.flat_index(t, 0);
             for c in 0..n + fxn {
                 let text = cell_text(line, c, n);
+                let selected = sel.is_some_and(|b| {
+                    (b.col0..=b.col1).contains(&(flat0 + c)) && (b.line0..=b.line1).contains(&(li as u16))
+                });
+                let base = if selected { base.bg(Color::Indexed(24)) } else { base };
                 let hl = (is_cursor_row && t == cur.track && c == cur.col).then(|| {
                     if c < n {
                         NOTE_HL[cur.sub.min(NOTE_SUBS - 1)]
@@ -149,7 +155,7 @@ pub fn draw(f: &mut Frame, app: &App) {
     f.render_widget(Paragraph::new(rows), inner);
 
     let help = format!(
-        " F5 song  F6 loop pat  F7 from cursor  F8 stop  Space edit  F1/F2 oct  F3/F4 step  F9/F10 inst  ^S save  ^Q quit  | {}",
+        " F5 song  F6 loop pat  F7 from cursor  F8 stop  Space edit  F1/F2 oct  F3/F4 step  F9/F10 inst  ^Z undo  ^C/^X/^V copy  ^S save  ^Q quit  | {}",
         app.status
     );
     f.render_widget(Paragraph::new(help).style(Style::new().fg(Color::DarkGray)), foot);

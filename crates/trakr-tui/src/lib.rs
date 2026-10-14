@@ -25,12 +25,15 @@ fn translate(k: CKE) -> Option<KeyEvent> {
         CK::BackTab => KeyCode::BackTab,
         CK::Backspace => KeyCode::Backspace,
         CK::Delete => KeyCode::Delete,
+        CK::Insert => KeyCode::Insert,
+        CK::Esc => KeyCode::Esc,
         _ => return None,
     };
     Some(KeyEvent {
         code,
         ctrl: k.modifiers.contains(KeyModifiers::CONTROL),
         alt: k.modifiers.contains(KeyModifiers::ALT),
+        shift: k.modifiers.contains(KeyModifiers::SHIFT),
     })
 }
 

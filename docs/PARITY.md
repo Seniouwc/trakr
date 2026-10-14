@@ -5,12 +5,12 @@ Compiled from memory of Renoise 3.x behavior. Verify each item against the offic
 
 ## Song and sequencer
 - [x] BPM, LPB, TPL stored per song
-- [~] Pattern sequence (play order) with song loop; no loop range, no sequence editing UI
-- [ ] Sequence editor: insert, clone, delete, reorder, section markers, slots, mute per track/pattern (pattern matrix)
-- [ ] Pattern length 1..512 editing; pattern names; pattern resize with content scaling
+- [~] Pattern sequence (play order) with song loop; no loop range
+- [~] Sequence editor: insert, clone, delete, reorder, pick pattern per slot work; section markers and pattern matrix do not
+- [~] Pattern length 1..512 editing and pattern names work; resize with content scaling does not
 - [ ] Tick-accurate timing (TPL) and sub-line delay column
 - [ ] Song loop range / pattern loop / block loop
-- [ ] Follow playback, play from cursor, play pattern, play block, stop/panic
+- [~] Follow playback, play from cursor, play pattern, stop work; play block, panic do not
 - [ ] Song comments, metadata, tags
 - [ ] Groove / shuffle, global BPM/LPB automation via Zxx commands
 
@@ -18,13 +18,13 @@ Compiled from memory of Renoise 3.x behavior. Verify each item against the offic
 - [x] 12 note columns per track (data model), 8 effect columns (data model)
 - [x] Note, instrument, volume, panning, delay, per-column sample effect fields
 - [~] Cell entry: piano keys, hex digits, effect id and amount, clear
-- [ ] Column show/hide (volume, panning, delay, sample effects), add/remove note/effect columns
-- [ ] Selection (line, column, track, block, multi-track), clipboard, paste modes (mix, flood, overwrite)
-- [ ] Undo/redo (unlimited)
-- [ ] Block ops: transpose, interpolate, randomize, reverse, double/halve length, expand/shrink, clear, duplicate
-- [ ] Insert/delete line, insert/delete note-column row, shift columns
+- [~] Add/remove note and effect columns work; per-sub-column (volume, panning, delay) show/hide does not
+- [~] Block selection (multi-track, Shift+arrows or mouse), cut/copy/paste (overwrite only); no mix/flood paste, no track/line quick-select
+- [x] Undo/redo (500 steps, snapshot based)
+- [~] Block ops: transpose, interpolate (volume, pan, effect amounts), reverse, clear work; randomize, double/halve, expand/shrink, duplicate do not
+- [~] Insert/delete line in a track works; note-column row insert/delete and column shifting do not
 - [ ] Pattern/track/line highlight settings, beat/bar markers, hex or decimal line numbers
-- [ ] Track operations: add, remove, rename, color, collapse, move, group/ungroup, solo/mute/off
+- [~] Track operations: add, remove, rename, mute flag work (mute not yet audible); color, collapse, move, group, solo do not
 - [ ] Find/replace in patterns, "pattern properties", sub-pattern transposition
 - [ ] Phrase editor and phrase playback (per-instrument phrases, keymapping, program/loop modes)
 

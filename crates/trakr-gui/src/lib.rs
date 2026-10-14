@@ -38,6 +38,8 @@ fn nav_key(k: Key) -> Option<KeyCode> {
         Key::Tab => KeyCode::Tab,
         Key::Backspace => KeyCode::Backspace,
         Key::Delete => KeyCode::Delete,
+        Key::Insert => KeyCode::Insert,
+        Key::Escape => KeyCode::Esc,
         Key::F1 => KeyCode::F(1),
         Key::F2 => KeyCode::F(2),
         Key::F3 => KeyCode::F(3),
@@ -52,6 +54,18 @@ fn nav_key(k: Key) -> Option<KeyCode> {
     })
 }
 
+fn letter_key(k: Key) -> Option<char> {
+    Some(match k {
+        Key::A => 'a',
+        Key::N => 'n',
+        Key::Q => 'q',
+        Key::S => 's',
+        Key::Y => 'y',
+        Key::Z => 'z',
+        _ => return None,
+    })
+}
+
 /// Translate egui events: navigation/function keys and Ctrl combos from key events, typed characters from text events.
 fn collect_keys(ctx: &egui::Context) -> Vec<KeyEvent> {
     let mut out = Vec::new();
@@ -59,15 +73,24 @@ fn collect_keys(ctx: &egui::Context) -> Vec<KeyEvent> {
         for ev in &i.events {
             match ev {
                 egui::Event::Key { key, pressed: true, modifiers, .. } => {
-                    if modifiers.command && matches!(key, Key::S | Key::Q) {
-                        let c = if *key == Key::S { 's' } else { 'q' };
-                        out.push(KeyEvent { code: KeyCode::Char(c), ctrl: true, alt: false });
+                    let mut k = KeyEvent {
+                        code: KeyCode::Tab,
+                        ctrl: modifiers.command,
+                        alt: modifiers.alt,
+                        shift: modifiers.shift,
+                    };
+                    if let Some(c) = letter_key(*key).filter(|_| modifiers.command) {
+                        k.code = KeyCode::Char(c);
+                        out.push(k);
                     } else if let Some(code) = nav_key(*key) {
-                        let code =
+                        k.code =
                             if code == KeyCode::Tab && modifiers.shift { KeyCode::BackTab } else { code };
-                        out.push(KeyEvent::new(code));
+                        out.push(k);
                     }
                 }
+                egui::Event::Copy => out.push(KeyEvent::ctrl('c')),
+                egui::Event::Cut => out.push(KeyEvent::ctrl('x')),
+                egui::Event::Paste(_) => out.push(KeyEvent::ctrl('v')),
                 egui::Event::Text(t) => {
                     out.extend(
                         t.chars().filter(|c| !c.is_control()).map(|c| KeyEvent::new(KeyCode::Char(c))),
@@ -92,7 +115,7 @@ impl eframe::App for GuiApp {
         ctx.request_repaint_after(std::time::Duration::from_millis(33));
 
         let ed = &self.editor;
-        let (playing, play_seq, play_line) = ed.engine.as_ref().map_or((false, 0, 0), |e| e.pos.get());
+        let (playing, play_seq, play_line) = ed.playhead();
         let s = &ed.song;
 
         egui::TopBottomPanel::top("info").show(ctx, |ui| {

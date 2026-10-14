@@ -3626,6 +3626,7 @@ version = "0.0.1"
 dependencies = [
  "anyhow",
  "trakr-core",
+ "trakr-editor",
  "trakr-engine",
  "trakr-format",
  "trakr-gui",
@@ -3645,9 +3646,11 @@ dependencies = [
 name = "trakr-editor"
 version = "0.0.1"
 dependencies = [
+ "anyhow",
  "trakr-core",
  "trakr-engine",
  "trakr-format",
+ "trakr-xrns",
 ]
 
 [[package]]

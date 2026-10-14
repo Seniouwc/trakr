@@ -1,0 +1,206 @@
+//! Every user-visible command, in one list. Keys, menus and toolbars all map to these,
+//! so a feature added here shows up everywhere with its shortcut.
+
+use crate::keys::{KeyCode, KeyEvent};
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Action {
+    // file
+    New,
+    Save,
+    Quit,
+    // edit
+    Undo,
+    Redo,
+    Cut,
+    Copy,
+    Paste,
+    Clear,
+    SelectAll,
+    SelectNone,
+    ToggleEdit,
+    // block
+    TransposeUp,
+    TransposeDown,
+    TransposeOctaveUp,
+    TransposeOctaveDown,
+    Reverse,
+    Interpolate,
+    InsertLine,
+    DeleteLine,
+    // transport
+    PlaySong,
+    PlayPattern,
+    PlayFromCursor,
+    Stop,
+    ToggleFollow,
+    // sequence
+    SeqPrev,
+    SeqNext,
+    SeqInsert,
+    SeqClone,
+    SeqDelete,
+    SeqMoveUp,
+    SeqMoveDown,
+    PatternPrev,
+    PatternNext,
+    // tracks
+    TrackAdd,
+    TrackRemove,
+    TrackMute,
+    NoteColumnAdd,
+    NoteColumnRemove,
+    EffectColumnAdd,
+    EffectColumnRemove,
+    // settings
+    OctaveDown,
+    OctaveUp,
+    StepDown,
+    StepUp,
+    InstrumentPrev,
+    InstrumentNext,
+}
+
+impl Action {
+    pub fn label(self) -> &'static str {
+        use Action::*;
+        match self {
+            New => "New song",
+            Save => "Save",
+            Quit => "Quit",
+            Undo => "Undo",
+            Redo => "Redo",
+            Cut => "Cut",
+            Copy => "Copy",
+            Paste => "Paste",
+            Clear => "Clear",
+            SelectAll => "Select all",
+            SelectNone => "Select none",
+            ToggleEdit => "Edit mode",
+            TransposeUp => "Transpose +1",
+            TransposeDown => "Transpose -1",
+            TransposeOctaveUp => "Transpose +12",
+            TransposeOctaveDown => "Transpose -12",
+            Reverse => "Reverse lines",
+            Interpolate => "Interpolate values",
+            InsertLine => "Insert line",
+            DeleteLine => "Delete line",
+            PlaySong => "Play song",
+            PlayPattern => "Loop pattern",
+            PlayFromCursor => "Play from cursor",
+            Stop => "Stop",
+            ToggleFollow => "Follow playback",
+            SeqPrev => "Previous slot",
+            SeqNext => "Next slot",
+            SeqInsert => "Insert new pattern",
+            SeqClone => "Clone pattern",
+            SeqDelete => "Delete slot",
+            SeqMoveUp => "Move slot up",
+            SeqMoveDown => "Move slot down",
+            PatternPrev => "Previous pattern in slot",
+            PatternNext => "Next pattern in slot",
+            TrackAdd => "Add track",
+            TrackRemove => "Remove track",
+            TrackMute => "Mute track",
+            NoteColumnAdd => "Add note column",
+            NoteColumnRemove => "Remove note column",
+            EffectColumnAdd => "Add effect column",
+            EffectColumnRemove => "Remove effect column",
+            OctaveDown => "Octave down",
+            OctaveUp => "Octave up",
+            StepDown => "Edit step down",
+            StepUp => "Edit step up",
+            InstrumentPrev => "Previous instrument",
+            InstrumentNext => "Next instrument",
+        }
+    }
+
+    /// Shortcut text for menus and help; empty when the action has no key.
+    pub fn shortcut(self) -> &'static str {
+        use Action::*;
+        match self {
+            New => "Ctrl-N",
+            Save => "Ctrl-S",
+            Quit => "Ctrl-Q",
+            Undo => "Ctrl-Z",
+            Redo => "Ctrl-Y",
+            Cut => "Ctrl-X",
+            Copy => "Ctrl-C",
+            Paste => "Ctrl-V",
+            Clear => "Del",
+            SelectAll => "Ctrl-A",
+            SelectNone => "Esc",
+            ToggleEdit => "Space",
+            TransposeUp => "Alt-Up",
+            TransposeDown => "Alt-Down",
+            TransposeOctaveUp => "Alt-PgUp",
+            TransposeOctaveDown => "Alt-PgDn",
+            InsertLine => "Ins",
+            DeleteLine => "Backspace",
+            PlaySong => "F5",
+            PlayPattern => "F6",
+            PlayFromCursor => "F7",
+            Stop => "F8",
+            ToggleFollow => "F11",
+            SeqPrev => "Ctrl-Up",
+            SeqNext => "Ctrl-Down",
+            OctaveDown => "F1",
+            OctaveUp => "F2",
+            StepDown => "F3",
+            StepUp => "F4",
+            InstrumentPrev => "F9",
+            InstrumentNext => "F10",
+            _ => "",
+        }
+    }
+
+    /// Key bindings. Plain typing (notes, hex digits) is handled by the editor itself.
+    pub fn from_key(k: KeyEvent) -> Option<Action> {
+        use Action::*;
+        if k.ctrl {
+            return Some(match k.code {
+                KeyCode::Char('n') => New,
+                KeyCode::Char('s') => Save,
+                KeyCode::Char('q') => Quit,
+                KeyCode::Char('z') if k.shift => Redo,
+                KeyCode::Char('z') => Undo,
+                KeyCode::Char('y') => Redo,
+                KeyCode::Char('x') => Cut,
+                KeyCode::Char('c') => Copy,
+                KeyCode::Char('v') => Paste,
+                KeyCode::Char('a') => SelectAll,
+                KeyCode::Up => SeqPrev,
+                KeyCode::Down => SeqNext,
+                _ => return None,
+            });
+        }
+        if k.alt {
+            return Some(match k.code {
+                KeyCode::Up => TransposeUp,
+                KeyCode::Down => TransposeDown,
+                KeyCode::PageUp => TransposeOctaveUp,
+                KeyCode::PageDown => TransposeOctaveDown,
+                _ => return None,
+            });
+        }
+        Some(match k.code {
+            KeyCode::F(1) => OctaveDown,
+            KeyCode::F(2) => OctaveUp,
+            KeyCode::F(3) => StepDown,
+            KeyCode::F(4) => StepUp,
+            KeyCode::F(5) => PlaySong,
+            KeyCode::F(6) => PlayPattern,
+            KeyCode::F(7) => PlayFromCursor,
+            KeyCode::F(8) => Stop,
+            KeyCode::F(9) => InstrumentPrev,
+            KeyCode::F(10) => InstrumentNext,
+            KeyCode::F(11) => ToggleFollow,
+            KeyCode::Esc => SelectNone,
+            KeyCode::Delete => Clear,
+            KeyCode::Insert => InsertLine,
+            KeyCode::Backspace => DeleteLine,
+            KeyCode::Char(' ') => ToggleEdit,
+            _ => return None,
+        })
+    }
+}

@@ -14,11 +14,13 @@ trakr (bin) -> trakr-tui -> trakr-engine -> trakr-core
 - **Audio thread** (cpal callback) owns `Engine`, which holds its own `Arc<Song>` snapshot and all playback state (voices, position, tempo overrides).
 - UI -> audio: `rtrb` SPSC queue of `Command`. Audio -> UI: atomics (`SharedPos`) for transport position, and a garbage queue returning replaced `Arc<Song>`s so they are freed off the RT thread.
 
-## Planned edit model (replaces whole-song snapshots)
+## Edit model
 
-1. Every user edit becomes an `Edit` value (set cell, paste block, change pattern length, ...) applied by one function that mutates the UI-side song and returns its inverse. That gives undo/redo for free.
-2. The same `Edit` (or a compact RT-safe form of it) is sent to the engine, which applies it to its own copy of the data. Pattern data must then be engine-owned and mutated in place, with large structures (sample data, new patterns) allocated on the UI thread and handed over by pointer.
-3. Song-level structural changes (add track, load song) can still use a snapshot swap.
+- `trakr-editor::Editor` owns the authoritative `Arc<Song>`. Every user-level mutation calls `checkpoint()` (pushes a `Snapshot`) then mutates via `Arc::make_mut`, then `sync()`.
+- `Song.patterns` is `Vec<Arc<Pattern>>`: a snapshot is a few `Arc` clones, an edit copies only the pattern it touches, and the engine's `SetSong` swap is cheap. Samples are `Arc<Vec<f32>>` too.
+- Undo/redo swap whole `Snapshot`s (patterns, sequence, tracks, instruments, tempo). Song load/new clears history.
+- `sync()` retries from `tick()` if the engine queue was full, so the engine never stays stale.
+- Frontends map native input to `KeyEvent` / `Action` and only render. Menus call `Editor::do_action`.
 
 ## Engine internals
 
