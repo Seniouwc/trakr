@@ -26,7 +26,7 @@ Compiled from memory of Renoise 3.x behavior. Verify each item against the offic
 - [ ] Pattern/track/line highlight settings, beat/bar markers, hex or decimal line numbers
 - [~] Track operations: add, remove, rename, mute flag work (mute not yet audible); color, collapse, move, group, solo do not
 - [ ] Find/replace in patterns, "pattern properties", sub-pattern transposition
-- [ ] Phrase editor and phrase playback (per-instrument phrases, keymapping, program/loop modes)
+- [~] Phrases: per-instrument phrases (own LPB, note/effect columns, loop region, base note, key range) played by key-mapped trigger notes with transposition, editable in the Phrases dock; undo, `.trkr` roundtrip. Missing: program mode, shuffle, phrase-local `Z` commands, phrase `.xrns`/`.xrni` I/O, phrase recording
 
 ## Volume, panning, and effect commands
 - [~] Volume column: 00-80 sets the note volume, and on lines without a note it changes the sounding note (usable as a per-line volume envelope; Block > Fade in/out writes a ramp). Special volume-column commands (glide, slide, fade letters) do not exist

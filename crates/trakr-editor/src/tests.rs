@@ -783,7 +783,7 @@ fn fuzz_editor(seed: u64) {
     let chars: Vec<char> = "zsxdcvgbhnjmqwertyuiop234567890`abcdef ,./;[]-=".chars().collect();
     for step in 0..12_000 {
         let what: String;
-        match rng.below(14) {
+        match rng.below(15) {
             0..=4 => {
                 let k = if rng.below(2) == 0 {
                     KeyCode::Char(chars[rng.below(chars.len())])
@@ -796,6 +796,10 @@ fn fuzz_editor(seed: u64) {
                     alt: rng.below(8) == 0,
                     shift: rng.below(4) == 0,
                 };
+                // Ctrl-S writes the whole showcase song to disk and Ctrl-Q quits: not what this test is about.
+                if ev.ctrl && matches!(ev.code, KeyCode::Char('s' | 'q')) {
+                    continue;
+                }
                 what = format!("{ev:?}");
                 app.on_key(ev);
             }
@@ -870,6 +874,29 @@ fn fuzz_editor(seed: u64) {
                         a.set_point(l, v);
                     });
                 }
+            }
+            13 => {
+                what = "phrases".into();
+                let keep = app.instrument;
+                app.instrument = rng.below(app.song.instruments.len() + 1) as u8;
+                match rng.below(7) {
+                    0 => app.phrase_add(),
+                    1 => app.phrase_remove(),
+                    2 => app.phrase_duplicate(),
+                    3 => app.phrase_select(rng.below(4)),
+                    4 => app.phrase_set_cursor(rng.below(20), rng.below(12), rng.below(700) as u16),
+                    5 => app.edit_phrase("fuzz", |p| {
+                        p.number_of_lines = rng.below(800) as u16;
+                        p.note_columns = rng.below(30) as u8;
+                        p.effect_columns = rng.below(30) as u8;
+                    }),
+                    _ => {
+                        let c = chars[rng.below(chars.len())];
+                        app.phrase_key(KeyEvent::new(KeyCode::Char(c)));
+                        app.phrase_key(KeyEvent::new(keys[rng.below(keys.len())]));
+                    }
+                }
+                app.instrument = keep;
             }
             _ => {
                 what = "undo/redo".into();
@@ -971,4 +998,57 @@ fn export_xrns_writes_a_readable_archive() {
     let back = trakr_xrns::import_path(&path).unwrap();
     assert_eq!(back.tracks.len(), ed.song.tracks.len());
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+fn phrase_ed() -> Editor {
+    let mut e = Editor::new(Song::demo(), None, None);
+    e.instrument = 0;
+    e.phrase_add();
+    e.edit_mode = true;
+    e
+}
+
+#[test]
+fn phrase_add_enables_the_mode_and_selects_it() {
+    let e = phrase_ed();
+    let inst = &e.song.instruments[0];
+    assert_eq!(inst.phrases.len(), 1);
+    assert_eq!(inst.phrase_mode, trakr_core::PhraseMode::Keymap);
+    assert_eq!(e.phrase, 0);
+}
+
+#[test]
+fn phrase_cell_entry_and_undo() {
+    let mut e = phrase_ed();
+    e.phrase_key(key('z'));
+    assert_eq!(e.song.instruments[0].phrases[0].line(0).unwrap().notes[0].note, 48);
+    assert_eq!(e.phrase_cursor.line, 1);
+    e.phrase_set_cursor(0, 1, 1);
+    e.phrase_key(key('a'));
+    e.phrase_key(key('1'));
+    assert_eq!(e.song.instruments[0].phrases[0].line(1).unwrap().notes[0].instrument, 0xA1);
+    // effect column
+    let notes = e.phrase_cols().0;
+    e.phrase_set_cursor(notes, 0, 2);
+    for c in ['0', 'a', '3', '7'] {
+        e.phrase_key(key(c));
+    }
+    let fx = e.song.instruments[0].phrases[0].line(2).unwrap().effects[0];
+    assert_eq!((&fx.id, fx.amount), (b"0A", 0x37));
+    e.undo();
+    assert!(e.song.instruments[0].phrases[0].line(2).is_none_or(|l| l.effects[0].amount != 0x37));
+    e.phrase_set_cursor(0, 0, 0);
+    e.phrase_key(KeyEvent::new(KeyCode::Delete));
+    assert!(e.song.instruments[0].phrases[0].line(0).is_none());
+}
+
+#[test]
+fn phrase_entry_needs_edit_mode_and_remove_works() {
+    let mut e = phrase_ed();
+    e.edit_mode = false;
+    e.phrase_key(key('z'));
+    assert!(e.song.instruments[0].phrases[0].lines.is_empty());
+    e.phrase_remove();
+    assert!(e.song.instruments[0].phrases.is_empty());
+    e.phrase_key(key('z')); // nothing selected: must not panic
 }

@@ -8,6 +8,7 @@ mod keys;
 mod midi;
 mod mixer_ops;
 mod ops;
+mod phrase_ops;
 mod prefs;
 mod sampling;
 
@@ -69,6 +70,14 @@ pub fn cell_text(line: Option<&Line>, c: usize, notes: usize) -> String {
     }
 }
 
+/// Cursor inside the phrase editor. `col` counts note columns first, then effect columns.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct PhraseCursor {
+    pub line: u16,
+    pub col: usize,
+    pub sub: usize,
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Cursor {
     pub track: usize,
@@ -118,6 +127,9 @@ pub struct Editor {
     pub clipboard: Option<Clipboard>,
     /// Selected sample within the selected instrument.
     pub sample: usize,
+    /// Selected phrase within the selected instrument, and the cursor inside it.
+    pub phrase: usize,
+    pub phrase_cursor: PhraseCursor,
     sample_clip: Option<(Vec<f32>, u8)>,
     recorder: Option<Box<dyn InputRecorder>>,
     recorder_factory: Option<RecorderFactory>,
@@ -203,6 +215,8 @@ impl Editor {
             quit: false,
             clipboard: None,
             sample: 0,
+            phrase: 0,
+            phrase_cursor: PhraseCursor::default(),
             sample_clip: None,
             recorder: None,
             recorder_factory: None,
@@ -615,25 +629,8 @@ impl Editor {
     }
 
     fn hex_note_field(&mut self, col: usize, sub: usize, nib: u8) {
-        let hi = sub % 2 == 1;
-        let set = move |v: u8, empty: u8| {
-            let cur = if v == empty && empty == EMPTY { 0 } else { v };
-            if hi {
-                (cur & 0x0F) | (nib << 4)
-            } else {
-                (cur & 0xF0) | nib
-            }
-        };
-        self.edit(|l| {
-            let n = &mut l.notes[col];
-            match sub {
-                1 | 2 => n.instrument = set(n.instrument, EMPTY),
-                3 | 4 => n.volume = set(n.volume, EMPTY),
-                5 | 6 => n.panning = set(n.panning, EMPTY),
-                _ => n.delay = set(n.delay, 0),
-            }
-        });
-        if hi {
+        self.edit(|l| set_hex_nibble(l, col, sub, nib));
+        if sub % 2 == 1 {
             self.cursor.sub += 1;
         } else {
             self.cursor.sub -= 1;
@@ -642,38 +639,66 @@ impl Editor {
     }
 
     fn effect_field(&mut self, fx: usize, sub: usize, c: char) {
-        let up = c.to_ascii_uppercase();
-        if sub < 2 && !up.is_ascii_alphanumeric() {
+        if !effect_char_ok(sub, c) {
             return;
         }
-        if sub >= 2 && c.to_digit(16).is_none() {
-            return;
-        }
-        self.edit(|l| {
-            let e = &mut l.effects[fx];
-            match sub {
-                0 => {
-                    e.id[0] = up as u8;
-                    if e.id[1] == 0 {
-                        e.id[1] = b'0';
-                    }
-                }
-                1 => {
-                    e.id[1] = up as u8;
-                    if e.id[0] == 0 {
-                        e.id[0] = b'0';
-                    }
-                }
-                2 => e.amount = (e.amount & 0x0F) | ((c.to_digit(16).unwrap() as u8) << 4),
-                _ => e.amount = (e.amount & 0xF0) | c.to_digit(16).unwrap() as u8,
-            }
-        });
+        self.edit(|l| set_effect_char(l, fx, sub, c));
         if sub < 3 {
             self.cursor.sub += 1;
         } else {
             self.cursor.sub = 0;
             self.step_down();
         }
+    }
+}
+
+/// Set one hex digit of a note column's instrument (sub 1-2), volume (3-4), panning (5-6) or delay (7-8).
+fn set_hex_nibble(l: &mut Line, col: usize, sub: usize, nib: u8) {
+    let hi = sub % 2 == 1;
+    let set = move |v: u8, empty: u8| {
+        let cur = if v == empty && empty == EMPTY { 0 } else { v };
+        if hi {
+            (cur & 0x0F) | (nib << 4)
+        } else {
+            (cur & 0xF0) | nib
+        }
+    };
+    let n = &mut l.notes[col];
+    match sub {
+        1 | 2 => n.instrument = set(n.instrument, EMPTY),
+        3 | 4 => n.volume = set(n.volume, EMPTY),
+        5 | 6 => n.panning = set(n.panning, EMPTY),
+        _ => n.delay = set(n.delay, 0),
+    }
+}
+
+/// Whether `c` is valid for sub-column `sub` of an effect (two id characters, then two hex digits).
+fn effect_char_ok(sub: usize, c: char) -> bool {
+    if sub < 2 {
+        c.is_ascii_alphanumeric()
+    } else {
+        c.is_digit(16)
+    }
+}
+
+fn set_effect_char(l: &mut Line, fx: usize, sub: usize, c: char) {
+    let up = c.to_ascii_uppercase();
+    let e = &mut l.effects[fx];
+    match sub {
+        0 => {
+            e.id[0] = up as u8;
+            if e.id[1] == 0 {
+                e.id[1] = b'0';
+            }
+        }
+        1 => {
+            e.id[1] = up as u8;
+            if e.id[0] == 0 {
+                e.id[0] = b'0';
+            }
+        }
+        2 => e.amount = (e.amount & 0x0F) | ((c.to_digit(16).unwrap_or(0) as u8) << 4),
+        _ => e.amount = (e.amount & 0xF0) | c.to_digit(16).unwrap_or(0) as u8,
     }
 }
 

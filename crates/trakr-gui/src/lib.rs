@@ -9,6 +9,7 @@ mod input;
 mod menus;
 mod mixer;
 mod panels;
+mod phrases_view;
 mod prefs_view;
 mod sample_view;
 #[cfg(test)]
@@ -43,6 +44,7 @@ pub enum Dock {
     Mixer,
     Devices,
     Automation,
+    Phrases,
     Hidden,
 }
 
@@ -91,6 +93,8 @@ pub(crate) struct GuiApp {
     pub prefs_tab: prefs_view::PrefsTab,
     pub capturing: Option<trakr_editor::Action>,
     pub binding_message: String,
+    /// Keys go to the phrase editor instead of the pattern grid (set by clicking in it).
+    pub phrase_focus: bool,
 }
 
 impl GuiApp {
@@ -115,6 +119,7 @@ impl GuiApp {
                 Ok("mixer") => Dock::Mixer,
                 Ok("devices") => Dock::Devices,
                 Ok("automation") => Dock::Automation,
+                Ok("phrases") => Dock::Phrases,
                 Ok("hidden") => Dock::Hidden,
                 _ => Dock::Instrument,
             },
@@ -128,6 +133,7 @@ impl GuiApp {
             title: String::new(),
             text_editing: false,
             checked_recovery: false,
+            phrase_focus: false,
             palette: theme::Palette::named("dark"),
             applied_theme: "dark".into(),
             applied_scale: 1.0,
@@ -188,7 +194,11 @@ impl GuiApp {
                 });
             }
             for k in keys {
-                self.editor.on_key(k);
+                if self.dock == Dock::Phrases && self.phrase_focus {
+                    self.editor.phrase_key(k);
+                } else {
+                    self.editor.on_key(k);
+                }
             }
         }
         if !self.checked_recovery {
@@ -251,6 +261,7 @@ impl GuiApp {
                     Dock::Mixer => self.mixer_ui(ui),
                     Dock::Devices => self.devices_ui(ui),
                     Dock::Automation => self.automation_ui(ui),
+                    Dock::Phrases => self.phrases_ui(ui),
                     Dock::Hidden => {}
                 });
         }
@@ -260,6 +271,7 @@ impl GuiApp {
                 ui.selectable_value(&mut self.dock, Dock::Mixer, "Mixer");
                 ui.selectable_value(&mut self.dock, Dock::Devices, "Devices");
                 ui.selectable_value(&mut self.dock, Dock::Automation, "Automation");
+                ui.selectable_value(&mut self.dock, Dock::Phrases, "Phrases");
                 ui.selectable_value(&mut self.dock, Dock::Hidden, "Hide");
             });
         });

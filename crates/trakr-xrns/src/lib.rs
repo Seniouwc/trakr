@@ -363,6 +363,9 @@ pub fn export_xml(song: &Song, warnings: &mut Vec<String>) -> (String, Vec<(Stri
             files.push((file, wav));
         }
         x.push_str("</Samples></SampleGenerator></Instrument>\n");
+        if !inst.phrases.is_empty() {
+            warnings.push(format!("instrument {ii:02} ({}): phrases are not exported", inst.name));
+        }
         if inst.volume_env.points.len() > 1
             || inst.pan_env.points.len() > 1
             || inst.pitch_env.points.len() > 1

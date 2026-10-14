@@ -1,4 +1,5 @@
 use crate::envelope::Envelope;
+use crate::phrase::{Phrase, PhraseMode};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
@@ -407,6 +408,10 @@ pub struct Instrument {
     pub nna: Nna,
     #[serde(default)]
     pub interpolation: Interpolation,
+    #[serde(default)]
+    pub phrases: Vec<Arc<Phrase>>,
+    #[serde(default)]
+    pub phrase_mode: PhraseMode,
 }
 
 impl Instrument {
@@ -422,7 +427,17 @@ impl Instrument {
             cutoff_env: Arc::default(),
             nna: Nna::Cut,
             interpolation: Interpolation::Cubic,
+            phrases: Vec::new(),
+            phrase_mode: PhraseMode::Off,
         }
+    }
+
+    /// The phrase a trigger note starts, when phrase playback is on.
+    pub fn phrase_for(&self, note: u8) -> Option<usize> {
+        if self.phrase_mode != PhraseMode::Keymap {
+            return None;
+        }
+        self.phrases.iter().position(|p| p.covers(note))
     }
 
     /// First sample whose key range contains `note`.

@@ -9,6 +9,7 @@ pub mod envelope;
 pub mod instrument;
 pub mod note;
 pub mod pattern;
+pub mod phrase;
 pub mod song;
 pub mod track;
 
@@ -18,5 +19,6 @@ pub use envelope::Envelope;
 pub use instrument::{FilterMode, Instrument, InstrumentFilter, Interpolation, LoopMode, Nna, Sample};
 pub use note::{EffectCmd, NoteColumn, EMPTY, NOTE_EMPTY, NOTE_OFF};
 pub use pattern::{Line, Pattern, PatternTrack, MAX_EFFECT_COLUMNS, MAX_LINES, MAX_NOTE_COLUMNS};
+pub use phrase::{Phrase, PhraseMode};
 pub use song::Song;
 pub use track::{DeviceSpec, MuteState, SendLevel, Track, TrackKind};

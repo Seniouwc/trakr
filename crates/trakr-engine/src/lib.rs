@@ -14,7 +14,9 @@ pub use devices::Device;
 
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
-use trakr_core::{AutoTarget, EffectCmd, MuteState, Song, EMPTY, NOTE_EMPTY, NOTE_OFF};
+use trakr_core::{
+    AutoTarget, EffectCmd, MuteState, Phrase, Song, EMPTY, MAX_NOTE_COLUMNS, NOTE_EMPTY, NOTE_OFF,
+};
 use voice::{TriggerOpts, Voice};
 
 const MAX_VOICES: usize = 128;
@@ -25,11 +27,18 @@ const BLOCK: usize = 512;
 /// Tracks that get their own mix bus and device chain.
 const MAX_TRACKS: usize = MAX_METER_TRACKS;
 const MAX_OVERRIDES: usize = 256;
+/// Phrases playing at once.
+const MAX_PHRASE_RUNS: usize = 32;
+/// Voice column ids at and above this belong to phrase playback (one block of columns per trigger column).
+const PHRASE_COL: usize = 1000;
+/// Pseudo pattern column for phrases started from outside the sequencer.
+const LIVE_COL: usize = MAX_NOTE_COLUMNS;
 
 /// Things handed back to the UI thread so they are freed there, not on the audio thread.
 pub enum Garbage {
     Song(Arc<Song>),
     Chain(Vec<Box<dyn Device>>),
+    Phrase(Arc<Phrase>),
 }
 
 /// A parameter value forced by pattern automation for the current block.
@@ -54,8 +63,24 @@ struct Event {
     kind: EventKind,
 }
 
+/// A phrase that is currently playing.
+struct PhraseRun {
+    track: usize,
+    /// Pattern column that triggered it.
+    col: usize,
+    inst: u8,
+    phrase: Arc<Phrase>,
+    /// Semitones between the trigger note and the phrase's base note.
+    shift: i32,
+    vol: f32,
+    pan: f32,
+    line: u16,
+    frames_to_line: f64,
+}
+
 enum EventKind {
     NoteOn { inst: u8, note: u8, vol: f32, pan: f32, opts: TriggerOpts },
+    Phrase { inst: u8, phrase: usize, note: u8, vol: f32, pan: f32 },
     Release,
 }
 
@@ -85,6 +110,13 @@ pub enum Command {
     },
     NoteOff {
         track: usize,
+        note: u8,
+    },
+    /// Audition one phrase of an instrument, whatever the instrument's phrase mode.
+    PlayPhrase {
+        track: usize,
+        instrument: u8,
+        phrase: usize,
         note: u8,
     },
 }
@@ -188,6 +220,7 @@ pub fn create(sample_rate: u32) -> (Engine, EngineHandle) {
         frames_to_line: 0.0,
         voices: Vec::with_capacity(MAX_VOICES),
         events: Vec::with_capacity(MAX_EVENTS),
+        phrase_runs: Vec::with_capacity(MAX_PHRASE_RUNS),
         pending_break: None,
         stop_at_end: false,
         tick: 0,
@@ -223,6 +256,7 @@ pub struct Engine {
     frames_to_line: f64,
     voices: Vec<Voice>,
     events: Vec<Event>,
+    phrase_runs: Vec<PhraseRun>,
     /// Line to jump to in the next pattern slot (ZB command).
     pending_break: Option<u16>,
     stop_at_end: bool,
@@ -290,6 +324,7 @@ impl Engine {
                 self.advance_line();
             }
             self.fire_due_events();
+            self.step_phrases();
             let mut chunk = frames - done;
             if self.playing {
                 chunk = chunk
@@ -298,6 +333,9 @@ impl Engine {
             }
             for e in &self.events {
                 chunk = chunk.min((e.at.ceil() as usize).max(1));
+            }
+            for r in &self.phrase_runs {
+                chunk = chunk.min((r.frames_to_line.ceil() as usize).max(1));
             }
             for v in &mut self.voices {
                 let t = v.track.min(MAX_TRACKS - 1);
@@ -327,6 +365,9 @@ impl Engine {
             }
             for e in &mut self.events {
                 e.at -= chunk as f64;
+            }
+            for r in &mut self.phrase_runs {
+                r.frames_to_line -= chunk as f64;
             }
             done += chunk;
         }
@@ -573,6 +614,9 @@ impl Engine {
                     EventKind::NoteOn { inst, note, vol, pan, opts } => {
                         self.note_on(e.track, e.column, inst, note, vol, pan, opts)
                     }
+                    EventKind::Phrase { inst, phrase, note, vol, pan } => {
+                        self.start_phrase(e.track, e.column, inst, phrase, note, vol, pan)
+                    }
                     EventKind::Release => {
                         for v in self.voices.iter_mut().filter(|v| v.track == e.track && v.column == e.column)
                         {
@@ -634,6 +678,7 @@ impl Engine {
                     self.loop_pattern = loop_pattern;
                     self.frames_to_line = 0.0;
                     self.events.clear();
+                    self.clear_phrases();
                     self.pending_break = None;
                     self.playing = true;
                 }
@@ -641,16 +686,35 @@ impl Engine {
                     self.playing = false;
                     self.voices.clear();
                     self.events.clear();
+                    self.clear_phrases();
                     self.pending_break = None;
                 }
                 Command::SetStopAtEnd(v) => self.stop_at_end = v,
                 Command::NoteOn { track, instrument, note, volume } => {
-                    self.note_on(track, usize::MAX, instrument, note, volume, 0.0, TriggerOpts::default());
+                    let phrase =
+                        self.song.instruments.get(instrument as usize).and_then(|i| i.phrase_for(note));
+                    if let Some(p) = phrase {
+                        self.start_phrase(track, LIVE_COL, instrument, p, note, volume, 0.0);
+                    } else {
+                        self.note_on(
+                            track,
+                            usize::MAX,
+                            instrument,
+                            note,
+                            volume,
+                            0.0,
+                            TriggerOpts::default(),
+                        );
+                    }
                 }
                 Command::NoteOff { track, note: _ } => {
                     for v in self.voices.iter_mut().filter(|v| v.track == track) {
                         v.release();
                     }
+                    self.stop_phrase(track, LIVE_COL);
+                }
+                Command::PlayPhrase { track, instrument, phrase, note } => {
+                    self.start_phrase(track, LIVE_COL, instrument, phrase, note, 1.0, 0.0);
                 }
             }
         }
@@ -700,6 +764,160 @@ impl Engine {
         self.voices.push(Voice::new(track, column, instrument, sample, note, vol, pan, opts));
     }
 
+    fn retire_run(&mut self, run: PhraseRun) {
+        if let Err(rtrb::PushError::Full(Garbage::Phrase(p))) = self.garbage.push(Garbage::Phrase(run.phrase))
+        {
+            std::mem::forget(p);
+        }
+    }
+
+    fn clear_phrases(&mut self) {
+        while let Some(run) = self.phrase_runs.pop() {
+            self.retire_run(run);
+        }
+    }
+
+    fn phrase_voice_base(col: usize) -> usize {
+        PHRASE_COL + col.min(LIVE_COL) * MAX_NOTE_COLUMNS
+    }
+
+    /// End the phrase started by `col` of `track` and release what it is still sounding.
+    fn stop_phrase(&mut self, track: usize, col: usize) {
+        let Some(i) = self.phrase_runs.iter().position(|r| r.track == track && r.col == col.min(LIVE_COL))
+        else {
+            return;
+        };
+        let run = self.phrase_runs.remove(i);
+        let base = Self::phrase_voice_base(run.col);
+        for v in self
+            .voices
+            .iter_mut()
+            .filter(|v| v.track == track && (base..base + MAX_NOTE_COLUMNS).contains(&v.column))
+        {
+            v.release();
+        }
+        self.retire_run(run);
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn start_phrase(
+        &mut self,
+        track: usize,
+        col: usize,
+        inst: u8,
+        phrase: usize,
+        note: u8,
+        vol: f32,
+        pan: f32,
+    ) {
+        let Some(p) = self.song.instruments.get(inst as usize).and_then(|i| i.phrases.get(phrase)).cloned()
+        else {
+            return;
+        };
+        self.stop_phrase(track, col);
+        if self.phrase_runs.len() >= MAX_PHRASE_RUNS {
+            return;
+        }
+        let shift = note as i32 - p.base_note as i32;
+        self.phrase_runs.push(PhraseRun {
+            track,
+            col: col.min(LIVE_COL),
+            inst,
+            phrase: p,
+            shift,
+            vol,
+            pan,
+            line: 0,
+            frames_to_line: 0.0,
+        });
+    }
+
+    /// Fire every phrase line that is due and move each run on.
+    fn step_phrases(&mut self) {
+        let mut i = 0;
+        while i < self.phrase_runs.len() {
+            if self.phrase_runs[i].frames_to_line > 0.0 {
+                i += 1;
+                continue;
+            }
+            let phrase = self.phrase_runs[i].phrase.clone();
+            self.fire_phrase_line(i, &phrase);
+            let fpl = Song::frames_per_line(self.bpm, phrase.lpb.max(1), self.sample_rate).max(1.0);
+            let mut next = self.phrase_runs[i].line + 1;
+            let mut finished = false;
+            if phrase.looping {
+                if next >= phrase.effective_loop_end() {
+                    next = phrase.effective_loop_start();
+                }
+            } else if next >= phrase.number_of_lines {
+                finished = true;
+            }
+            if finished {
+                let run = self.phrase_runs.remove(i);
+                self.retire_run(run);
+                continue;
+            }
+            let r = &mut self.phrase_runs[i];
+            r.line = next;
+            r.frames_to_line += fpl;
+        }
+    }
+
+    fn fire_phrase_line(&mut self, i: usize, phrase: &Phrase) {
+        let (track, col, inst, shift, run_vol, run_pan, l) = {
+            let r = &self.phrase_runs[i];
+            (r.track, r.col, r.inst, r.shift, r.vol, r.pan, r.line)
+        };
+        let Some(line) = phrase.line(l) else { return };
+        let fpl = Song::frames_per_line(self.bpm, phrase.lpb.max(1), self.sample_rate);
+        let base = Self::phrase_voice_base(col);
+        for (ci, c) in line.notes.iter().enumerate().take(phrase.note_columns as usize) {
+            let vcol = base + ci;
+            if c.note == NOTE_OFF {
+                for v in self.voices.iter_mut().filter(|v| v.track == track && v.column == vcol) {
+                    v.release();
+                }
+            } else if c.note < NOTE_OFF {
+                let note = (c.note as i32 + shift).clamp(0, 119) as u8;
+                let inst = if c.instrument != EMPTY { c.instrument } else { inst };
+                let vol = if c.volume <= 0x80 { c.volume as f32 / 128.0 } else { 1.0 } * run_vol;
+                let pan = if c.panning <= 0x80 { c.panning as f32 / 64.0 - 1.0 } else { run_pan };
+                let at = c.delay as f64 / 256.0 * fpl;
+                let kind = EventKind::NoteOn { inst, note, vol, pan, opts: TriggerOpts::default() };
+                if at > 0.0 {
+                    self.schedule(at, track, vcol, kind);
+                } else {
+                    self.note_on(track, vcol, inst, note, vol, pan, TriggerOpts::default());
+                }
+            } else {
+                for v in self.voices.iter_mut().filter(|v| v.track == track && v.column == vcol) {
+                    if c.volume <= 0x80 {
+                        v.set_col_volume(c.volume as f32 / 128.0);
+                    }
+                    if c.panning <= 0x80 {
+                        v.set_pan(c.panning as f32 / 64.0 - 1.0);
+                    }
+                }
+            }
+            if !c.effect.is_empty() {
+                for v in self
+                    .voices
+                    .iter_mut()
+                    .filter(|v| v.track == track && v.column == vcol && !v.is_releasing())
+                {
+                    v.apply_effect(c.effect.id, c.effect.amount);
+                }
+            }
+        }
+        for fx in line.effects.iter().take(phrase.effect_columns as usize).filter(|e| !e.is_empty()) {
+            for v in self.voices.iter_mut().filter(|v| {
+                v.track == track && (base..base + MAX_NOTE_COLUMNS).contains(&v.column) && !v.is_releasing()
+            }) {
+                v.apply_effect(fx.id, fx.amount);
+            }
+        }
+    }
+
     fn trigger_line(&mut self) {
         let song = self.song.clone(); // refcount bump only
         let Some(pat) = song.pattern_at(self.seq_pos) else { return };
@@ -732,6 +950,7 @@ impl Engine {
             let track_glide = line.effects.iter().find(|e| &e.id == b"0G").map(|e| e.amount);
             for (ci, col) in line.notes.iter().enumerate() {
                 if col.note == NOTE_OFF {
+                    self.stop_phrase(ti, ci);
                     let at = col.delay as f64 / 256.0 * fpl;
                     if at > 0.0 {
                         self.schedule(at, ti, ci, EventKind::Release);
@@ -743,6 +962,25 @@ impl Engine {
                 } else if col.note != NOTE_EMPTY && col.instrument != EMPTY {
                     let vol = if col.volume <= 0x80 { col.volume as f32 / 128.0 } else { 1.0 };
                     let pan = if col.panning <= 0x80 { col.panning as f32 / 64.0 - 1.0 } else { 0.0 };
+                    let phrase =
+                        song.instruments.get(col.instrument as usize).and_then(|i| i.phrase_for(col.note));
+                    if let Some(pi) = phrase {
+                        let at = col.delay as f64 / 256.0 * fpl;
+                        if at > 0.0 {
+                            let kind = EventKind::Phrase {
+                                inst: col.instrument,
+                                phrase: pi,
+                                note: col.note,
+                                vol,
+                                pan,
+                            };
+                            self.schedule(at, ti, ci, kind);
+                        } else {
+                            self.start_phrase(ti, ci, col.instrument, pi, col.note, vol, pan);
+                        }
+                        continue;
+                    }
+                    self.stop_phrase(ti, ci);
                     // Glide: retarget the sounding note in this column instead of retriggering.
                     let glide = if &col.effect.id == b"0G" { Some(col.effect.amount) } else { track_glide };
                     if let Some(speed) = glide {
@@ -955,6 +1193,96 @@ mod sequencer_tests {
     fn note(n: &mut trakr_core::NoteColumn) {
         n.note = 48;
         n.instrument = 0;
+    }
+
+    fn with_phrase(mut song: Song, f: impl FnOnce(&mut Phrase)) -> Song {
+        let mut p = Phrase::new("p", 4);
+        p.lpb = 1;
+        f(&mut p);
+        song.instruments[0].phrases.push(Arc::new(p));
+        song.instruments[0].phrase_mode = trakr_core::PhraseMode::Keymap;
+        song
+    }
+
+    fn onsets(v: &[f32]) -> Vec<usize> {
+        let mut out = Vec::new();
+        let mut quiet = true;
+        for (i, s) in v.iter().enumerate() {
+            let loud = s.abs() > 1e-6;
+            if loud && quiet {
+                out.push(i);
+            }
+            quiet = !loud;
+        }
+        out
+    }
+
+    #[test]
+    fn phrase_plays_its_lines_at_its_own_speed() {
+        let mut song = with_phrase(song_with(vec![1.0; 100], LoopMode::Off), |p| {
+            p.looping = false;
+            p.line_mut(0).notes[0].note = 48;
+            p.line_mut(2).notes[0].note = 48;
+        });
+        put(&mut song, 0, |l| note(&mut l.notes[0]));
+        let out = render(song, 4000);
+        assert_eq!(onsets(&out), vec![0, 2000]);
+    }
+
+    #[test]
+    fn phrase_transposes_relative_to_its_base_note() {
+        let mut song = with_phrase(song_with(vec![1.0; 100], LoopMode::Off), |p| {
+            p.looping = false;
+            p.line_mut(0).notes[0].note = 48;
+        });
+        put(&mut song, 0, |l| {
+            l.notes[0].note = 60; // one octave above the base note: twice as fast, half as long
+            l.notes[0].instrument = 0;
+        });
+        let out = render(song, 1000);
+        let len = out.iter().filter(|s| s.abs() > 1e-6).count();
+        assert!((45..=55).contains(&len), "len {len}");
+    }
+
+    #[test]
+    fn phrases_loop_and_note_off_stops_them() {
+        let mut song = with_phrase(song_with(vec![1.0; 100], LoopMode::Off), |p| {
+            p.number_of_lines = 1;
+            p.line_mut(0).notes[0].note = 48;
+        });
+        put(&mut song, 0, |l| note(&mut l.notes[0]));
+        let out = render(song.clone(), 4000);
+        assert_eq!(onsets(&out), vec![0, 1000, 2000, 3000]);
+        put(&mut song, 2, |l| l.notes[0].note = NOTE_OFF);
+        let out = render(song, 4000);
+        assert_eq!(onsets(&out), vec![0, 1000]);
+    }
+
+    #[test]
+    fn phrase_mode_off_plays_the_sample_directly() {
+        let mut song = with_phrase(song_with(vec![1.0; 100], LoopMode::Off), |p| {
+            p.line_mut(2).notes[0].note = 48;
+        });
+        song.instruments[0].phrase_mode = trakr_core::PhraseMode::Off;
+        put(&mut song, 0, |l| note(&mut l.notes[0]));
+        let out = render(song, 4000);
+        assert_eq!(onsets(&out), vec![0]);
+    }
+
+    #[test]
+    fn phrase_key_range_chooses_the_phrase() {
+        let mut song = with_phrase(song_with(vec![1.0; 100], LoopMode::Off), |p| {
+            p.key_range = (60, 119);
+            p.looping = false;
+            p.line_mut(1).notes[0].note = 48;
+        });
+        put(&mut song, 0, |l| note(&mut l.notes[0])); // C-4 is outside the range: plays the sample, no phrase
+        put(&mut song, 2, |l| {
+            l.notes[0].note = 60;
+            l.notes[0].instrument = 0;
+        });
+        let out = render(song, 4000);
+        assert_eq!(onsets(&out), vec![0, 3000]);
     }
 
     #[test]
@@ -1689,6 +2017,30 @@ mod device_tests {
             };
             inst.nna =
                 *rng.pick(&[trakr_core::Nna::Cut, trakr_core::Nna::NoteOff, trakr_core::Nna::Continue]);
+            if rng.below(2) == 0 {
+                inst.phrase_mode = trakr_core::PhraseMode::Keymap;
+                for _ in 0..1 + rng.below(3) {
+                    let mut p = Phrase::new("p", 1 + rng.below(20) as u16);
+                    p.lpb = rng.below(40) as u8;
+                    p.looping = rng.below(2) == 0;
+                    p.loop_start = rng.below(30) as u16;
+                    p.loop_end = rng.below(30) as u16;
+                    p.base_note = rng.below(130) as u8;
+                    p.key_range = (rng.below(120) as u8, rng.below(120) as u8);
+                    p.note_columns = rng.below(15) as u8;
+                    p.effect_columns = rng.below(12) as u8;
+                    for _ in 0..rng.below(30) {
+                        let l = p.line_mut(rng.below(25) as u16);
+                        let n = &mut l.notes[rng.below(trakr_core::MAX_NOTE_COLUMNS as u32) as usize];
+                        n.note = *rng.pick(&[48u8, 0, 119, 120, 121, 60]);
+                        n.instrument = rng.below(6) as u8;
+                        n.volume = rng.below(256) as u8;
+                        n.delay = rng.below(256) as u8;
+                        n.effect = EffectCmd { id: **rng.pick(&FX_IDS), amount: rng.below(256) as u8 };
+                    }
+                    inst.phrases.push(Arc::new(p));
+                }
+            }
             song.instruments.push(inst);
         }
         // devices at extreme settings on random tracks

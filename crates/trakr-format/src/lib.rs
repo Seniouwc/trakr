@@ -97,6 +97,25 @@ mod tests {
     use std::io::Cursor;
 
     #[test]
+    fn phrases_survive_a_roundtrip() {
+        use trakr_core::{Phrase, PhraseMode};
+        let mut song = Song::demo();
+        let mut p = Phrase::new("arp", 8);
+        p.line_mut(2).notes[0].note = 50;
+        p.base_note = 40;
+        p.key_range = (30, 60);
+        p.looping = false;
+        song.instruments[0].phrases.push(std::sync::Arc::new(p));
+        song.instruments[0].phrase_mode = PhraseMode::Keymap;
+        let mut buf = Cursor::new(Vec::new());
+        save(&song, &mut buf).unwrap();
+        buf.set_position(0);
+        let back = load(buf).unwrap();
+        assert_eq!(back.instruments[0].phrases, song.instruments[0].phrases);
+        assert_eq!(back.instruments[0].phrase_mode, PhraseMode::Keymap);
+    }
+
+    #[test]
     fn roundtrip_demo() {
         let song = Song::demo();
         let mut buf = Cursor::new(Vec::new());

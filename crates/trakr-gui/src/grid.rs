@@ -41,6 +41,9 @@ impl GuiApp {
         let id = resp.id;
         // Compute these first: Response methods lock the context, and so does `memory_mut`.
         let took_pointer = resp.clicked() || resp.drag_started();
+        if took_pointer {
+            self.phrase_focus = false;
+        }
         ui.memory_mut(|m| {
             if m.focused().is_none() || took_pointer {
                 m.request_focus(id);

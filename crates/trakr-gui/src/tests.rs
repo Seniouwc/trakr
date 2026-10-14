@@ -381,3 +381,29 @@ fn egui_key_mapping_covers_letters_digits_and_function_keys() {
     assert_eq!(prefs_view::egui_to_keycode(Key::Space), Some(trakr_editor::KeyCode::Char(' ')));
     assert_eq!(prefs_view::egui_to_keycode(Key::Enter), None);
 }
+
+#[test]
+fn phrase_editor_takes_keys_after_a_click_and_gives_them_back() {
+    let mut h = Harness::new();
+    h.app.dock = Dock::Phrases;
+    h.app.editor.phrase_add();
+    for _ in 0..3 {
+        h.frame(vec![]);
+    }
+    h.click(Pos2::new(50.0, 700.0));
+    assert!(h.app.phrase_focus, "clicking the phrase grid focuses it");
+    let pattern_before = h.app.editor.song.patterns[0].clone();
+    h.text(" ");
+    assert!(h.app.editor.edit_mode);
+    let line = h.app.editor.phrase_cursor.line;
+    h.text("z");
+    let p = h.app.editor.current_phrase().unwrap();
+    assert_eq!(p.line(line).map(|l| l.notes[0].note), Some(48), "note went into the phrase");
+    assert_eq!(*h.app.editor.song.patterns[0], *pattern_before, "pattern untouched");
+    // clicking the pattern grid sends keys back to the pattern
+    h.click(Pos2::new(300.0, 200.0));
+    assert!(!h.app.phrase_focus);
+    let before = h.app.editor.current_phrase().unwrap().lines.len();
+    h.text("x");
+    assert_eq!(h.app.editor.current_phrase().unwrap().lines.len(), before);
+}
