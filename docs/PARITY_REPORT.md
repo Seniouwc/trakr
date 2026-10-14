@@ -19,7 +19,7 @@ sessions, large songs.
 | Effect commands | 3.5 | 17 commands (tempo, break, sample offset, backwards, cut, delay, retrigger, pitch slides, glide, vibrato, tremolo, arpeggio, volume slide, fade in/out). Volume and pan columns work on notes and running notes. Missing: special volume-column commands, envelope control, track-level commands (volume, pan, width), auto pan, effects on delayed notes, ghost notes, most of the Z set. |
 | Instruments and playback | 4.5 | Multiple samples per instrument with key zones, base note and fine tune, forward/reverse/ping-pong loops, volume/pan/pitch/cutoff envelopes with a hold point, per-instrument filter, per-note effects. Missing: velocity zones, NNA modes, modulation sets (LFO, stepper, key/velocity tracking), sample FX chains, interpolation modes beyond linear, phrases, instrument bank, plugin instruments. |
 | Sample editor | 6.0 | Zoomable waveform, selection, cut/copy/paste/delete/crop, silence, fades, gain, normalize, invert, DC removal, reverse, mono/stereo, tape pitch shift, resample, slicing with split-to-keys, loop editing, WAV export (16/24/32f), import of WAV/AIFF/FLAC/OGG/MP3, live recording. Missing: spectrum view, drawing, loop crossfade, dither, time-stretch, transient detection, beat-sync. |
-| Mixer and DSP | 4.5 | Per-track bus, device chain, fader with mute/solo/off, pan, master chain and volume, meters with peak hold. Eighteen native devices (gainer, filter, ladder filter, 3- and 10-band EQ, gate, compressor, limiter, delay, reverb, chorus/flanger, phaser, distortion, bit crusher, ring mod, stereo width, tremolo/auto-pan, exciter) against Renoise's roughly fifty. Missing: sends, groups, sidechain, routing, pre/post split, track delay, plugin delay compensation, most devices. |
+| Mixer and DSP | 5.0 | Per-track bus, device chain, fader with mute/solo/off, pan, master chain and volume, meters with peak hold. Eighteen native devices (gainer, filter, ladder filter, 3- and 10-band EQ, gate, compressor, limiter, delay, reverb, chorus/flanger, phaser, distortion, bit crusher, ring mod, stereo width, tremolo/auto-pan, exciter) against Renoise's roughly fifty. Groups and sends work (nested groups, pre/post-fader feeds). Missing: sidechain, arbitrary routing, track delay, plugin delay compensation, most devices. |
 | Automation and modulation | 4.0 | Per-pattern lanes for track volume/pan and any native device parameter with a graph editor and playhead. Missing: curves and interpolation modes, recording knob moves, envelope copy/paste, range tools, modulation devices (LFO, envelope follower, hydra, formula, macros). |
 | Plugin hosting | 0.0 | None: no CLAP, VST3, LV2, LADSPA. |
 | MIDI, OSC, scripting | 2.5 | MIDI input for notes, CC7/CC10 and transport. Missing: MIDI output and clock, mapping, OSC, Lua scripting. |
@@ -29,7 +29,7 @@ sessions, large songs.
 
 ## Overall
 
-**About 3.7 / 10 weighted by what a typical Renoise song uses day to day** (pattern editing, instruments,
+**About 3.9 / 10 weighted by what a typical Renoise song uses day to day** (pattern editing, instruments,
 sample editing, mixing and effects count most; plugins, scripting and format breadth count less). In plain
 terms: trakr can already be used to sketch and finish simple sample-based tracker songs on Linux, and its
 sample editing and pattern workflow are the closest to Renoise. It cannot yet replace Renoise for anyone who
@@ -38,7 +38,7 @@ depends on plugins, a full effect rack, sends and groups, phrases, or opening ex
 ## Highest-value gaps, in order
 
 1. **Verify `.xrns` import against real files** (instruments and samples are now imported but only checked against synthetic fixtures), then add envelopes, devices and automation to it.
-2. **Sends, groups and sidechain routing**, then more native devices (multiband, convolver, bus compressor, modulation devices).
+2. **Sidechain routing and a `#Send`-style device**, then more native devices (multiband, convolver, bus compressor, modulation devices).
 3. **Plugin hosting (CLAP first)**: the largest single missing capability.
 4. **Remaining effect commands and special volume/pan column commands**, checked against the manual.
 5. **Instrument modulation sets, NNA, velocity zones, phrases.**

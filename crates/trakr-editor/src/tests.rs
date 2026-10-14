@@ -516,3 +516,54 @@ fn midi_note_on_plays_through_the_engine() {
     app.handle_midi(trakr_midi::MidiEvent::NoteOn { channel: 0, note: 60, velocity: 127 });
     assert!(render_peak(&mut engine, &mut app, 4000) > 0.1, "keyboard note should be audible");
 }
+
+#[test]
+fn groups_sends_and_index_bookkeeping() {
+    use trakr_core::{AutoTarget, TrackKind};
+    let mut app = ed();
+    app.do_action(Action::TrackAddGroup);
+    let g = app.cursor.track;
+    assert_eq!(app.song.tracks[g].kind, TrackKind::Group);
+    assert_eq!(app.song.tracks[g + 1].kind, TrackKind::Master, "groups sit just before the master");
+    app.do_action(Action::TrackAddSend);
+    let s = app.cursor.track;
+    assert_eq!(s, app.song.tracks.len() - 1);
+    assert_eq!(app.song.tracks[s].kind, TrackKind::Send);
+
+    app.set_track_group(0, Some(g));
+    app.set_send(0, s, 0.5, true);
+    assert_eq!(app.song.tracks[0].group, Some(g));
+    assert_eq!(app.song.tracks[0].sends[0].target, s);
+    // routing rules
+    app.set_track_group(0, Some(1));
+    assert_eq!(app.song.tracks[0].group, Some(g), "only group tracks accept routing");
+    app.do_action(Action::TrackAddGroup);
+    let g2 = app.cursor.track;
+    app.set_track_group(g, Some(g2));
+    app.set_track_group(g2, Some(g));
+    assert_eq!(app.song.tracks[g2].group, None, "loops are refused");
+
+    // an automation lane on the master follows it when a sequencer track is added
+    let master = app.song.tracks.iter().position(|t| t.kind == TrackKind::Master).unwrap();
+    app.automation_edit("a", master, AutoTarget::TrackVolume, |a| {
+        a.set_point(0.0, 0.5);
+    });
+    app.set_cursor(0, 0, 0, 0);
+    app.do_action(Action::TrackAdd);
+    let new_master = app.song.tracks.iter().position(|t| t.kind == TrackKind::Master).unwrap();
+    assert_eq!(new_master, master + 1);
+    assert!(app.automation_lane(new_master, AutoTarget::TrackVolume).is_some());
+    let g_now = app.song.tracks.iter().position(|t| t.name == "Group 01").unwrap();
+    assert_eq!(app.song.tracks[0].group, Some(g_now), "group routing follows its group");
+
+    // removing the group clears the routing; removing the send drops the feed
+    app.cursor.track = g_now;
+    app.do_action(Action::TrackRemove);
+    assert_eq!(app.song.tracks[0].group, None);
+    let s_now = app.song.tracks.iter().position(|t| t.kind == TrackKind::Send).unwrap();
+    app.cursor.track = s_now;
+    app.do_action(Action::TrackRemove);
+    assert!(app.song.tracks[0].sends.is_empty());
+    app.undo();
+    assert_eq!(app.song.tracks[0].sends.len(), 1);
+}

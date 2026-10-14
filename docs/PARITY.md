@@ -55,7 +55,7 @@ Compiled from memory of Renoise 3.x behavior. Verify each item against the offic
 - [~] Track volume and panning applied in mix; master track volume applied (master DSP chain not yet)
 - [~] Device chain runs before the track fader (post-fader chain and pre/post split do not exist); track width and track delay do not
 - [x] Master track with its own DSP chain
-- [ ] Send tracks and `#Send` device routing, group tracks, routing to arbitrary tracks, sidechain
+- [~] Group tracks (nested, with their own chain and fader) and send tracks (post- or pre-fader feeds, mixer UI) work; `#Send`-style devices, routing to arbitrary tracks, sidechain do not
 - [x] Track mute, solo and off, mixer view with per-track and master meters and peak hold
 - [ ] Plugin delay compensation
 - [~] Native devices (18): Gainer, Filter, 3-band EQ, 10-band EQ, Ladder filter (24 dB), Gate, Compressor, Limiter, Delay (ping-pong), Reverb, Chorus/flanger, Phaser, Distortion, Bit crusher, Ring modulator, Stereo width, Tremolo/auto-pan, Exciter; GUI cards, bypass, reorder, undo, automation. Still missing (verify against manual): scream/analog filter models, stereo expander variants, bus compressor, maximizer, multitap, cabinet sim, convolver, repeater, DC offset, LFO, envelope follower, hydra, key/velocity tracker, formula, meta mixer, doofer, #Line Input, #Multiband Send, #Send, #Sidechain, signal follower

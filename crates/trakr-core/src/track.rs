@@ -25,6 +25,18 @@ pub struct DeviceSpec {
     pub params: Vec<f32>,
 }
 
+/// A feed from a track into a send track.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct SendLevel {
+    /// Index of the send track in `Song::tracks`.
+    pub target: usize,
+    /// Linear gain applied to the feed.
+    pub level: f32,
+    /// Tap before the track fader (volume and pan) so the send level is independent of it.
+    #[serde(default)]
+    pub pre_fader: bool,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Track {
     pub name: String,
@@ -43,6 +55,9 @@ pub struct Track {
     pub devices: Vec<DeviceSpec>,
     /// Index of the owning group track, if any.
     pub group: Option<usize>,
+    /// Feeds into send tracks (after the device chain).
+    #[serde(default)]
+    pub sends: Vec<SendLevel>,
 }
 
 impl Track {
@@ -59,6 +74,7 @@ impl Track {
             color: None,
             devices: Vec::new(),
             group: None,
+            sends: Vec::new(),
         }
     }
 }

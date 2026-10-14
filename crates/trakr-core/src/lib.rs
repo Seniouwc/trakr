@@ -19,4 +19,4 @@ pub use instrument::{FilterMode, Instrument, InstrumentFilter, LoopMode, Sample}
 pub use note::{EffectCmd, NoteColumn, EMPTY, NOTE_EMPTY, NOTE_OFF};
 pub use pattern::{Line, Pattern, PatternTrack, MAX_EFFECT_COLUMNS, MAX_LINES, MAX_NOTE_COLUMNS};
 pub use song::Song;
-pub use track::{DeviceSpec, MuteState, Track, TrackKind};
+pub use track::{DeviceSpec, MuteState, SendLevel, Track, TrackKind};

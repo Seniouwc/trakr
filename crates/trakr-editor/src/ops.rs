@@ -56,6 +56,43 @@ fn lerp_u8(a: u8, b: u8, i: usize, n: usize) -> u8 {
     (a as f32 + (b as f32 - a as f32) * i as f32 / n as f32).round() as u8
 }
 
+/// Keep stored track indices valid after a track was inserted at `at` (`delta = 1`) or removed (`-1`):
+/// group routing, send feeds and automation lanes follow their tracks; references to a removed track go away.
+fn shift_track_refs(song: &mut Song, at: usize, delta: i32) {
+    let fix = |i: usize| -> Option<usize> {
+        if delta > 0 {
+            Some(if i >= at { i + 1 } else { i })
+        } else if i == at {
+            None
+        } else {
+            Some(if i > at { i - 1 } else { i })
+        }
+    };
+    for tr in &mut song.tracks {
+        tr.group = tr.group.and_then(fix);
+        tr.sends.retain_mut(|s| match fix(s.target) {
+            Some(t) => {
+                s.target = t;
+                true
+            }
+            None => false,
+        });
+    }
+    for p in &mut song.patterns {
+        if p.automation.is_empty() {
+            continue;
+        }
+        let p = Arc::make_mut(p);
+        p.automation.retain_mut(|a| match fix(a.track) {
+            Some(t) => {
+                a.track = t;
+                true
+            }
+            None => false,
+        });
+    }
+}
+
 impl Editor {
     // ---- flattened columns and selection --------------------------------
 
@@ -467,16 +504,42 @@ impl Editor {
     // ---- tracks -------------------------------------------------------------
 
     pub fn track_add(&mut self) {
+        self.track_add_kind(TrackKind::Sequencer);
+    }
+
+    /// Add a track of `kind`: sequencer tracks go before the master, groups just before it, sends last.
+    /// Indices stored elsewhere (groups, sends, automation lanes) follow the insertion.
+    pub fn track_add_kind(&mut self, kind: TrackKind) {
         if self.song.tracks.len() >= trakr_engine::MAX_METER_TRACKS {
             self.status = format!("track limit reached ({})", trakr_engine::MAX_METER_TRACKS);
             return;
         }
         self.checkpoint();
         let song = self.song_mut();
-        let idx =
-            song.tracks.iter().position(|t| t.kind != TrackKind::Sequencer).unwrap_or(song.tracks.len());
-        let n = song.tracks.iter().filter(|t| t.kind == TrackKind::Sequencer).count() + 1;
-        song.tracks.insert(idx, Track::new(format!("Track {n:02}"), TrackKind::Sequencer));
+        let idx = match kind {
+            TrackKind::Sequencer => {
+                song.tracks.iter().position(|t| t.kind != TrackKind::Sequencer).unwrap_or(song.tracks.len())
+            }
+            TrackKind::Group | TrackKind::Master => song
+                .tracks
+                .iter()
+                .position(|t| matches!(t.kind, TrackKind::Master | TrackKind::Send))
+                .unwrap_or(song.tracks.len()),
+            TrackKind::Send => song.tracks.len(),
+        };
+        let count = song.tracks.iter().filter(|t| t.kind == kind).count() + 1;
+        let name = match kind {
+            TrackKind::Sequencer => format!("Track {count:02}"),
+            TrackKind::Group => format!("Group {count:02}"),
+            TrackKind::Send => format!("Send {count:02}"),
+            TrackKind::Master => "Master".into(),
+        };
+        let mut track = Track::new(name, kind);
+        if kind != TrackKind::Sequencer {
+            track.visible_note_columns = 0; // buses carry effect commands only
+        }
+        song.tracks.insert(idx, track);
+        shift_track_refs(song, idx, 1);
         for p in &mut song.patterns {
             if p.tracks.len() >= idx {
                 Arc::make_mut(p).tracks.insert(idx, PatternTrack::default());
@@ -488,17 +551,20 @@ impl Editor {
         self.after_structure_change();
     }
 
+    /// Remove the track under the cursor (not the master, and not the last sequencer track).
     pub fn track_remove(&mut self) {
         let t = self.cursor.track;
         let song = &self.song;
         let seq_tracks = song.tracks.iter().filter(|t| t.kind == TrackKind::Sequencer).count();
-        if song.tracks[t].kind != TrackKind::Sequencer || seq_tracks <= 1 {
+        let kind = song.tracks[t].kind;
+        if kind == TrackKind::Master || (kind == TrackKind::Sequencer && seq_tracks <= 1) {
             self.status = "cannot remove this track".into();
             return;
         }
         self.checkpoint();
         let song = self.song_mut();
         song.tracks.remove(t);
+        shift_track_refs(song, t, -1);
         for p in &mut song.patterns {
             if p.tracks.len() > t {
                 Arc::make_mut(p).tracks.remove(t);
@@ -506,6 +572,54 @@ impl Editor {
         }
         self.anchor = None;
         self.after_structure_change();
+    }
+
+    /// Route a track's output into a group track (`None` = master). Ignored if it would form a loop.
+    pub fn set_track_group(&mut self, track: usize, group: Option<usize>) {
+        let tracks = &self.song.tracks;
+        if track >= tracks.len() || tracks[track].kind == TrackKind::Master {
+            return;
+        }
+        if let Some(g) = group {
+            if g >= tracks.len() || tracks[g].kind != TrackKind::Group || g == track {
+                self.status = "tracks can only be routed into group tracks".into();
+                return;
+            }
+            // Walk up from the target: reaching `track` again would be a cycle.
+            let mut at = Some(g);
+            let mut hops = 0;
+            while let Some(cur) = at {
+                if cur == track || hops > tracks.len() {
+                    self.status = "that routing would loop back on itself".into();
+                    return;
+                }
+                at = tracks[cur].group;
+                hops += 1;
+            }
+        }
+        self.checkpoint();
+        self.song_mut().tracks[track].group = group;
+        self.sync();
+    }
+
+    /// Set how much of `track` feeds the send track `target` (0 removes the feed).
+    pub fn set_send(&mut self, track: usize, target: usize, level: f32, pre_fader: bool) {
+        let ok = self.song.tracks.get(target).is_some_and(|t| t.kind == TrackKind::Send)
+            && self
+                .song
+                .tracks
+                .get(track)
+                .is_some_and(|t| t.kind != TrackKind::Send && t.kind != TrackKind::Master);
+        if !ok {
+            return;
+        }
+        self.checkpoint_key("send_level");
+        let sends = &mut self.song_mut().tracks[track].sends;
+        sends.retain(|s| s.target != target);
+        if level > 0.0 {
+            sends.push(trakr_core::SendLevel { target, level: level.clamp(0.0, 4.0), pre_fader });
+        }
+        self.sync();
     }
 
     pub fn track_rename(&mut self, name: String) {
@@ -693,6 +807,8 @@ impl Editor {
             PatternPrev => self.pattern_step(-1),
             PatternNext => self.pattern_step(1),
             TrackAdd => self.track_add(),
+            TrackAddGroup => self.track_add_kind(TrackKind::Group),
+            TrackAddSend => self.track_add_kind(TrackKind::Send),
             TrackRemove => self.track_remove(),
             TrackMute => self.track_toggle_mute(),
             NoteColumnAdd => self.set_columns(1, 0),

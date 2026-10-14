@@ -192,3 +192,18 @@ fn menu_actions_work_from_the_gui_layer() {
     h.app.run_action(trakr_editor::Action::ToggleEdit);
     assert!(h.app.editor.edit_mode);
 }
+
+#[test]
+fn mixer_with_groups_and_sends_draws_and_routes() {
+    let mut h = Harness::new();
+    h.app.editor.do_action(trakr_editor::Action::TrackAddGroup);
+    h.app.editor.do_action(trakr_editor::Action::TrackAddSend);
+    h.app.dock = Dock::Mixer;
+    for _ in 0..3 {
+        h.frame(vec![]);
+    }
+    let s = h.app.editor.song.tracks.iter().position(|t| t.kind == trakr_core::TrackKind::Send).unwrap();
+    h.app.editor.set_send(0, s, 0.5, false);
+    h.frame(vec![]);
+    assert_eq!(h.app.editor.song.tracks[0].sends.len(), 1);
+}

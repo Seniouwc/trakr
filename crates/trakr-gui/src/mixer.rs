@@ -74,7 +74,7 @@ impl GuiApp {
         let selected = t == self.editor.cursor.track;
         let n = self.editor.song.tracks.len();
         ui.vertical(|ui| {
-            ui.set_width(64.0);
+            ui.set_width(if matches!(kind, TrackKind::Master) { 64.0 } else { 96.0 });
             if ui.selectable_label(selected, egui::RichText::new(&name).small()).clicked() {
                 let line = self.editor.cursor.line;
                 self.editor.set_cursor(t, 0, 0, line);
@@ -113,6 +113,61 @@ impl GuiApp {
                 }
             });
             ui.small(if db <= DB_MIN { "-inf dB".to_string() } else { format!("{db:.1} dB") });
+            // Routing: where this strip's output goes, and how much of it feeds each send track.
+            if kind != TrackKind::Master && kind != TrackKind::Send {
+                let groups: Vec<(usize, String)> = self
+                    .editor
+                    .song
+                    .tracks
+                    .iter()
+                    .enumerate()
+                    .filter(|(i, g)| g.kind == TrackKind::Group && *i != t)
+                    .map(|(i, g)| (i, g.name.clone()))
+                    .collect();
+                let current = self.editor.song.tracks[t].group;
+                let label = current
+                    .and_then(|g| groups.iter().find(|(i, _)| *i == g))
+                    .map_or("Master".to_string(), |(_, n)| n.clone());
+                egui::ComboBox::from_id_salt(("route", t)).width(56.0).selected_text(label).show_ui(
+                    ui,
+                    |ui| {
+                        if ui.selectable_label(current.is_none(), "Master").clicked() {
+                            self.editor.set_track_group(t, None);
+                        }
+                        for (i, name) in &groups {
+                            if ui.selectable_label(current == Some(*i), name).clicked() {
+                                self.editor.set_track_group(t, Some(*i));
+                            }
+                        }
+                    },
+                );
+                let sends: Vec<(usize, String)> = self
+                    .editor
+                    .song
+                    .tracks
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, s)| s.kind == TrackKind::Send)
+                    .map(|(i, s)| (i, s.name.clone()))
+                    .collect();
+                for (si, name) in sends {
+                    let cur = self.editor.song.tracks[t].sends.iter().find(|s| s.target == si).copied();
+                    let (mut level, mut pre) = cur.map_or((0.0, false), |s| (s.level, s.pre_fader));
+                    ui.horizontal(|ui| {
+                        let a = ui.add(
+                            egui::DragValue::new(&mut level)
+                                .range(0.0..=2.0)
+                                .speed(0.01)
+                                .fixed_decimals(2)
+                                .prefix(format!("{} ", name.chars().take(6).collect::<String>())),
+                        );
+                        let b = ui.checkbox(&mut pre, "").on_hover_text("Pre-fader send");
+                        if a.changed() || b.changed() {
+                            self.editor.set_send(t, si, level, pre);
+                        }
+                    });
+                }
+            }
             let mut p = pan;
             if ui.add(egui::DragValue::new(&mut p).range(-1.0..=1.0).speed(0.01).fixed_decimals(2)).changed()
             {

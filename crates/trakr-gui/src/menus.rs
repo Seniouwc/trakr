@@ -41,6 +41,8 @@ pub const ALL_ACTIONS: &[Action] = &[
     PatternPrev,
     PatternNext,
     TrackAdd,
+    TrackAddGroup,
+    TrackAddSend,
     TrackRemove,
     TrackMute,
     NoteColumnAdd,
@@ -160,7 +162,7 @@ impl GuiApp {
                     });
                 });
                 ui.menu_button("Track", |ui| {
-                    for a in [TrackAdd, TrackRemove, TrackMute, TrackSolo] {
+                    for a in [TrackAdd, TrackAddGroup, TrackAddSend, TrackRemove, TrackMute, TrackSolo] {
                         self.item(ui, a);
                     }
                     ui.separator();

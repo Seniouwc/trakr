@@ -194,6 +194,8 @@ pub fn create(sample_rate: u32) -> (Engine, EngineHandle) {
         chains: (0..MAX_TRACKS).map(|_| Vec::new()).collect(),
         track_bufs: vec![0.0; MAX_TRACKS * BLOCK * 2],
         bus: vec![0.0; BLOCK * 2],
+        acc: vec![0.0; MAX_TRACKS * BLOCK * 2],
+        order: Vec::with_capacity(MAX_TRACKS),
         track_used: [false; MAX_TRACKS],
         fader_prev: [-1.0; MAX_TRACKS],
         overrides: Vec::with_capacity(MAX_OVERRIDES),
@@ -230,6 +232,9 @@ pub struct Engine {
     /// One stereo bus per track, `BLOCK` frames each, so devices can process a track's whole signal.
     track_bufs: Vec<f32>,
     bus: Vec<f32>,
+    /// What other tracks routed into each group or send track this block.
+    acc: Vec<f32>,
+    order: Vec<usize>,
     track_used: [bool; MAX_TRACKS],
     /// Last fader gain per track (negative = never used), ramped to the new gain across each block.
     fader_prev: [f32; MAX_TRACKS],
@@ -371,57 +376,139 @@ impl Engine {
         self.overrides.iter().find(|o| o.track == track && f(&o.target)).map(|o| o.value)
     }
 
-    /// Run device chains, apply faders (mute/solo/automation), sum into the master bus, run the master chain.
+    /// Fader gains for track `t` this block: (previous, target, left, right), with volume/pan automation,
+    /// mute and solo applied. Sequencer tracks are silenced by other tracks' solo; groups and sends are not.
+    fn fader(&self, t: usize, tr: &trakr_core::Track, any_solo: bool) -> (f32, f32, f32, f32) {
+        let vol = match self.override_for(t, |o| matches!(o, Ov::Volume)) {
+            Some(n) if n <= 0.0 => 0.0,
+            Some(n) => dsp::db_to_gain(-60.0 + 66.0 * n),
+            None => tr.volume,
+        };
+        let pan = self.override_for(t, |o| matches!(o, Ov::Pan)).map_or(tr.panning, |n| n * 2.0 - 1.0);
+        let solo_gate = tr.kind != trakr_core::TrackKind::Sequencer || !any_solo || tr.solo;
+        let target = if tr.mute == MuteState::Active && solo_gate { vol } else { 0.0 };
+        let prev = if self.fader_prev[t] < 0.0 { target } else { self.fader_prev[t] }; // first use: no ramp
+        (prev, target, (1.0 - pan).min(1.0), (1.0 + pan).min(1.0))
+    }
+
+    /// Run device chains, route through faders, groups and sends, and finish on the master track.
+    ///
+    /// Order: sequencer tracks (feeding their group or the master, plus sends) -> groups, deepest first
+    /// -> send tracks -> master chain and volume.
     fn mix_down(&mut self, out: &mut [f32], frames: usize) {
         let song = self.song.clone(); // refcount bump only
+        let n = song.tracks.len().min(MAX_TRACKS);
         let any_solo = song.tracks.iter().any(|t| t.solo);
         self.bus[..frames * 2].fill(0.0);
-        let mut master = None;
-        for (t, tr) in song.tracks.iter().enumerate().take(MAX_TRACKS) {
-            if tr.kind == trakr_core::TrackKind::Master {
-                master = Some(t);
-                continue;
+        for t in 0..n {
+            if matches!(song.tracks[t].kind, trakr_core::TrackKind::Group | trakr_core::TrackKind::Send) {
+                let base = t * BLOCK * 2;
+                self.acc[base..base + frames * 2].fill(0.0);
             }
+        }
+        // Where a track's output goes: its group if it has a valid one, otherwise the master bus.
+        let dest = |t: usize| -> Option<usize> {
+            song.tracks[t]
+                .group
+                .filter(|&g| g < n && g != t && song.tracks[g].kind == trakr_core::TrackKind::Group)
+        };
+        let depth = |mut t: usize| {
+            let mut d = 0;
+            while let Some(g) = dest(t) {
+                t = g;
+                d += 1;
+                if d >= 8 {
+                    break;
+                }
+            }
+            d
+        };
+
+        // Phase 1: sequencer tracks, then groups (deepest first), then sends. All are "strips".
+        // Reuse a preallocated list: nothing on the audio thread may allocate.
+        let mut order = std::mem::take(&mut self.order);
+        order.clear();
+        order.extend((0..n).filter(|&t| song.tracks[t].kind == trakr_core::TrackKind::Sequencer));
+        for d in (0..=8).rev() {
+            order.extend(
+                (0..n).filter(|&t| song.tracks[t].kind == trakr_core::TrackKind::Group && depth(t) == d),
+            );
+        }
+        order.extend((0..n).filter(|&t| song.tracks[t].kind == trakr_core::TrackKind::Send));
+
+        for &t in order.iter() {
+            let tr = &song.tracks[t];
             let base = t * BLOCK * 2;
-            if !self.track_used[t] && self.chains[t].is_empty() {
+            let is_bus = matches!(tr.kind, trakr_core::TrackKind::Group | trakr_core::TrackKind::Send);
+            if !is_bus && !self.track_used[t] && self.chains[t].is_empty() {
                 continue;
             }
             if !self.track_used[t] {
                 self.track_bufs[base..base + frames * 2].fill(0.0); // silence in, tails out
             }
+            if is_bus {
+                // Add everything routed here to whatever this strip's own voices produced.
+                let (tb, acc) = (&mut self.track_bufs, &self.acc);
+                for (d, a) in tb[base..base + frames * 2].iter_mut().zip(&acc[base..base + frames * 2]) {
+                    *d += a;
+                }
+            }
             self.run_chain(t, tr, base, frames);
 
-            let vol = match self.override_for(t, |o| matches!(o, Ov::Volume)) {
-                Some(n) if n <= 0.0 => 0.0,
-                Some(n) => dsp::db_to_gain(-60.0 + 66.0 * n),
-                None => tr.volume,
-            };
-            let pan = self.override_for(t, |o| matches!(o, Ov::Pan)).map_or(tr.panning, |n| n * 2.0 - 1.0);
-            let audible = tr.mute == MuteState::Active && (!any_solo || tr.solo);
-            let target = if audible { vol } else { 0.0 };
-            let (pl, pr) = ((1.0 - pan).min(1.0), (1.0 + pan).min(1.0));
-            let prev = if self.fader_prev[t] < 0.0 { target } else { self.fader_prev[t] }; // first use: no ramp
-            let buf = &self.track_bufs[base..base + frames * 2];
+            let (prev, target, pl, pr) = self.fader(t, tr, any_solo);
+            let audible = target > 0.0 || prev > 0.0;
+
+            // Sends tap the signal after the chain, before or after the fader.
+            for s in &tr.sends {
+                if s.target >= n || s.target == t || song.tracks[s.target].kind != trakr_core::TrackKind::Send
+                {
+                    continue;
+                }
+                let sbase = s.target * BLOCK * 2;
+                let src = &self.track_bufs[base..base + frames * 2];
+                let dst = &mut self.acc[sbase..sbase + frames * 2];
+                let gate = if tr.mute == MuteState::Active && (!any_solo || tr.solo) { 1.0 } else { 0.0 };
+                for (i, (d, f)) in dst.chunks_exact_mut(2).zip(src.chunks_exact(2)).enumerate() {
+                    let g = if s.pre_fader {
+                        1.0
+                    } else {
+                        prev + (target - prev) * (i as f32 + 1.0) / frames as f32
+                    };
+                    let g = g * s.level * gate;
+                    d[0] += f[0] * g * if s.pre_fader { 1.0 } else { pl };
+                    d[1] += f[1] * g * if s.pre_fader { 1.0 } else { pr };
+                }
+            }
+
+            let src = &self.track_bufs[base..base + frames * 2];
             let mut peak = 0.0f32;
-            for (i, (f, b)) in buf.chunks_exact(2).zip(self.bus.chunks_exact_mut(2)).enumerate() {
-                let g = prev + (target - prev) * (i as f32 + 1.0) / frames as f32;
-                let (l, r) = (f[0] * g * pl, f[1] * g * pr);
-                b[0] += l;
-                b[1] += r;
-                peak = peak.max(l.abs()).max(r.abs());
+            let dst: &mut [f32] = match dest(t) {
+                Some(g) => &mut self.acc[g * BLOCK * 2..g * BLOCK * 2 + frames * 2],
+                None => &mut self.bus[..frames * 2],
+            };
+            if audible || prev != target {
+                for (i, (d, f)) in dst.chunks_exact_mut(2).zip(src.chunks_exact(2)).enumerate() {
+                    let g = prev + (target - prev) * (i as f32 + 1.0) / frames as f32;
+                    let (l, r) = (f[0] * g * pl, f[1] * g * pr);
+                    d[0] += l;
+                    d[1] += r;
+                    peak = peak.max(l.abs()).max(r.abs());
+                }
             }
             self.fader_prev[t] = target;
             self.meter_acc[t] = self.meter_acc[t].max(peak);
         }
 
+        self.order = order;
+
+        // Master.
+        let master = (0..n).find(|&t| song.tracks[t].kind == trakr_core::TrackKind::Master);
         if let Some(m) = master {
             let tr = &song.tracks[m];
-            let base = m.min(MAX_TRACKS - 1) * BLOCK * 2;
-            if m < MAX_TRACKS {
-                self.track_bufs[base..base + frames * 2].copy_from_slice(&self.bus[..frames * 2]);
-                self.run_chain(m, tr, base, frames);
-                self.bus[..frames * 2].copy_from_slice(&self.track_bufs[base..base + frames * 2]);
-            }
+            let base = m * BLOCK * 2;
+            self.track_bufs[base..base + frames * 2].copy_from_slice(&self.bus[..frames * 2]);
+            self.run_chain(m, tr, base, frames);
+            self.bus[..frames * 2].copy_from_slice(&self.track_bufs[base..base + frames * 2]);
             let vol = match self.override_for(m, |o| matches!(o, Ov::Volume)) {
                 Some(n) if n <= 0.0 => 0.0,
                 Some(n) => dsp::db_to_gain(-60.0 + 66.0 * n),
@@ -1396,5 +1483,72 @@ mod device_tests {
         // 64-line pattern is far longer than the echo, so the echo must be in the render
         let out = render_song(Arc::new(song), RATE, 5.0);
         assert!(out.iter().skip(2 * 20_000).any(|s| s.abs() > 0.1), "echo missing from the bounce");
+    }
+
+    // ---- groups and sends ----
+
+    fn insert_track(song: &mut Song, index: usize, kind: trakr_core::TrackKind, name: &str) -> usize {
+        song.tracks.insert(index, trakr_core::Track::new(name, kind));
+        index
+    }
+
+    #[test]
+    fn group_tracks_sum_their_members_and_apply_their_own_chain_and_fader() {
+        let mut song = hold_song_dev();
+        let g = insert_track(&mut song, 8, trakr_core::TrackKind::Group, "Group");
+        song.tracks[0].group = Some(g);
+        let plain = render(song.clone(), 3000)[2500];
+        assert!((plain - 1.0).abs() < 0.01, "a group with no changes is transparent: {plain}");
+        song.tracks[g].volume = 0.25;
+        assert!((render(song.clone(), 3000)[2500] - 0.25).abs() < 0.01);
+        song.tracks[g].volume = 1.0;
+        let mut d = DeviceSpec::new("native.gainer").unwrap();
+        d.params[0] = -6.0206;
+        song.tracks[g].devices.push(d);
+        assert!((render(song, 3000)[2500] - 0.5).abs() < 0.01, "the group's own device chain runs");
+    }
+
+    #[test]
+    fn nested_groups_route_through_each_other() {
+        let mut song = hold_song_dev();
+        let inner = insert_track(&mut song, 8, trakr_core::TrackKind::Group, "Inner");
+        let outer = insert_track(&mut song, 9, trakr_core::TrackKind::Group, "Outer");
+        song.tracks[0].group = Some(inner);
+        song.tracks[inner].group = Some(outer);
+        song.tracks[inner].volume = 0.5;
+        song.tracks[outer].volume = 0.5;
+        assert!((render(song.clone(), 3000)[2500] - 0.25).abs() < 0.01);
+        // a cycle must not hang or blow up: the cyclic link is ignored
+        song.tracks[outer].group = Some(inner);
+        let out = render(song, 3000);
+        assert!(out.iter().all(|s| s.is_finite()));
+    }
+
+    #[test]
+    fn send_tracks_add_a_wet_feed_and_respect_pre_post_fader() {
+        let mut song = hold_song_dev();
+        let n = song.tracks.len();
+        let s = insert_track(&mut song, n, trakr_core::TrackKind::Send, "Send");
+        song.tracks[0].sends.push(trakr_core::SendLevel { target: s, level: 0.5, pre_fader: false });
+        let out = render(song.clone(), 3000)[2500];
+        assert!((out - 1.5).abs() < 0.02, "dry 1.0 + send 0.5, got {out}");
+        // the send track's own chain applies to the feed only
+        let mut with_fx = song.clone();
+        let mut d = DeviceSpec::new("native.gainer").unwrap();
+        d.params[0] = -60.0;
+        with_fx.tracks[s].devices.push(d);
+        assert!((render(with_fx, 3000)[2500] - 1.0).abs() < 0.02, "muted send leaves only the dry signal");
+        // fader down: post-fader send follows it, pre-fader send does not
+        song.tracks[0].volume = 0.0;
+        assert!(render(song.clone(), 3000)[2500].abs() < 0.02);
+        song.tracks[0].sends[0].pre_fader = true;
+        assert!((render(song.clone(), 3000)[2500] - 0.5).abs() < 0.02);
+        // muting the track silences even a pre-fader send
+        song.tracks[0].mute = MuteState::Muted;
+        assert!(render(song, 3000)[2500].abs() < 0.02);
+    }
+
+    fn hold_song_dev() -> Song {
+        song_with(vec![1.0; 20_000])
     }
 }

@@ -46,6 +46,8 @@ pub enum Action {
     PatternNext,
     // tracks
     TrackAdd,
+    TrackAddGroup,
+    TrackAddSend,
     TrackRemove,
     TrackMute,
     NoteColumnAdd,
@@ -109,6 +111,8 @@ impl Action {
             PatternPrev => "Previous pattern in slot",
             PatternNext => "Next pattern in slot",
             TrackAdd => "Add track",
+            TrackAddGroup => "Add group track",
+            TrackAddSend => "Add send track",
             TrackRemove => "Remove track",
             TrackMute => "Mute track",
             NoteColumnAdd => "Add note column",
