@@ -207,3 +207,105 @@ fn mixer_with_groups_and_sends_draws_and_routes() {
     h.frame(vec![]);
     assert_eq!(h.app.editor.song.tracks[0].sends.len(), 1);
 }
+
+/// Hammer the whole window with random pointer, wheel, text and key events. Catches panics and freezes
+/// (a deadlock would trip the watchdog). File dialogs are closed immediately so nothing touches the disk.
+#[test]
+fn random_input_never_panics_or_freezes() {
+    use std::sync::mpsc;
+    use std::time::Duration;
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let mut h = Harness::new();
+        let dir = std::env::temp_dir().join(format!("trakr_gui_fuzz_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        h.app.editor.path = Some(dir.join("fuzz.trkr"));
+        h.app.editor.device_add(0, "native.delay");
+        let mut seed = 0x5EEDu64;
+        let mut next = move || {
+            seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            (seed >> 33) as u32
+        };
+        let keys = [
+            Key::ArrowUp,
+            Key::ArrowDown,
+            Key::ArrowLeft,
+            Key::ArrowRight,
+            Key::Tab,
+            Key::Backspace,
+            Key::Delete,
+            Key::Insert,
+            Key::Escape,
+            Key::F1,
+            Key::F2,
+            Key::F5,
+            Key::F8,
+            Key::PageUp,
+            Key::PageDown,
+            Key::Home,
+            Key::End,
+            Key::Z,
+            Key::Y,
+            Key::A,
+            Key::S,
+        ];
+        let texts = ["z", "x", " ", "c", "1", "0", "a", "f", "`", "q", "2"];
+        for frame in 0..4000 {
+            let mut events = Vec::new();
+            for _ in 0..1 + next() % 3 {
+                let pos = Pos2::new((next() % 1280) as f32, (next() % 780) as f32);
+                let mods = Modifiers {
+                    shift: next() % 5 == 0,
+                    ctrl: next() % 6 == 0,
+                    alt: next() % 9 == 0,
+                    command: next() % 6 == 0,
+                    ..Modifiers::NONE
+                };
+                match next() % 8 {
+                    0 | 1 => events.push(Event::PointerMoved(pos)),
+                    2 | 3 => {
+                        let button =
+                            if next() % 4 == 0 { PointerButton::Secondary } else { PointerButton::Primary };
+                        events.push(Event::PointerMoved(pos));
+                        events.push(Event::PointerButton { pos, button, pressed: true, modifiers: mods });
+                    }
+                    4 => events.push(Event::PointerButton {
+                        pos,
+                        button: PointerButton::Primary,
+                        pressed: false,
+                        modifiers: mods,
+                    }),
+                    5 => events.push(Event::MouseWheel {
+                        unit: egui::MouseWheelUnit::Point,
+                        delta: Vec2::new((next() % 40) as f32 - 20.0, (next() % 80) as f32 - 40.0),
+                        modifiers: mods,
+                    }),
+                    6 => events.push(Event::Text(texts[next() as usize % texts.len()].into())),
+                    _ => events.push(Event::Key {
+                        key: keys[next() as usize % keys.len()],
+                        physical_key: None,
+                        pressed: true,
+                        repeat: false,
+                        modifiers: mods,
+                    }),
+                }
+            }
+            h.frame(events);
+            h.app.dialog = None; // never let a file dialog act on the real file system
+            if frame % 500 == 499 {
+                // release anything held and rotate through the docks so every panel sees input
+                h.frame(vec![Event::PointerButton {
+                    pos: Pos2::ZERO,
+                    button: PointerButton::Primary,
+                    pressed: false,
+                    modifiers: Modifiers::NONE,
+                }]);
+                h.app.dock =
+                    [Dock::Instrument, Dock::Mixer, Dock::Devices, Dock::Automation][(frame / 500) % 4];
+            }
+        }
+        let _ = std::fs::remove_dir_all(dir);
+        let _ = tx.send(());
+    });
+    rx.recv_timeout(Duration::from_secs(180)).expect("the GUI froze or panicked under random input");
+}
