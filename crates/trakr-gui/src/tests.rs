@@ -444,3 +444,23 @@ fn command_palette_opens_with_a_shortcut_and_runs_the_best_match() {
     h.frame(vec![]);
     assert!(h.app.show_find, "Ctrl-F opens find and replace");
 }
+
+#[test]
+fn tool_windows_all_draw_together() {
+    let mut h = Harness::new();
+    h.app.editor.device_add(0, "native.filter");
+    h.app.show_midi_map = true;
+    h.app.show_find = true;
+    h.app.show_console = true;
+    h.app.show_palette = true;
+    h.app.editor.midi_learn_start(trakr_editor::MapTarget::TrackVolume(0));
+    h.app.dock = Dock::Instrument;
+    h.app.sample_tab = SampleTab::Modulation;
+    h.app.editor.edit_instrument("t", |i| i.lfos.push(trakr_core::InstLfo::default()));
+    for _ in 0..4 {
+        h.frame(vec![]);
+    }
+    h.app.show_midi_map = false;
+    h.frame(vec![]);
+    assert!(h.app.editor.midi_learn.is_none(), "closing the window cancels learning");
+}

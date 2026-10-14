@@ -214,6 +214,10 @@ impl GuiApp {
                         });
                         ui.weak("Instruments with MIDI output on (Instrument panel) send their notes here. Reconnect after changing latency.");
                     });
+                    if ui.button("MIDI mapping...").clicked() {
+                        self.show_midi_map = true;
+                        ui.close_menu();
+                    }
                     ui.menu_button("MIDI input", |ui| {
                         let current = self.editor.midi_port_name().map(str::to_owned);
                         if !self.editor.has_midi() {

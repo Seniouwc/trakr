@@ -7,6 +7,7 @@ mod envelopes;
 mod grid;
 mod input;
 mod menus;
+mod midi_view;
 mod mixer;
 mod modulation_view;
 mod panels;
@@ -100,6 +101,7 @@ pub(crate) struct GuiApp {
     /// Keys go to the phrase editor instead of the pattern grid (set by clicking in it).
     pub phrase_focus: bool,
     pub show_console: bool,
+    pub show_midi_map: bool,
     pub show_palette: bool,
     pub palette_query: String,
     pub show_find: bool,
@@ -146,6 +148,7 @@ impl GuiApp {
             checked_recovery: false,
             phrase_focus: false,
             show_console: false,
+            show_midi_map: false,
             show_palette: false,
             palette_query: String::new(),
             show_find: false,
@@ -253,6 +256,7 @@ impl GuiApp {
         self.prefs_window(ctx);
         self.console_window(ctx);
         self.tool_windows(ctx);
+        self.midi_window(ctx);
         self.text_editing = ctx.output(|o| o.ime.is_some());
     }
 }

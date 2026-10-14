@@ -143,6 +143,18 @@ impl Editor {
                 let track = self.cursor.track;
                 self.send(Command::NoteOff { track, note: 0 });
             }
+            MidiEvent::Clock { micros } => {
+                if self.prefs.midi_sync_in {
+                    if let Some(bpm) = self.midi_clock.tick(micros) {
+                        let bpm = bpm.round().clamp(32.0, 999.0);
+                        if (bpm - self.song.bpm).abs() >= 1.0 {
+                            self.song_mut().bpm = bpm;
+                            self.sync();
+                        }
+                    }
+                }
+            }
+            MidiEvent::Cc { channel, controller, value } if self.midi_cc(channel, controller, value) => {}
             MidiEvent::Cc { controller: 7, value, .. } => {
                 let t = self.cursor.track;
                 self.set_track_volume(t, value as f32 / 100.0);

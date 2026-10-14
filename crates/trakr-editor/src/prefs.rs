@@ -28,6 +28,10 @@ pub struct Prefs {
     pub midi_clock_out: bool,
     /// Delay applied to MIDI output so it lines up with the audio device's latency.
     pub midi_latency_ms: u32,
+    /// Follow the tempo of an incoming MIDI clock.
+    pub midi_sync_in: bool,
+    /// CC and key mappings made with MIDI learn.
+    pub midi_map: Vec<crate::midi_map::MidiMapping>,
 }
 
 impl Default for Prefs {
@@ -44,6 +48,8 @@ impl Default for Prefs {
             font_size: 15.0,
             midi_clock_out: false,
             midi_latency_ms: 30,
+            midi_sync_in: false,
+            midi_map: Vec::new(),
         }
     }
 }

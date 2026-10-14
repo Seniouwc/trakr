@@ -7,6 +7,7 @@ mod instruments;
 mod io;
 mod keys;
 mod midi;
+mod midi_map;
 mod mixer_ops;
 mod ops;
 mod phrase_ops;
@@ -19,10 +20,11 @@ pub use action::Action;
 pub use edit_tools::{CellSpec, Scope};
 pub use io::load_song;
 pub use keys::{KeyCode, KeyEvent};
+pub use midi_map::{MapTarget, MidiMapping};
 pub use ops::{Cell, Clipboard};
 pub use prefs::{default_config_dir, Prefs};
 pub use trakr_engine::InputRecorder;
-pub use trakr_midi::{MidiBackend, MidiEvent, MidiInput, MidiOutMsg, MidiSink};
+pub use trakr_midi::{ClockTempo, MidiBackend, MidiEvent, MidiInput, MidiOutMsg, MidiSink};
 pub use trakr_sample::WavFormat;
 pub use trakr_script::{API as SCRIPT_API, EXAMPLES as SCRIPT_EXAMPLES};
 
@@ -181,6 +183,9 @@ pub struct Editor {
     midi_in: Option<Box<dyn trakr_midi::MidiInput>>,
     midi_buf: Vec<trakr_midi::MidiEvent>,
     midi_pump: Option<trakr_midi::pump::Pump>,
+    midi_clock: trakr_midi::ClockTempo,
+    /// Waiting for the next controller to map to this target.
+    pub midi_learn: Option<midi_map::MapTarget>,
     /// What the last script printed, and its error if it failed.
     pub script_output: Vec<String>,
     pub script_error: Option<String>,
@@ -272,6 +277,8 @@ impl Editor {
             midi_in: None,
             midi_buf: Vec::new(),
             midi_pump: None,
+            midi_clock: Default::default(),
+            midi_learn: None,
             plugin_host: None,
             plugin_list: Vec::new(),
             plugin_errors: Vec::new(),

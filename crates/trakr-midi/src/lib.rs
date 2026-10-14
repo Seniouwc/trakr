@@ -26,6 +26,10 @@ pub enum MidiEvent {
     Start,
     Continue,
     Stop,
+    /// One of the 24 timing clocks per quarter note, with the driver's timestamp in microseconds.
+    Clock {
+        micros: u64,
+    },
 }
 
 /// Parse one raw MIDI message. Returns `None` for anything trakr does not use (clock, sysex, ...).
@@ -108,6 +112,42 @@ impl MidiOutMsg {
 pub trait MidiSink: Send {
     fn send(&mut self, bytes: &[u8]);
     fn port_name(&self) -> &str;
+}
+
+/// Like [`parse`], but also understands the timing clock (which needs the driver's timestamp).
+pub fn parse_timed(bytes: &[u8], micros: u64) -> Option<MidiEvent> {
+    if bytes.first() == Some(&0xF8) {
+        return Some(MidiEvent::Clock { micros });
+    }
+    parse(bytes)
+}
+
+/// Turns incoming clock timestamps into a tempo: 24 clocks per quarter note, smoothed.
+#[derive(Default, Debug)]
+pub struct ClockTempo {
+    last: Option<u64>,
+    /// Smoothed microseconds per clock.
+    avg: f64,
+}
+
+impl ClockTempo {
+    pub fn reset(&mut self) {
+        self.last = None;
+        self.avg = 0.0;
+    }
+
+    /// Feed a clock; returns the tempo in BPM once enough clocks have arrived to trust it.
+    pub fn tick(&mut self, micros: u64) -> Option<f32> {
+        let prev = self.last.replace(micros)?;
+        let dt = micros.checked_sub(prev)? as f64;
+        // ignore stalls and restarts: a sane gap between clocks is 2 ms (~1250 BPM) to 130 ms (~19 BPM)
+        if !(2_000.0..=130_000.0).contains(&dt) {
+            self.avg = 0.0;
+            return None;
+        }
+        self.avg = if self.avg == 0.0 { dt } else { self.avg * 0.9 + dt * 0.1 };
+        Some((60_000_000.0 / (self.avg * 24.0)) as f32)
+    }
 }
 
 /// An open MIDI input; poll it from the UI thread.
@@ -319,7 +359,7 @@ mod backend {
 
         fn open(&mut self, port: usize) -> anyhow::Result<Box<dyn MidiInput>> {
             let mut c = client()?;
-            c.ignore(midir::Ignore::SysexAndTime); // keep clock ticks and sysex out of the queue
+            c.ignore(midir::Ignore::Sysex); // keep sysex out of the queue; clock ticks drive tempo sync
             let p = c.ports().get(port).cloned().ok_or_else(|| anyhow!("MIDI port {port} is gone"))?;
             let name = c.port_name(&p).unwrap_or_else(|_| "MIDI input".into());
             let (tx, rx) = channel();
@@ -327,8 +367,8 @@ mod backend {
                 .connect(
                     &p,
                     "trakr-in",
-                    move |_, bytes, _| {
-                        if let Some(e) = parse(bytes) {
+                    move |stamp, bytes, _| {
+                        if let Some(e) = parse_timed(bytes, stamp) {
                             let _ = tx.send(e);
                         }
                     },
@@ -368,6 +408,22 @@ mod tests {
         fn port_name(&self) -> &str {
             "log"
         }
+    }
+
+    #[test]
+    fn clock_becomes_a_tempo() {
+        assert_eq!(parse_timed(&[0xF8], 5), Some(MidiEvent::Clock { micros: 5 }));
+        assert_eq!(parse(&[0xF8]), None);
+        let mut c = ClockTempo::default();
+        // 120 BPM: 500_000 us per beat, 20_833 us per clock
+        let mut bpm = None;
+        for i in 0..48u64 {
+            bpm = c.tick(1_000 + i * 20_833).or(bpm);
+        }
+        assert!((bpm.unwrap() - 120.0).abs() < 0.2, "{bpm:?}");
+        // a long gap resets instead of producing nonsense
+        assert_eq!(c.tick(10_000_000), None);
+        assert!((c.tick(10_020_833).unwrap() - 120.0).abs() < 0.2, "recovers on the next clock");
     }
 
     #[test]

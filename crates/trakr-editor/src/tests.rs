@@ -1390,3 +1390,60 @@ fn find_and_replace_notes_and_instruments() {
     e.undo();
     assert_eq!(note_at(&e, 0, 2), 48);
 }
+
+#[test]
+fn midi_learn_maps_controllers_to_mixer_devices_and_commands() {
+    let mut e = Editor::new(Song::demo(), None, None);
+    e.device_add(0, "native.gainer");
+    // volume knob
+    e.midi_learn_start(MapTarget::TrackVolume(0));
+    assert!(e.midi_learn.is_some());
+    e.handle_midi(MidiEvent::Cc { channel: 0, controller: 21, value: 1 });
+    assert!(e.midi_learn.is_none());
+    assert_eq!(e.prefs.midi_map.len(), 1);
+    e.handle_midi(MidiEvent::Cc { channel: 0, controller: 21, value: 0 });
+    assert_eq!(e.song.tracks[0].volume, 0.0);
+    e.handle_midi(MidiEvent::Cc { channel: 0, controller: 21, value: 127 });
+    assert!((e.song.tracks[0].volume - 2.0).abs() < 0.01, "{}", e.song.tracks[0].volume);
+    // another channel is ignored when learned on channel 0... but mappings made on a channel stick to it
+    e.song_mut().tracks[0].volume = 1.0;
+    e.handle_midi(MidiEvent::Cc { channel: 5, controller: 21, value: 0 });
+    assert_eq!(e.song.tracks[0].volume, 1.0);
+    // device parameter: gainer gain spans -60..12 dB
+    e.midi_learn_start(MapTarget::DeviceParam { track: 0, device: 0, param: 0 });
+    e.handle_midi(MidiEvent::Cc { channel: 0, controller: 22, value: 127 });
+    e.handle_midi(MidiEvent::Cc { channel: 0, controller: 22, value: 127 });
+    assert!((e.song.tracks[0].devices[0].params[0] - 12.0).abs() < 0.01);
+    // a command fires when the controller crosses half
+    e.midi_learn_start(MapTarget::Action("ToggleEdit".into()));
+    e.handle_midi(MidiEvent::Cc { channel: 0, controller: 30, value: 127 });
+    assert!(!e.edit_mode);
+    e.handle_midi(MidiEvent::Cc { channel: 0, controller: 30, value: 127 });
+    assert!(e.edit_mode);
+    e.handle_midi(MidiEvent::Cc { channel: 0, controller: 30, value: 10 });
+    assert!(e.edit_mode, "below half does nothing");
+    // unmapped CC 7 keeps its built-in meaning; remapping a controller replaces the old mapping
+    e.handle_midi(MidiEvent::Cc { channel: 0, controller: 7, value: 50 });
+    assert!((e.song.tracks[e.cursor.track].volume - 0.5).abs() < 0.01);
+    let before = e.prefs.midi_map.len();
+    e.midi_learn_start(MapTarget::TrackPan(1));
+    e.handle_midi(MidiEvent::Cc { channel: 0, controller: 21, value: 0 });
+    assert_eq!(e.prefs.midi_map.len(), before);
+    e.midi_unmap(0);
+    assert_eq!(e.prefs.midi_map.len(), before - 1);
+}
+
+#[test]
+fn external_clock_sets_the_tempo_only_when_enabled() {
+    let mut e = ed();
+    let feed = |e: &mut Editor| {
+        for i in 0..100u64 {
+            e.handle_midi(MidiEvent::Clock { micros: 1_000 + i * 17_361 }); // 144 BPM
+        }
+    };
+    feed(&mut e);
+    assert_eq!(e.song.bpm, 120.0, "off by default");
+    e.prefs.midi_sync_in = true;
+    feed(&mut e);
+    assert!((e.song.bpm - 144.0).abs() <= 1.0, "{}", e.song.bpm);
+}
