@@ -1498,3 +1498,67 @@ fn stems_and_slot_ranges_render_to_files() {
     assert!(e.status.contains("nothing"));
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+fn osc(addr: &str, args: &[trakr_osc::Arg]) -> trakr_osc::Message {
+    trakr_osc::Message { address: addr.into(), args: args.to_vec() }
+}
+
+#[test]
+fn osc_controls_transport_mixer_devices_and_commands() {
+    use trakr_osc::Arg::*;
+    let mut e = Editor::new(Song::demo(), None, None);
+    e.device_add(0, "native.gainer");
+    e.handle_osc(&osc("/trakr/track/1/volume", &[Float(0.0)]));
+    assert_eq!(e.song.tracks[0].volume, 0.0);
+    e.handle_osc(&osc("/trakr/track/1/volume", &[Float(1.0)]));
+    assert!((e.song.tracks[0].volume - 2.0).abs() < 0.01);
+    e.handle_osc(&osc("/trakr/track/2/pan", &[Float(1.0)]));
+    assert_eq!(e.song.tracks[1].panning, 1.0);
+    e.handle_osc(&osc("/trakr/track/2/mute", &[Int(1)]));
+    assert_ne!(e.song.tracks[1].mute, trakr_core::MuteState::Active);
+    e.handle_osc(&osc("/trakr/track/2/mute", &[Int(0)]));
+    assert_eq!(e.song.tracks[1].mute, trakr_core::MuteState::Active);
+    e.handle_osc(&osc("/trakr/track/3/solo", &[Bool(true)]));
+    assert!(e.song.tracks[2].solo);
+    e.handle_osc(&osc("/trakr/device/1/1/1", &[Float(1.0)]));
+    assert!((e.song.tracks[0].devices[0].params[0] - 12.0).abs() < 0.01);
+    e.handle_osc(&osc("/trakr/bpm", &[Float(150.0)]));
+    assert_eq!(e.song.bpm, 150.0);
+    e.handle_osc(&osc("/trakr/action", &[Str("ToggleEdit".into())]));
+    assert!(e.edit_mode);
+    // dangerous or unknown things are refused with a message
+    for (a, args) in [
+        ("/trakr/action", vec![Str("Quit".into())]),
+        ("/trakr/action", vec![Str("Nope".into())]),
+        ("/trakr/track/99/volume", vec![Float(0.5)]),
+        ("/trakr/track/0/volume", vec![Float(0.5)]),
+        ("/trakr/device/1/9/1", vec![Float(0.5)]),
+        ("/other", vec![]),
+        ("/trakr/bpm", vec![Str("x".into())]),
+    ] {
+        e.status.clear();
+        e.handle_osc(&osc(a, &args));
+        assert!(e.status.starts_with("OSC: ignored"), "{a}: {}", e.status);
+    }
+    assert!(!e.quit);
+}
+
+#[test]
+fn osc_server_feeds_the_editor_through_tick() {
+    let mut e = ed();
+    e.osc_start(0, false);
+    let addr = e.osc_addr().expect("listening");
+    assert!(addr.ip().is_loopback());
+    let client = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+    client.send_to(&trakr_osc::encode("/trakr/bpm", &[trakr_osc::Arg::Float(99.0)]), addr).unwrap();
+    for _ in 0..100 {
+        e.tick();
+        if e.song.bpm == 99.0 {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    assert_eq!(e.song.bpm, 99.0);
+    e.osc_stop();
+    assert!(e.osc_addr().is_none());
+}

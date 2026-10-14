@@ -4023,6 +4023,7 @@ dependencies = [
  "trakr-format",
  "trakr-midi",
  "trakr-mod",
+ "trakr-osc",
  "trakr-sample",
  "trakr-script",
  "trakr-xrns",
@@ -4077,6 +4078,10 @@ dependencies = [
  "trakr-core",
  "trakr-engine",
 ]
+
+[[package]]
+name = "trakr-osc"
+version = "0.0.1"
 
 [[package]]
 name = "trakr-sample"

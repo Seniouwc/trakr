@@ -223,5 +223,28 @@ impl GuiApp {
         ui.checkbox(&mut self.editor.prefs.backups, "Keep the previous file as <name>.bak when saving");
         ui.checkbox(&mut self.editor.prefs.reopen_last, "Open the most recent song at start-up");
         ui.weak("Window size and the bottom panel are remembered automatically.");
+        ui.separator();
+        let mut on = self.editor.prefs.osc_port.is_some();
+        let mut port = self.editor.prefs.osc_port.unwrap_or(9000);
+        let mut any = self.editor.prefs.osc_any_interface;
+        let mut changed = false;
+        ui.horizontal(|ui| {
+            changed |= ui.checkbox(&mut on, "OSC remote control on UDP port").changed();
+            changed |= ui.add(egui::DragValue::new(&mut port).range(1024..=65535)).changed();
+            changed |= ui.checkbox(&mut any, "accept other computers").changed();
+        });
+        ui.weak("Addresses: /trakr/play, /stop, /bpm, /action <name>, /track/<n>/volume|pan|mute|solo, /device/<t>/<d>/<p>, /note/on <note> [vel] [inst]. This machine only unless you tick the box.");
+        if changed {
+            self.editor.prefs.osc_port = on.then_some(port);
+            self.editor.prefs.osc_any_interface = any;
+            if on {
+                self.editor.osc_start(port, any);
+            } else {
+                self.editor.osc_stop();
+            }
+        }
+        if let Some(a) = self.editor.osc_addr() {
+            ui.weak(format!("Listening on {a}"));
+        }
     }
 }

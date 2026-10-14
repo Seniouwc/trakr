@@ -10,6 +10,7 @@ mod midi;
 mod midi_map;
 mod mixer_ops;
 mod ops;
+mod osc_ops;
 mod phrase_ops;
 mod plugin_ops;
 mod prefs;
@@ -186,6 +187,8 @@ pub struct Editor {
     midi_clock: trakr_midi::ClockTempo,
     /// Waiting for the next controller to map to this target.
     pub midi_learn: Option<midi_map::MapTarget>,
+    osc: Option<trakr_osc::OscServer>,
+    osc_buf: Vec<trakr_osc::Message>,
     /// What the last script printed, and its error if it failed.
     pub script_output: Vec<String>,
     pub script_error: Option<String>,
@@ -279,6 +282,8 @@ impl Editor {
             midi_pump: None,
             midi_clock: Default::default(),
             midi_learn: None,
+            osc: None,
+            osc_buf: Vec::new(),
             plugin_host: None,
             plugin_list: Vec::new(),
             plugin_errors: Vec::new(),
@@ -370,6 +375,7 @@ impl Editor {
         self.flush_sync();
         self.record_poll();
         self.midi_poll();
+        self.osc_poll();
         self.autosave_poll();
         if let Some(e) = &mut self.engine {
             e.collect_garbage();
