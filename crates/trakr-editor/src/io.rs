@@ -102,6 +102,12 @@ impl Editor {
         for p in &mut song.patterns {
             Arc::make_mut(p).compact();
         }
+        if self.prefs.backups && path.is_file() {
+            // best effort: a failed backup must not stop the save
+            let mut bak = path.clone().into_os_string();
+            bak.push(".bak");
+            let _ = std::fs::copy(&path, PathBuf::from(bak));
+        }
         match trakr_format::save_path(&song, &path) {
             Ok(()) => {
                 self.status = format!("saved {}", path.display());

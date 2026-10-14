@@ -30,6 +30,14 @@ pub struct Prefs {
     pub midi_latency_ms: u32,
     /// Follow the tempo of an incoming MIDI clock.
     pub midi_sync_in: bool,
+    /// Window size to restore, in points.
+    pub window_size: Option<[f32; 2]>,
+    /// Bottom panel to restore ("instrument", "mixer", ...).
+    pub dock: String,
+    /// Open the most recent song at start-up when none is named.
+    pub reopen_last: bool,
+    /// Keep the previous file as `<name>.bak` when saving over it.
+    pub backups: bool,
     /// CC and key mappings made with MIDI learn.
     pub midi_map: Vec<crate::midi_map::MidiMapping>,
 }
@@ -49,6 +57,10 @@ impl Default for Prefs {
             midi_clock_out: false,
             midi_latency_ms: 30,
             midi_sync_in: false,
+            window_size: None,
+            dock: "instrument".into(),
+            reopen_last: false,
+            backups: true,
             midi_map: Vec::new(),
         }
     }

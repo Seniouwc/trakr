@@ -220,5 +220,8 @@ impl GuiApp {
             ui.weak("(0 turns autosave off)");
         });
         self.editor.prefs.autosave_seconds = secs as u64;
+        ui.checkbox(&mut self.editor.prefs.backups, "Keep the previous file as <name>.bak when saving");
+        ui.checkbox(&mut self.editor.prefs.reopen_last, "Open the most recent song at start-up");
+        ui.weak("Window size and the bottom panel are remembered automatically.");
     }
 }

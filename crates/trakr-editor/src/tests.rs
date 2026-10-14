@@ -1447,3 +1447,24 @@ fn external_clock_sets_the_tempo_only_when_enabled() {
     feed(&mut e);
     assert!((e.song.bpm - 144.0).abs() <= 1.0, "{}", e.song.bpm);
 }
+
+#[test]
+fn saving_over_a_file_keeps_a_backup() {
+    let dir = std::env::temp_dir().join(format!("trakr-bak-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("a.trkr");
+    let mut e = ed();
+    e.set_song_name("first".into());
+    e.save_as(path.clone());
+    assert!(!dir.join("a.trkr.bak").exists(), "nothing to back up the first time");
+    e.set_song_name("second".into());
+    e.save_as(path.clone());
+    let bak = trakr_format::load_path(&dir.join("a.trkr.bak")).unwrap();
+    assert_eq!(bak.name, "first");
+    assert_eq!(trakr_format::load_path(&path).unwrap().name, "second");
+    e.prefs.backups = false;
+    std::fs::remove_file(dir.join("a.trkr.bak")).unwrap();
+    e.save_as(path);
+    assert!(!dir.join("a.trkr.bak").exists());
+    let _ = std::fs::remove_dir_all(&dir);
+}

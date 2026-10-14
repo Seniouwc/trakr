@@ -26,8 +26,9 @@ use trakr_editor::Editor;
 
 /// Run the GUI until the window closes.
 pub fn run(editor: Editor) -> anyhow::Result<()> {
+    let size = editor.prefs.window_size.filter(|s| s[0] >= 640.0 && s[1] >= 400.0).unwrap_or([1280.0, 780.0]);
     let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default().with_inner_size([1280.0, 780.0]).with_title("trakr"),
+        viewport: egui::ViewportBuilder::default().with_inner_size(size).with_title("trakr"),
         ..Default::default()
     };
     eframe::run_native(
@@ -112,6 +113,7 @@ pub(crate) struct GuiApp {
 
 impl GuiApp {
     fn new(editor: Editor) -> Self {
+        let editor_dock = editor.prefs.dock.clone();
         Self {
             editor,
             dialog: None,
@@ -128,12 +130,12 @@ impl GuiApp {
             pitch_st: 0.0,
             resample_hz: 44_100,
             slice_parts: 8,
-            dock: match std::env::var("TRAKR_GUI_DOCK").as_deref() {
-                Ok("mixer") => Dock::Mixer,
-                Ok("devices") => Dock::Devices,
-                Ok("automation") => Dock::Automation,
-                Ok("phrases") => Dock::Phrases,
-                Ok("hidden") => Dock::Hidden,
+            dock: match std::env::var("TRAKR_GUI_DOCK").as_deref().unwrap_or(editor_dock.as_str()) {
+                "mixer" => Dock::Mixer,
+                "devices" => Dock::Devices,
+                "automation" => Dock::Automation,
+                "phrases" => Dock::Phrases,
+                "hidden" => Dock::Hidden,
                 _ => Dock::Instrument,
             },
             meter_hold: Vec::new(),
@@ -169,6 +171,19 @@ impl GuiApp {
                 cursor_row_y: 0.0,
                 cols: Vec::new(),
             },
+        }
+    }
+}
+
+impl Dock {
+    fn name(self) -> &'static str {
+        match self {
+            Dock::Instrument => "instrument",
+            Dock::Mixer => "mixer",
+            Dock::Devices => "devices",
+            Dock::Automation => "automation",
+            Dock::Phrases => "phrases",
+            Dock::Hidden => "hidden",
         }
     }
 }
@@ -228,6 +243,9 @@ impl GuiApp {
                 self.confirm = Some(Confirm::Recover);
             }
         }
+        self.editor.prefs.dock = self.dock.name().to_string();
+        let size = ctx.screen_rect().size();
+        self.editor.prefs.window_size = Some([size.x, size.y]);
         self.editor.tick();
         ctx.request_repaint_after(std::time::Duration::from_millis(33));
 

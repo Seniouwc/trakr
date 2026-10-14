@@ -16,6 +16,7 @@ fn main() -> Result<()> {
             _ => arg = Some(a),
         }
     }
+    let given = arg.is_some();
     let (song, path) = match arg {
         Some(p) => {
             let p = PathBuf::from(p);
@@ -24,7 +25,6 @@ fn main() -> Result<()> {
         }
         None => (Song::showcase(), None),
     };
-
     let (audio, handle) = match trakr_engine::audio::start() {
         Ok((a, h)) => (Some(a), Some(h)),
         Err(e) => {
@@ -40,6 +40,11 @@ fn main() -> Result<()> {
     }));
     editor.set_plugin_host(Box::new(trakr_clap::ClapHost::new()));
     editor.set_midi_backend(Box::new(trakr_midi::MidirBackend));
+    if !given && editor.prefs.reopen_last {
+        if let Some(last) = editor.prefs.recent.first().cloned().filter(|p| p.is_file()) {
+            editor.open(&last);
+        }
+    }
     // Open the first MIDI keyboard automatically; the GUI menu can switch or close it.
     if !editor.midi_ports().is_empty() {
         editor.midi_connect(0);
