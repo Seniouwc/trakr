@@ -1468,3 +1468,33 @@ fn saving_over_a_file_keeps_a_backup() {
     assert!(!dir.join("a.trkr.bak").exists());
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn stems_and_slot_ranges_render_to_files() {
+    let dir = std::env::temp_dir().join(format!("trakr-stems-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut e = Editor::new(Song::demo(), None, None);
+    let n = e.export_stems(&dir.join("mix.wav"), WavFormat::Pcm16);
+    assert_eq!(n, 1, "only the track with notes has a stem");
+    let stem = dir.join("mix-01-Track_01.wav");
+    assert!(stem.is_file());
+    // a second track's note makes a second stem, and the first stem excludes it
+    e.set_cursor(1, 0, 0, 0);
+    e.edit_mode = true;
+    e.edit(|l| {
+        l.notes[0].note = 60;
+        l.notes[0].instrument = 0;
+    });
+    assert_eq!(e.export_stems(&dir.join("mix.wav"), WavFormat::Pcm16), 2);
+    assert!(dir.join("mix-02-Track_02.wav").is_file());
+    // slot ranges: two copies of the pattern render about twice as long as one
+    e.seq_clone();
+    let (one, two) = (dir.join("one.wav"), dir.join("two.wav"));
+    e.export_slots(&one, 0, 0, WavFormat::Pcm16);
+    e.export_slots(&two, 0, 1, WavFormat::Pcm16);
+    let (a, b) = (std::fs::metadata(&one).unwrap().len(), std::fs::metadata(&two).unwrap().len());
+    assert!(b as f64 > a as f64 * 1.6, "{a} vs {b}");
+    e.export_slots(&one, 5, 9, WavFormat::Pcm16);
+    assert!(e.status.contains("nothing"));
+    let _ = std::fs::remove_dir_all(&dir);
+}

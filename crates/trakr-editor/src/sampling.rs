@@ -252,6 +252,86 @@ impl Editor {
         self.sync();
     }
 
+    /// Chains with plugins loaded, one per track.
+    fn chains_for(&mut self, rate: u32) -> Vec<Vec<Box<dyn trakr_engine::Device>>> {
+        self.song
+            .tracks
+            .iter()
+            .map(|t| {
+                t.devices
+                    .iter()
+                    .map(|d| make_device(&mut self.plugin_host, d, rate, &mut self.plugin_errors))
+                    .collect()
+            })
+            .collect()
+    }
+
+    /// Render `song` offline through the plugin-aware chains.
+    fn render_song_copy(&mut self, song: Song) -> Vec<f32> {
+        let chains = self.chains_for(RENDER_RATE);
+        trakr_engine::render_song_with_chains(Arc::new(song), RENDER_RATE, RENDER_MAX_SECONDS, chains)
+    }
+
+    /// Render each sequencer track on its own (through its group, sends and master) into
+    /// `<dir>/<base>-<track name>.wav`. Returns how many files were written.
+    pub fn export_stems(&mut self, base: &Path, format: WavFormat) -> usize {
+        let dir = base.parent().map(Path::to_path_buf).unwrap_or_default();
+        let stem = base.file_stem().map_or("stem".to_string(), |s| s.to_string_lossy().into_owned());
+        let mut written = 0;
+        for t in 0..self.song.tracks.len() {
+            if self.song.tracks[t].kind != trakr_core::TrackKind::Sequencer {
+                continue;
+            }
+            let mut song = (*self.song).clone();
+            for (i, tr) in song.tracks.iter_mut().enumerate() {
+                tr.solo = i == t;
+            }
+            song.loop_range = None;
+            let data = self.render_song_copy(song);
+            if data.is_empty() {
+                continue; // a silent track has no stem
+            }
+            let name: String = self.song.tracks[t]
+                .name
+                .chars()
+                .map(|c| if c.is_alphanumeric() || c == '-' || c == '_' { c } else { '_' })
+                .collect();
+            let s = Sample::new("stem", RENDER_RATE, 2, data);
+            let path = dir.join(format!("{stem}-{:02}-{name}.wav", t + 1));
+            match trakr_sample::write_wav(&path, &s, 0, s.frames(), format) {
+                Ok(()) => written += 1,
+                Err(e) => {
+                    self.status = format!("stem export failed: {e}");
+                    return written;
+                }
+            }
+        }
+        self.status = format!("exported {written} stem(s) next to {}", base.display());
+        written
+    }
+
+    /// Render sequence slots `from..=to` (the loop range if set) to a WAV file.
+    pub fn export_slots(&mut self, path: &Path, from: usize, to: usize, format: WavFormat) {
+        let n = self.song.sequence.len();
+        if n == 0 || from > to || from >= n {
+            self.status = "nothing to export".into();
+            return;
+        }
+        let mut song = (*self.song).clone();
+        song.sequence = song.sequence[from..=to.min(n - 1)].to_vec();
+        song.loop_range = None;
+        let data = self.render_song_copy(song);
+        if data.is_empty() {
+            self.status = "nothing to render (that part is silent)".into();
+            return;
+        }
+        let s = Sample::new("range", RENDER_RATE, 2, data);
+        match trakr_sample::write_wav(path, &s, 0, s.frames(), format) {
+            Ok(()) => self.status = format!("exported slots {from:02X}-{to:02X} to {}", path.display()),
+            Err(e) => self.status = format!("export failed: {e}"),
+        }
+    }
+
     /// Render the whole song straight to a WAV file.
     pub fn export_song(&mut self, path: &Path, format: WavFormat) {
         let data = self.render();

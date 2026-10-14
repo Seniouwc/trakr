@@ -13,6 +13,8 @@ pub enum FileMode {
     ExportSample,
     ExportSong,
     ExportXrns,
+    ExportStems,
+    ExportRange,
 }
 
 pub struct FileDialog {
@@ -37,6 +39,8 @@ impl FileDialog {
             FileMode::ExportSample => "sample.wav".into(),
             FileMode::ExportSong => "song.wav".into(),
             FileMode::ExportXrns => "song.xrns".into(),
+            FileMode::ExportStems => "stems.wav".into(),
+            FileMode::ExportRange => "range.wav".into(),
             _ => String::new(),
         };
         let mut d = Self { mode, dir, name, entries: vec![], error: String::new() };
@@ -52,7 +56,9 @@ impl FileDialog {
             FileMode::ImportSample | FileMode::AddSample => {
                 matches!(ext, "wav" | "flac" | "ogg" | "mp3" | "aif" | "aiff")
             }
-            FileMode::ExportSample | FileMode::ExportSong => ext == "wav",
+            FileMode::ExportSample | FileMode::ExportSong | FileMode::ExportStems | FileMode::ExportRange => {
+                ext == "wav"
+            }
             FileMode::ExportXrns => ext == "xrns",
         }
     }
@@ -133,6 +139,8 @@ impl GuiApp {
             FileMode::ExportSample => "Export sample as WAV",
             FileMode::ExportSong => "Export song as WAV",
             FileMode::ExportXrns => "Export song as .xrns",
+            FileMode::ExportStems => "Export each track as its own WAV (name is the file prefix)",
+            FileMode::ExportRange => "Export the loop range (or whole song) as WAV",
         };
         let mut keep = true;
         let mut chosen: Option<PathBuf> = None;
@@ -180,7 +188,9 @@ impl GuiApp {
                     FileMode::SaveAs
                     | FileMode::ExportSample
                     | FileMode::ExportSong
-                    | FileMode::ExportXrns => "Save",
+                    | FileMode::ExportXrns
+                    | FileMode::ExportStems
+                    | FileMode::ExportRange => "Save",
                     _ => "Open",
                 };
                 if ui.button(verb).clicked() && !d.name.is_empty() {
@@ -221,6 +231,20 @@ impl GuiApp {
                     } else {
                         d.error = "file does not exist".into();
                     }
+                }
+                FileMode::ExportStems | FileMode::ExportRange => {
+                    if path.extension().is_none() {
+                        path.set_extension("wav");
+                    }
+                    let fmt = self.wav_format;
+                    if d.mode == FileMode::ExportStems {
+                        self.editor.export_stems(&path, fmt);
+                    } else {
+                        let last = self.editor.song.sequence.len().saturating_sub(1);
+                        let (a, b) = self.editor.loop_range().unwrap_or((0, last));
+                        self.editor.export_slots(&path, a, b, fmt);
+                    }
+                    keep = false;
                 }
                 FileMode::ExportXrns => {
                     if path.extension().is_none() {

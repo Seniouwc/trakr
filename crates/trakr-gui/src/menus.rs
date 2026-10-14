@@ -75,6 +75,14 @@ impl GuiApp {
                         self.open_dialog(FileMode::ExportSong);
                         ui.close_menu();
                     }
+                    if ui.button("Export tracks as separate WAVs...").clicked() {
+                        self.open_dialog(FileMode::ExportStems);
+                        ui.close_menu();
+                    }
+                    if ui.button("Export loop range as WAV...").clicked() {
+                        self.open_dialog(FileMode::ExportRange);
+                        ui.close_menu();
+                    }
                     if ui.button("Export as .xrns...").clicked() {
                         self.open_dialog(FileMode::ExportXrns);
                         ui.close_menu();
@@ -337,6 +345,24 @@ impl GuiApp {
         egui::TopBottomPanel::bottom("status").show(ctx, |ui| {
             ui.horizontal(|ui| {
                 let ed = &self.editor;
+                if let Some(e) = &ed.engine {
+                    let load = e.pos.cpu_load();
+                    let color = if load > 0.8 {
+                        egui::Color32::LIGHT_RED
+                    } else if load > 0.5 {
+                        egui::Color32::YELLOW
+                    } else {
+                        egui::Color32::GRAY
+                    };
+                    ui.colored_label(
+                        color,
+                        format!("CPU {:>3.0}%  voices {:>3}", load * 100.0, e.pos.voices()),
+                    )
+                    .on_hover_text(
+                        "Audio thread load (100% = the audio would start to crackle) and notes sounding",
+                    );
+                    ui.separator();
+                }
                 ui.monospace(format!(
                     "{}{}  |  track {} col {} line {:02X}  |  {}",
                     if ed.edit_mode { "EDIT" } else { "----" },

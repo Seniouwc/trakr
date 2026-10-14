@@ -35,7 +35,7 @@ use trakr_core::{
 use trakr_midi::MidiOutMsg;
 use voice::{TriggerOpts, Voice};
 
-const MAX_VOICES: usize = 128;
+const MAX_VOICES: usize = 256;
 const QUEUE_CAP: usize = 256;
 const MAX_EVENTS: usize = 512;
 /// Samples of audio processed per mixing block (also the granularity of automation).
@@ -179,6 +179,10 @@ pub struct SharedPos {
     pub line: AtomicU32,
     /// Frames rendered since the engine started (timestamps MIDI output).
     frames: AtomicU64,
+    /// Fraction of real time the last render calls took (1.0 = no headroom), as f32 bits.
+    cpu: AtomicU32,
+    /// Notes sounding at the end of the last render call.
+    voice_count: AtomicU32,
     /// Per-track peak of the most recent render call, as f32 bits.
     meters: Vec<AtomicU32>,
     master: [AtomicU32; 2],
@@ -191,6 +195,8 @@ impl Default for SharedPos {
             seq_pos: AtomicU32::new(0),
             line: AtomicU32::new(0),
             frames: AtomicU64::new(0),
+            cpu: AtomicU32::new(0),
+            voice_count: AtomicU32::new(0),
             meters: (0..MAX_METER_TRACKS).map(|_| AtomicU32::new(0)).collect(),
             master: [AtomicU32::new(0), AtomicU32::new(0)],
         }
@@ -209,6 +215,16 @@ impl SharedPos {
     /// Peak (0..) of a track during the last audio buffer.
     pub fn track_peak(&self, track: usize) -> f32 {
         self.meters.get(track).map_or(0.0, |m| f32::from_bits(m.load(Ordering::Relaxed)))
+    }
+
+    /// Audio thread load: 0.0 idle, 1.0 means rendering takes as long as the audio it makes.
+    pub fn cpu_load(&self) -> f32 {
+        f32::from_bits(self.cpu.load(Ordering::Relaxed))
+    }
+
+    /// Notes sounding right now.
+    pub fn voices(&self) -> u32 {
+        self.voice_count.load(Ordering::Relaxed)
     }
 
     /// (left, right) peak of the final mix during the last audio buffer.
@@ -391,6 +407,7 @@ impl Engine {
 
     /// Render interleaved stereo f32 into `out` (`out.len()` must be even).
     pub fn render(&mut self, out: &mut [f32]) {
+        let started = std::time::Instant::now();
         self.drain_commands();
         self.meter_acc = [0.0; MAX_TRACKS];
         self.master_acc = [0.0; 2];
@@ -407,6 +424,15 @@ impl Engine {
         self.pos.master[0].store(self.master_acc[0].to_bits(), Ordering::Relaxed);
         self.pos.master[1].store(self.master_acc[1].to_bits(), Ordering::Relaxed);
         self.pos.frames.store(self.now_frames, Ordering::Release);
+        self.pos.voice_count.store(self.voices.len() as u32, Ordering::Relaxed);
+        // Load = time spent / time the buffer represents, smoothed so the meter is readable.
+        let budget = total as f64 / self.sample_rate.max(1) as f64;
+        if budget > 0.0 {
+            let load = (started.elapsed().as_secs_f64() / budget) as f32;
+            let prev = f32::from_bits(self.pos.cpu.load(Ordering::Relaxed));
+            let smoothed = if load > prev { load } else { prev * 0.95 + load * 0.05 };
+            self.pos.cpu.store(smoothed.to_bits(), Ordering::Relaxed);
+        }
     }
 
     /// Sequence, trigger and mix voices into per-track buses for up to `BLOCK` frames, then mix down.
@@ -1790,6 +1816,22 @@ mod sequencer_tests {
         let out = render_stereo(song, 2000);
         let (lmin, lmax) = out[100..].iter().fold((f32::MAX, 0.0f32), |(a, b), s| (a.min(s.0), b.max(s.0)));
         assert!(lmax > 0.9 && lmin < 0.2, "{lmin} {lmax}");
+    }
+
+    #[test]
+    fn cpu_load_and_voice_count_are_published() {
+        let mut song = song_with(vec![1.0; 100_000], LoopMode::Forward);
+        put(&mut song, 0, |l| note(&mut l.notes[0]));
+        let (mut engine, mut h) = create(RATE);
+        h.send(Command::SetSong(Arc::new(song)));
+        h.send(Command::Play { seq_pos: 0, line: 0, loop_pattern: false });
+        let mut out = vec![0.0; 512 * 2];
+        for _ in 0..5 {
+            engine.render(&mut out);
+        }
+        assert_eq!(h.pos.voices(), 1);
+        let load = h.pos.cpu_load();
+        assert!(load > 0.0 && load < 1.0, "{load}");
     }
 
     #[test]
