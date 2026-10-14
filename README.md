@@ -25,7 +25,7 @@ An open source tracker DAW written in Rust, with a native window (egui) and a te
 - A synthesized showcase song opens by default so there is something to play and edit straight away
 - MIDI keyboard input (play and record notes, CC volume/pan, transport)
 - Mixer with per-track volume, pan, mute, solo, level meters; song loop range
-- 18 track devices (filters, EQs, dynamics, delay, reverb, modulation and distortion effects), instrument filter with cutoff envelope, and pattern automation of any device parameter
+- 20 track devices (filters, EQs, dynamics, delay, reverb, modulation and distortion effects, plus LFO and envelope-follower modulators that drive any other device's parameter), instrument filter with cutoff envelope, and pattern automation of any device parameter
 - Real-time engine with sequencer, voices and mixer (cpal audio output)
 - Native `.trkr` project format (zip of `song.json` and raw sample data), autosave with crash recovery, recent files, saved preferences
 - `.mod` module import (ProTracker and compatible, 4 to 99 channels)

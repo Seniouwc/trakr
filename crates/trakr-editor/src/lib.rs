@@ -677,7 +677,7 @@ fn effect_char_ok(sub: usize, c: char) -> bool {
     if sub < 2 {
         c.is_ascii_alphanumeric()
     } else {
-        c.is_digit(16)
+        c.is_ascii_hexdigit()
     }
 }
 

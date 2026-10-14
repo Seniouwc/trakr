@@ -119,6 +119,27 @@ impl GuiApp {
                         }
                     });
                 }
+                if trakr_core::MODULATORS.contains(&info.id) {
+                    let slot = spec.param(0).round() as usize;
+                    let text = if slot == 0 {
+                        "Not routed: set Target device to the slot of the device to modulate".to_string()
+                    } else {
+                        let tspec = self.editor.song.tracks[track].devices.get(slot - 1);
+                        match tspec.and_then(|d| device_info(&d.id)) {
+                            Some(ti) => {
+                                let pi =
+                                    (spec.param(1).round() as usize).min(ti.params.len().saturating_sub(1));
+                                format!(
+                                    "Modulates {} / {}",
+                                    ti.name,
+                                    ti.params.get(pi).map_or("", |p| p.name)
+                                )
+                            }
+                            None => format!("Slot {slot} has no device"),
+                        }
+                    };
+                    ui.weak(text);
+                }
             });
         });
     }

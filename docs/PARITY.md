@@ -58,13 +58,13 @@ Compiled from memory of Renoise 3.x behavior. Verify each item against the offic
 - [~] Group tracks (nested, with their own chain and fader) and send tracks (post- or pre-fader feeds, mixer UI) work; `#Send`-style devices, routing to arbitrary tracks, sidechain do not
 - [x] Track mute, solo and off, mixer view with per-track and master meters and peak hold
 - [ ] Plugin delay compensation
-- [~] Native devices (18): Gainer, Filter, 3-band EQ, 10-band EQ, Ladder filter (24 dB), Gate, Compressor, Limiter, Delay (ping-pong), Reverb, Chorus/flanger, Phaser, Distortion, Bit crusher, Ring modulator, Stereo width, Tremolo/auto-pan, Exciter; GUI cards, bypass, reorder, undo, automation. Still missing (verify against manual): scream/analog filter models, stereo expander variants, bus compressor, maximizer, multitap, cabinet sim, convolver, repeater, DC offset, LFO, envelope follower, hydra, key/velocity tracker, formula, meta mixer, doofer, #Line Input, #Multiband Send, #Send, #Sidechain, signal follower
+- [~] Native devices (20, incl. 2 modulators): Gainer, Filter, 3-band EQ, 10-band EQ, Ladder filter (24 dB), Gate, Compressor, Limiter, Delay (ping-pong), Reverb, Chorus/flanger, Phaser, Distortion, Bit crusher, Ring modulator, Stereo width, Tremolo/auto-pan, Exciter; GUI cards, bypass, reorder, undo, automation. Still missing (verify against manual): scream/analog filter models, stereo expander variants, bus compressor, maximizer, multitap, cabinet sim, convolver, repeater, DC offset, hydra, key/velocity tracker, formula, meta mixer, doofer, #Line Input, #Multiband Send, #Send, #Sidechain, signal follower
 
 ## Automation and modulation
 - [x] Per-pattern automation lanes for track volume/pan and any native device parameter (breakpoint curves, GUI editor, playhead)
 - [~] Envelope editing: points and straight lines work; curves, interpolation modes, scaling, copy/paste, recording from UI/MIDI do not
 - [~] Automation playback works (evaluated per 512-frame block); ranges and "write to pattern" do not
-- [ ] Modulation devices: LFO, envelope follower, hydra, formula, key/velocity tracker, signal follower, meta mixer
+- [~] Modulation devices: LFO (sine/tri/saw/square/random) and envelope follower, each routed to any parameter of a device in the same chain (control rate: one value per 512-frame block, applied one block later). Missing: hydra, formula, key/velocity tracker, signal follower, meta mixer, tempo-synced LFO, cross-track targets
 
 ## Plugins
 - [ ] CLAP hosting (instrument + effect), parameter automation, state save/load, GUI embedding (likely external window; TUI shows parameter list)

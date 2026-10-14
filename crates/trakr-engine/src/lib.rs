@@ -27,6 +27,10 @@ const BLOCK: usize = 512;
 /// Tracks that get their own mix bus and device chain.
 const MAX_TRACKS: usize = MAX_METER_TRACKS;
 const MAX_OVERRIDES: usize = 256;
+/// Chain slots per track whose modulation output is kept (and that modulators can target).
+const MAX_MOD_DEVS: usize = 32;
+/// Modulators applied per track and block.
+const MAX_MODS: usize = 8;
 /// Phrases playing at once.
 const MAX_PHRASE_RUNS: usize = 32;
 /// Voice column ids at and above this belong to phrase playback (one block of columns per trigger column).
@@ -233,6 +237,7 @@ pub fn create(sample_rate: u32) -> (Engine, EngineHandle) {
         track_used: [false; MAX_TRACKS],
         fader_prev: [-1.0; MAX_TRACKS],
         overrides: Vec::with_capacity(MAX_OVERRIDES),
+        mod_out: vec![0.0; MAX_TRACKS * MAX_MOD_DEVS],
         playing_seq: 0,
         playing_line: 0,
         meter_acc: [0.0; MAX_TRACKS],
@@ -274,6 +279,8 @@ pub struct Engine {
     /// Last fader gain per track (negative = never used), ramped to the new gain across each block.
     fader_prev: [f32; MAX_TRACKS],
     overrides: Vec<Override>,
+    /// Last control value of each chain slot's modulator (applied one block later).
+    mod_out: Vec<f32>,
     playing_seq: usize,
     playing_line: u16,
     meter_acc: [f32; MAX_TRACKS],
@@ -577,8 +584,31 @@ impl Engine {
             return;
         }
         let mut params = [0.0f32; 16];
+        // Modulators publish a control value per block; apply last block's values to their targets.
+        let mut mods = [(0usize, 0usize, 0.0f32); MAX_MODS];
+        let mut nmods = 0;
+        for m in 0..self.chains[t].len().min(MAX_MOD_DEVS) {
+            let Some(spec) = tr.devices.get(m) else { break };
+            if spec.bypass
+                || !trakr_core::MODULATORS.contains(&spec.id.as_str())
+                || self.chains[t][m].id() != spec.id
+            {
+                continue;
+            }
+            let target = spec.param(0).clamp(0.0, 8.0).round() as usize;
+            if target == 0 || nmods == MAX_MODS {
+                continue;
+            }
+            let param = spec.param(1).clamp(0.0, 15.0).round() as usize;
+            let amount = self.mod_out[t * MAX_MOD_DEVS + m];
+            mods[nmods] = (target - 1, param, if amount.is_finite() { amount } else { 0.0 });
+            nmods += 1;
+        }
         for d in 0..self.chains[t].len() {
             let Some(spec) = tr.devices.get(d) else { break };
+            if d < MAX_MOD_DEVS {
+                self.mod_out[t * MAX_MOD_DEVS + d] = 0.0;
+            }
             if spec.bypass {
                 continue;
             }
@@ -600,8 +630,17 @@ impl Engine {
                     }
                 }
             }
+            for &(td, tp, amount) in &mods[..nmods] {
+                if td == d && tp < n {
+                    let i = &info.params[tp];
+                    params[tp] = i.from_norm(i.to_norm(params[tp]) + amount);
+                }
+            }
             let buf = &mut self.track_bufs[base..base + frames * 2];
             self.chains[t][d].process(&params[..n], buf);
+            if d < MAX_MOD_DEVS {
+                self.mod_out[t * MAX_MOD_DEVS + d] = self.chains[t][d].modulation().unwrap_or(0.0);
+            }
         }
     }
 
@@ -1665,6 +1704,53 @@ mod device_tests {
 
     fn peak(v: &[f32]) -> f32 {
         v.iter().fold(0.0f32, |m, s| m.max(s.abs()))
+    }
+
+    #[test]
+    fn lfo_modulates_another_devices_parameter() {
+        let mut song = song_with(sine(220.0, 2.0, 0.5));
+        // square LFO, depth 1, 2 Hz, driving the gainer in chain slot 2
+        device(&mut song, "native.lfo", &[(0, 2.0), (1, 0.0), (2, 3.0), (3, 2.0), (4, 1.0)]);
+        device(&mut song, "native.gainer", &[]);
+        let out = render(song, 40_000);
+        let loud = peak(&out[2000..9000]);
+        let quiet = peak(&out[13_000..20_000]);
+        assert!(loud > 1.5, "loud half {loud}");
+        assert!(quiet < loud * 0.01, "quiet half {quiet} vs {loud}");
+    }
+
+    #[test]
+    fn modulators_with_no_target_or_bypassed_change_nothing() {
+        let base = {
+            let mut song = song_with(sine(220.0, 1.0, 0.5));
+            device(&mut song, "native.gainer", &[]);
+            peak(&render(song, 20_000))
+        };
+        for (target, bypass) in [(0.0, false), (2.0, true), (8.0, false)] {
+            let mut song = song_with(sine(220.0, 1.0, 0.5));
+            device(&mut song, "native.lfo", &[(0, target), (4, 1.0)]);
+            device(&mut song, "native.gainer", &[]);
+            song.tracks[0].devices[0].bypass = bypass;
+            let out = peak(&render(song, 20_000));
+            assert!(
+                (out - base).abs() < 0.02 || target == 8.0 && out.is_finite(),
+                "{target} {bypass}: {out} vs {base}"
+            );
+        }
+    }
+
+    #[test]
+    fn envelope_follower_opens_a_parameter_with_the_signal_level() {
+        let plain = {
+            let mut song = song_with(sine(220.0, 1.0, 0.5));
+            device(&mut song, "native.gainer", &[]);
+            peak(&render(song, 30_000)[10_000..30_000])
+        };
+        let mut song = song_with(sine(220.0, 1.0, 0.5));
+        device(&mut song, "native.follower", &[(0, 2.0), (1, 0.0), (4, 16.0), (5, 1.0)]);
+        device(&mut song, "native.gainer", &[]);
+        let driven = peak(&render(song, 30_000)[10_000..30_000]);
+        assert!(driven > plain * 2.0, "{driven} vs {plain}");
     }
 
     #[test]

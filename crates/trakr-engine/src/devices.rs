@@ -9,6 +9,12 @@ pub trait Device: Send {
 
     /// Process `buf` (interleaved stereo) in place with the current parameter values.
     fn process(&mut self, params: &[f32], buf: &mut [f32]);
+
+    /// For modulators: the control value (-1..=1) produced by the last `process` call. The engine
+    /// adds it to the target parameter's normalised position.
+    fn modulation(&self) -> Option<f32> {
+        None
+    }
 }
 
 /// Build a device for a catalogue id at the engine's sample rate.
@@ -32,6 +38,8 @@ pub fn create(id: &str, rate: u32) -> Option<Box<dyn Device>> {
         "native.bitcrusher" => Box::new(BitCrusher { held: [0.0; 2], count: 0.0 }),
         "native.width" => Box::new(Width),
         "native.autopan" => Box::new(AutoPan { phase: 0.0, fs }),
+        "native.lfo" => Box::new(Lfo { phase: 0.0, held: 0.0, rng: 0x9E37_79B9, value: 0.0, fs }),
+        "native.follower" => Box::new(Follower { env: 0.0, value: 0.0, fs }),
         "native.exciter" => Box::new(Exciter { hp: [Biquad::default(); 2], fs }),
         _ => return None,
     })
@@ -693,6 +701,83 @@ impl Device for AutoPan {
                 fr[1] *= g;
             }
         }
+    }
+}
+
+// ---- modulators -----------------------------------------------------------------------------
+// They leave the audio untouched and publish one control value per block (see `Device::modulation`).
+
+struct Lfo {
+    phase: f32,
+    held: f32,
+    rng: u32,
+    value: f32,
+    fs: f32,
+}
+
+impl Device for Lfo {
+    fn id(&self) -> &'static str {
+        "native.lfo"
+    }
+
+    fn process(&mut self, params: &[f32], buf: &mut [f32]) {
+        let shape = p(params, 2, 0.0).round() as i32;
+        let rate = p(params, 3, 1.0).clamp(0.05, 20.0);
+        let depth = p(params, 4, 0.5).clamp(-1.0, 1.0);
+        let offset = p(params, 5, 0.0).clamp(0.0, 1.0);
+        let before = self.phase;
+        self.phase = (self.phase + rate * (buf.len() / 2) as f32 / self.fs).fract();
+        if self.phase < before {
+            self.rng = self.rng.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            self.held = (self.rng >> 8) as f32 / (1u32 << 24) as f32 * 2.0 - 1.0;
+        }
+        let ph = (self.phase + offset).fract();
+        let v = match shape {
+            1 => 1.0 - 4.0 * (ph - 0.5).abs(),
+            2 => ph * 2.0 - 1.0,
+            3 => {
+                if ph < 0.5 {
+                    1.0
+                } else {
+                    -1.0
+                }
+            }
+            4 => self.held,
+            _ => sine_phase(ph),
+        };
+        self.value = v * depth;
+    }
+
+    fn modulation(&self) -> Option<f32> {
+        Some(self.value)
+    }
+}
+
+struct Follower {
+    env: f32,
+    value: f32,
+    fs: f32,
+}
+
+impl Device for Follower {
+    fn id(&self) -> &'static str {
+        "native.follower"
+    }
+
+    fn process(&mut self, params: &[f32], buf: &mut [f32]) {
+        let attack = p(params, 2, 10.0).max(1.0) / 1000.0;
+        let release = p(params, 3, 150.0).max(5.0) / 1000.0;
+        let sens = p(params, 4, 4.0).clamp(0.1, 16.0);
+        let depth = p(params, 5, 0.5).clamp(-1.0, 1.0);
+        let block = (buf.len() / 2) as f32 / self.fs;
+        let peak = buf.iter().fold(0.0f32, |m, s| m.max(s.abs()));
+        let tau = if peak > self.env { attack } else { release };
+        self.env += (peak - self.env) * (1.0 - (-block / tau).exp());
+        self.value = (self.env * sens).clamp(0.0, 1.0) * depth;
+    }
+
+    fn modulation(&self) -> Option<f32> {
+        Some(self.value)
     }
 }
 

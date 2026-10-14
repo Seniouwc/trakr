@@ -15,6 +15,36 @@ pub struct ParamInfo {
     pub stepped: bool,
 }
 
+impl ParamInfo {
+    /// Position of `v` within the range, 0..=1, following the slider mapping (log for frequencies and times).
+    pub fn to_norm(&self, v: f32) -> f32 {
+        let v = v.clamp(self.min, self.max);
+        let x = if self.log && self.min > 0.0 {
+            (v / self.min).ln() / (self.max / self.min).ln()
+        } else if self.max > self.min {
+            (v - self.min) / (self.max - self.min)
+        } else {
+            0.0
+        };
+        x.clamp(0.0, 1.0)
+    }
+
+    /// Inverse of [`to_norm`](Self::to_norm); whole-number parameters are rounded.
+    pub fn from_norm(&self, x: f32) -> f32 {
+        let x = x.clamp(0.0, 1.0);
+        let v = if self.log && self.min > 0.0 {
+            self.min * (self.max / self.min).powf(x)
+        } else {
+            self.min + (self.max - self.min) * x
+        };
+        if self.stepped {
+            v.round().clamp(self.min, self.max)
+        } else {
+            v.clamp(self.min, self.max)
+        }
+    }
+}
+
 pub struct DeviceInfo {
     pub id: &'static str,
     pub name: &'static str,
@@ -32,6 +62,9 @@ const fn plog(name: &'static str, min: f32, max: f32, default: f32, unit: &'stat
 const fn pstep(name: &'static str, min: f32, max: f32, default: f32) -> ParamInfo {
     ParamInfo { name, min, max, default, unit: "", log: false, stepped: true }
 }
+
+/// Ids of devices that modulate another device's parameter instead of (only) shaping audio.
+pub const MODULATORS: [&str; 2] = ["native.lfo", "native.follower"];
 
 pub const FILTER_MODES: [&str; 4] = ["Low-pass", "High-pass", "Band-pass", "Notch"];
 
@@ -192,6 +225,30 @@ pub const DEVICES: &[DeviceInfo] = &[
         ],
     },
     DeviceInfo {
+        id: "native.lfo",
+        name: "LFO (modulator)",
+        params: &[
+            pstep("Target device (0 off, 1-8 chain slot)", 0.0, 8.0, 0.0),
+            pstep("Target parameter (0 = first)", 0.0, 15.0, 0.0),
+            pstep("Shape (0 sine, 1 tri, 2 saw, 3 square, 4 random)", 0.0, 4.0, 0.0),
+            plog("Rate", 0.05, 20.0, 1.0, "Hz"),
+            p("Depth", -1.0, 1.0, 0.5, ""),
+            p("Phase", 0.0, 1.0, 0.0, ""),
+        ],
+    },
+    DeviceInfo {
+        id: "native.follower",
+        name: "Envelope follower (modulator)",
+        params: &[
+            pstep("Target device (0 off, 1-8 chain slot)", 0.0, 8.0, 0.0),
+            pstep("Target parameter (0 = first)", 0.0, 15.0, 0.0),
+            plog("Attack", 1.0, 500.0, 10.0, "ms"),
+            plog("Release", 5.0, 2000.0, 150.0, "ms"),
+            p("Sensitivity", 0.1, 16.0, 4.0, ""),
+            p("Depth", -1.0, 1.0, 0.5, ""),
+        ],
+    },
+    DeviceInfo {
         id: "native.exciter",
         name: "Exciter",
         params: &[plog("Frequency", 1000.0, 10_000.0, 3000.0, "Hz"), p("Amount", 0.0, 1.0, 0.3, "")],
@@ -278,5 +335,25 @@ mod tests {
         assert!((p.denormalize(0.0) - 20.0).abs() < 1e-3);
         assert!((p.denormalize(1.0) - 20_000.0).abs() < 1.0);
         assert!((p.denormalize(0.5) - 632.4).abs() < 1.0);
+    }
+}
+
+#[cfg(test)]
+mod norm_tests {
+    use super::*;
+
+    #[test]
+    fn normalised_positions_roundtrip_for_every_parameter() {
+        for d in DEVICES {
+            for i in d.params {
+                for x in [0.0f32, 0.25, 0.5, 1.0] {
+                    let v = i.from_norm(x);
+                    assert!(v >= i.min && v <= i.max, "{} {}", d.id, i.name);
+                    if !i.stepped {
+                        assert!((i.to_norm(v) - x).abs() < 1e-4, "{} {}: {x} -> {v}", d.id, i.name);
+                    }
+                }
+            }
+        }
     }
 }

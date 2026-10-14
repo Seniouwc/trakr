@@ -14,7 +14,7 @@ pub mod song;
 pub mod track;
 
 pub use automation::{AutoTarget, Automation};
-pub use device::{device_info, DeviceInfo, ParamInfo, DEVICES};
+pub use device::{device_info, DeviceInfo, ParamInfo, DEVICES, MODULATORS};
 pub use envelope::Envelope;
 pub use instrument::{FilterMode, Instrument, InstrumentFilter, Interpolation, LoopMode, Nna, Sample};
 pub use note::{EffectCmd, NoteColumn, EMPTY, NOTE_EMPTY, NOTE_OFF};
