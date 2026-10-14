@@ -577,6 +577,7 @@ fn install_api(lua: &Lua, state: &Shared, ctx: &ScriptCtx) -> mlua::Result<()> {
             })?,
         )?;
     }
+    install_mixer_api(lua, state, &t)?;
     lua.globals().set("trakr", t)?;
     Ok(())
 }
@@ -732,8 +733,402 @@ mod tests {
     }
 
     #[test]
+    fn instruments_tracks_devices_and_automation() {
+        let out = go(r#"
+            local i = trakr.instrument(0)
+            assert(i.name == "Sine C-4" and i.samples == 1 and i.nna == "cut")
+            assert(trakr.instrument(99) == nil)
+            trakr.set_instrument(0, { name = "Lead", volume = 0.5, nna = "note-off" })
+            assert(trakr.instrument(0).name == "Lead" and trakr.instrument(0).nna == "note-off")
+
+            local t = trakr.track(0)
+            assert(t.kind == "track" and t.volume == 1 and t.mute == "active")
+            assert(trakr.track(8).kind == "master")
+            trakr.set_track(0, { name = "Bass", volume = 0.8, panning = -0.5, mute = "muted", solo = true })
+            local t2 = trakr.track(0)
+            assert(t2.name == "Bass" and t2.panning == -0.5 and t2.mute == "muted" and t2.solo)
+
+            local d = trakr.add_device(0, "native.filter")
+            assert(d == 0)
+            trakr.set_device_param(0, d, 1, 2000)
+            local dev = trakr.devices(0)[0]
+            assert(dev.id == "native.filter" and dev.params["Cutoff"] == 2000, dev.params["Cutoff"])
+            trakr.set_device_bypass(0, 0, true)
+            assert(trakr.devices(0)[0].bypass)
+            local e = trakr.add_device(0, "native.gainer")
+            trakr.remove_device(0, 0)
+            assert(trakr.devices(0)[0].id == "native.gainer" and trakr.track(0).devices == 1)
+
+            trakr.automate(0, 0, "volume", { {0, 0.5}, {8, 1.0} })
+            trakr.automate(0, 0, "device:0:0", { {0, 0}, {16, 1} })
+            trakr.automate(0, 0, "device:0:0", {})
+            local p2 = trakr.add_pattern(16)
+            trakr.set_sequence{ 0, p2, 0 }
+        "#)
+        .unwrap();
+        let s = &out.song;
+        assert_eq!((s.instruments[0].name.as_str(), s.instruments[0].volume), ("Lead", 0.5));
+        assert_eq!(s.tracks[0].name, "Bass");
+        assert_eq!(s.tracks[0].devices.len(), 1);
+        let lanes = &s.patterns[0].automation;
+        assert_eq!(lanes.len(), 1, "device lane removed again: {lanes:?}");
+        assert_eq!(s.sequence, vec![0, 1, 0]);
+    }
+
+    #[test]
+    fn mixer_api_validates_arguments() {
+        for (src, needle) in [
+            ("trakr.set_track(0, { volume = 9 })", "range"),
+            ("trakr.set_track(0, { mute = 'loud' })", "mute"),
+            ("trakr.set_track(99, { volume = 1 })", "track 99"),
+            ("trakr.add_device(0, 'nope')", "unknown device"),
+            ("trakr.add_device(0, 'native.filter'); trakr.set_device_param(0, 0, 1, 99999999)", "between"),
+            ("trakr.add_device(0, 'native.filter'); trakr.set_device_param(0, 0, 9, 1)", "parameter 9"),
+            ("trakr.remove_device(0, 3)", "device 3"),
+            ("trakr.automate(0, 0, 'device:0:0', {})", "no such device"),
+            ("trakr.automate(0, 0, 'volume', { {0, 7} })", "0..1"),
+            ("trakr.automate(0, 0, 'zzz', {})", "target"),
+            ("trakr.set_sequence{ 9 }", "pattern 9"),
+            ("trakr.set_sequence{}", "needs"),
+            ("trakr.set_instrument(0, { nna = 'x' })", "nna"),
+            ("trakr.set_instrument(0, { volume = 99 })", "range"),
+        ] {
+            let e = go(src).unwrap_err().to_string();
+            assert!(e.contains(needle), "{src}: {e}");
+        }
+    }
+
+    #[test]
     fn touched_patterns_are_compacted() {
         let out = go("trakr.set_note(0, 0, 3, 0, { note = 48 }); trakr.clear_note(0, 0, 3, 0)").unwrap();
         assert!(out.song.patterns[0].line(0, 3).is_none());
     }
+}
+
+fn mute_name(m: trakr_core::MuteState) -> &'static str {
+    match m {
+        trakr_core::MuteState::Active => "active",
+        trakr_core::MuteState::Muted => "muted",
+        trakr_core::MuteState::Off => "off",
+    }
+}
+
+fn track_of(st: &State, t: i64) -> mlua::Result<usize> {
+    let t = index(t, "track")?;
+    if t >= st.song.tracks.len() {
+        return Err(err(format!("track {t} does not exist (the song has {})", st.song.tracks.len())));
+    }
+    Ok(t)
+}
+
+/// Instruments, tracks, devices and automation.
+fn install_mixer_api(lua: &Lua, state: &Shared, t: &Table) -> mlua::Result<()> {
+    use trakr_core::{AutoTarget, Automation, DeviceSpec, MuteState, Nna};
+
+    let st = state.clone();
+    t.set(
+        "instrument",
+        lua.create_function(move |lua, i: i64| {
+            let s = st.borrow();
+            let Some(inst) = usize::try_from(i).ok().and_then(|i| s.song.instruments.get(i)) else {
+                return Ok(None);
+            };
+            let out = lua.create_table()?;
+            out.set("name", inst.name.as_str())?;
+            out.set("volume", inst.volume)?;
+            out.set("samples", inst.samples.len())?;
+            out.set("phrases", inst.phrases.len())?;
+            out.set("lfos", inst.lfos.len())?;
+            out.set(
+                "nna",
+                match inst.nna {
+                    Nna::Cut => "cut",
+                    Nna::NoteOff => "note-off",
+                    Nna::Continue => "continue",
+                },
+            )?;
+            out.set("midi_channel", inst.midi_out.map(|m| m.channel + 1))?;
+            Ok(Some(out))
+        })?,
+    )?;
+    let st = state.clone();
+    t.set(
+        "set_instrument",
+        lua.create_function(move |_, (i, f): (i64, Table)| {
+            let mut s = st.borrow_mut();
+            let i = index(i, "instrument")?;
+            if i >= s.song.instruments.len() {
+                return Err(err(format!("instrument {i} does not exist")));
+            }
+            if let Some(v) = f.get::<Option<String>>("name")? {
+                s.song.instruments[i].name = v;
+            }
+            if let Some(v) = f.get::<Option<f32>>("volume")? {
+                if !(0.0..=4.0).contains(&v) {
+                    return Err(err(format!("volume {v} is out of range 0..4")));
+                }
+                s.song.instruments[i].volume = v;
+            }
+            if let Some(v) = f.get::<Option<String>>("nna")? {
+                s.song.instruments[i].nna = match v.as_str() {
+                    "cut" => Nna::Cut,
+                    "note-off" => Nna::NoteOff,
+                    "continue" => Nna::Continue,
+                    _ => return Err(err("nna must be \"cut\", \"note-off\" or \"continue\"")),
+                };
+            }
+            s.changed = true;
+            Ok(())
+        })?,
+    )?;
+
+    let st = state.clone();
+    t.set(
+        "track",
+        lua.create_function(move |lua, i: i64| {
+            let s = st.borrow();
+            let Some(tr) = usize::try_from(i).ok().and_then(|i| s.song.tracks.get(i)) else {
+                return Ok(None);
+            };
+            let out = lua.create_table()?;
+            out.set("name", tr.name.as_str())?;
+            out.set(
+                "kind",
+                match tr.kind {
+                    trakr_core::TrackKind::Sequencer => "track",
+                    trakr_core::TrackKind::Group => "group",
+                    trakr_core::TrackKind::Send => "send",
+                    trakr_core::TrackKind::Master => "master",
+                },
+            )?;
+            out.set("volume", tr.volume)?;
+            out.set("panning", tr.panning)?;
+            out.set("mute", mute_name(tr.mute))?;
+            out.set("solo", tr.solo)?;
+            out.set("devices", tr.devices.len())?;
+            Ok(Some(out))
+        })?,
+    )?;
+    let st = state.clone();
+    t.set(
+        "set_track",
+        lua.create_function(move |_, (i, f): (i64, Table)| {
+            let mut s = st.borrow_mut();
+            let i = track_of(&s, i)?;
+            if let Some(v) = f.get::<Option<String>>("name")? {
+                s.song.tracks[i].name = v;
+            }
+            if let Some(v) = f.get::<Option<f32>>("volume")? {
+                if !(0.0..=4.0).contains(&v) {
+                    return Err(err(format!("volume {v} is out of range 0..4 (1 = 0 dB)")));
+                }
+                s.song.tracks[i].volume = v;
+            }
+            if let Some(v) = f.get::<Option<f32>>("panning")? {
+                if !(-1.0..=1.0).contains(&v) {
+                    return Err(err(format!("panning {v} is out of range -1..1")));
+                }
+                s.song.tracks[i].panning = v;
+            }
+            if let Some(v) = f.get::<Option<String>>("mute")? {
+                s.song.tracks[i].mute = match v.as_str() {
+                    "active" => MuteState::Active,
+                    "muted" => MuteState::Muted,
+                    "off" => MuteState::Off,
+                    _ => return Err(err("mute must be \"active\", \"muted\" or \"off\"")),
+                };
+            }
+            if let Some(v) = f.get::<Option<bool>>("solo")? {
+                s.song.tracks[i].solo = v;
+            }
+            s.changed = true;
+            Ok(())
+        })?,
+    )?;
+
+    // ---- devices ----
+    let st = state.clone();
+    t.set(
+        "devices",
+        lua.create_function(move |lua, tr: i64| {
+            let s = st.borrow();
+            let tr = track_of(&s, tr)?;
+            let list = lua.create_table()?;
+            for (n, d) in s.song.tracks[tr].devices.iter().enumerate() {
+                let e = lua.create_table()?;
+                e.set("id", d.id.as_str())?;
+                e.set("name", d.display_name())?;
+                e.set("bypass", d.bypass)?;
+                let params = lua.create_table()?;
+                for i in 0..d.param_count() {
+                    let name = d.param_meta(i).map(|m| m.0).unwrap_or_default();
+                    params.set(name, d.param(i))?;
+                }
+                e.set("params", params)?;
+                list.set(n, e)?; // 0-based, like everything else
+            }
+            Ok(list)
+        })?,
+    )?;
+    let st = state.clone();
+    t.set(
+        "add_device",
+        lua.create_function(move |_, (tr, id): (i64, String)| {
+            let mut s = st.borrow_mut();
+            let tr = track_of(&s, tr)?;
+            let Some(spec) = DeviceSpec::new(&id) else {
+                return Err(err(format!(
+                    "unknown device {id:?} (see the Devices menu for ids like native.filter)"
+                )));
+            };
+            if s.song.tracks[tr].devices.len() >= 32 {
+                return Err(err("a track holds at most 32 devices"));
+            }
+            s.song.tracks[tr].devices.push(spec);
+            s.changed = true;
+            Ok(s.song.tracks[tr].devices.len() - 1)
+        })?,
+    )?;
+    let st = state.clone();
+    t.set(
+        "remove_device",
+        lua.create_function(move |_, (tr, d): (i64, i64)| {
+            let mut s = st.borrow_mut();
+            let tr = track_of(&s, tr)?;
+            let d = index(d, "device")?;
+            if d >= s.song.tracks[tr].devices.len() {
+                return Err(err(format!("device {d} does not exist")));
+            }
+            s.song.tracks[tr].devices.remove(d);
+            s.changed = true;
+            Ok(())
+        })?,
+    )?;
+    let st = state.clone();
+    t.set(
+        "set_device_param",
+        lua.create_function(move |_, (tr, d, p, v): (i64, i64, i64, f32)| {
+            let mut s = st.borrow_mut();
+            let tr = track_of(&s, tr)?;
+            let (d, p) = (index(d, "device")?, index(p, "parameter")?);
+            let Some(spec) = s.song.tracks[tr].devices.get(d) else {
+                return Err(err(format!("device {d} does not exist")));
+            };
+            let Some((name, min, max, ..)) = spec.param_meta(p) else {
+                return Err(err(format!("parameter {p} does not exist")));
+            };
+            if !v.is_finite() || v < min.min(max) || v > max.max(min) {
+                return Err(err(format!("{name} must be between {min} and {max}, not {v}")));
+            }
+            let defaults: Vec<f32> =
+                (0..spec.param_count()).filter_map(|i| spec.param_meta(i).map(|m| m.3)).collect();
+            let spec = &mut s.song.tracks[tr].devices[d];
+            if spec.params.len() < defaults.len() {
+                let have = spec.params.len();
+                spec.params.extend_from_slice(&defaults[have..]);
+            }
+            spec.params[p] = v;
+            s.changed = true;
+            Ok(())
+        })?,
+    )?;
+    let st = state.clone();
+    t.set(
+        "set_device_bypass",
+        lua.create_function(move |_, (tr, d, b): (i64, i64, bool)| {
+            let mut s = st.borrow_mut();
+            let tr = track_of(&s, tr)?;
+            let d = index(d, "device")?;
+            let Some(spec) = s.song.tracks[tr].devices.get_mut(d) else {
+                return Err(err(format!("device {d} does not exist")));
+            };
+            spec.bypass = b;
+            s.changed = true;
+            Ok(())
+        })?,
+    )?;
+
+    // ---- automation ----
+    let st = state.clone();
+    t.set(
+        "automate",
+        lua.create_function(move |_, (p, tr, target, points): (i64, i64, String, Table)| {
+            let mut s = st.borrow_mut();
+            let tr = track_of(&s, tr)?;
+            let p = index(p, "pattern")?;
+            if p >= s.song.patterns.len() {
+                return Err(err(format!("pattern {p} does not exist")));
+            }
+            let target = match target.as_str() {
+                "volume" => AutoTarget::TrackVolume,
+                "pan" => AutoTarget::TrackPan,
+                other => {
+                    // "device:D:P" with 0-based device and parameter numbers
+                    let parts: Vec<&str> = other.split(':').collect();
+                    match parts.as_slice() {
+                        ["device", d, pr] => match (d.parse::<usize>(), pr.parse::<usize>()) {
+                            (Ok(device), Ok(param))
+                                if s.song.tracks[tr]
+                                    .devices
+                                    .get(device)
+                                    .is_some_and(|d| param < d.param_count()) =>
+                            {
+                                AutoTarget::Device { device, param }
+                            }
+                            _ => return Err(err(format!("no such device parameter in {other:?}"))),
+                        },
+                        _ => return Err(err("target must be \"volume\", \"pan\" or \"device:D:P\"")),
+                    }
+                }
+            };
+            let lines = s.song.patterns[p].number_of_lines as f32;
+            let mut lane = Automation::new(tr, target);
+            for pair in points.sequence_values::<Table>() {
+                let pair = pair?;
+                let (line, value): (f32, f32) = (pair.get(1)?, pair.get(2)?);
+                if !line.is_finite()
+                    || !value.is_finite()
+                    || line < 0.0
+                    || line > lines
+                    || !(0.0..=1.0).contains(&value)
+                {
+                    return Err(err(
+                        "automation points are { line, value } with line inside the pattern and value 0..1",
+                    ));
+                }
+                lane.set_point(line, value);
+            }
+            let pat = pattern_mut(&mut s, p)?;
+            pat.automation.retain(|a| !(a.track == tr && a.target == target));
+            if !lane.points.is_empty() {
+                pat.automation.push(lane);
+            }
+            Ok(())
+        })?,
+    )?;
+
+    // ---- sequence ----
+    let st = state.clone();
+    t.set(
+        "set_sequence",
+        lua.create_function(move |_, list: Table| {
+            let mut s = st.borrow_mut();
+            let mut seq = Vec::new();
+            for v in list.sequence_values::<i64>() {
+                let p = index(v?, "pattern")?;
+                if p >= s.song.patterns.len() {
+                    return Err(err(format!("pattern {p} does not exist")));
+                }
+                seq.push(p);
+            }
+            if seq.is_empty() || seq.len() > MAX_SEQUENCE {
+                return Err(err(format!("the sequence needs 1..{MAX_SEQUENCE} entries")));
+            }
+            s.song.sequence = seq;
+            s.song.loop_range = None;
+            s.changed = true;
+            Ok(())
+        })?,
+    )?;
+    Ok(())
 }

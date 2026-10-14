@@ -33,6 +33,26 @@ Cells
   trakr.get_effect(p, t, l, c)      "0A40" or nil          (effect columns)
   trakr.set_effect(p, t, l, c, "0A40")   false clears
 
+Instruments and tracks
+  trakr.instrument(i)               { name, volume, samples, phrases, lfos, nna, midi_channel } or nil
+  trakr.set_instrument(i, { name=, volume=, nna="cut"|"note-off"|"continue" })
+  trakr.track(t)                    { name, kind, volume, panning, mute, solo, devices } or nil
+                                    kind: "track" | "group" | "send" | "master";
+                                    volume 1 = 0 dB; mute: "active" | "muted" | "off"
+  trakr.set_track(t, { name=, volume=, panning=, mute=, solo= })
+
+Devices (0-based device and parameter numbers)
+  trakr.devices(t)                  list of { id, name, bypass, params = { [name] = value } }
+  trakr.add_device(t, "native.filter")   returns the new device number
+  trakr.remove_device(t, d)
+  trakr.set_device_param(t, d, p, value) value in the parameter's own range
+  trakr.set_device_bypass(t, d, true)
+
+Automation and order
+  trakr.automate(p, t, "volume" | "pan" | "device:D:P", { {line, value}, ... })
+                                    replaces that lane in pattern p; value 0..1; empty list removes it
+  trakr.set_sequence{ 0, 1, 1, 2 }  replace the play order
+
 Helpers
   trakr.note_name(n)  trakr.parse_note("C-4")
   trakr.status("text")              message in the status bar
