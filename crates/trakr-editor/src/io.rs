@@ -28,14 +28,16 @@ pub fn load_song_report(path: &Path) -> Result<(Song, Vec<String>)> {
         Some("xrns") => {
             trakr_xrns::import_path_with_report(path).with_context(|| format!("importing {}", path.display()))
         }
-        Some("mod") => {
+        Some("mod" | "s3m" | "xm") => {
             let bytes = std::fs::read(path).with_context(|| format!("reading {}", path.display()))?;
-            trakr_mod::import(&bytes).with_context(|| format!("importing {}", path.display()))
+            trakr_mod::import_any(&bytes).with_context(|| format!("importing {}", path.display()))
         }
         Some("trkr") => trakr_format::load_path(path)
             .map(|s| (s, Vec::new()))
             .with_context(|| format!("loading {}", path.display())),
-        _ => anyhow::bail!("unknown file type: {} (expected .trkr, .xrns or .mod)", path.display()),
+        _ => {
+            anyhow::bail!("unknown file type: {} (expected .trkr, .xrns, .mod, .s3m or .xm)", path.display())
+        }
     }
 }
 

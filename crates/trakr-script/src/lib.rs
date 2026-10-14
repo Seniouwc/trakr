@@ -600,211 +600,6 @@ mod take {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn song() -> Song {
-        let mut s = Song::demo();
-        s.name = "T".into();
-        s
-    }
-
-    fn go(src: &str) -> Result<ScriptOutput, ScriptError> {
-        run(&song(), &ScriptCtx::default(), src)
-    }
-
-    #[test]
-    fn reads_and_writes_cells() {
-        let out = go(r#"
-            local n = trakr.get_note(0, 0, 0, 0)
-            assert(n.name == "C-4" and n.instrument == 0)
-            trakr.set_note(0, 1, 5, 0, { note = "E-4", instrument = 0, volume = 64, fx = "0a40" })
-            local m = trakr.get_note(0, 1, 5, 0)
-            assert(m.note == 52 and m.volume == 64 and m.fx == "0A40", m.name)
-            trakr.set_note(0, 1, 5, 0, { volume = false })
-            assert(trakr.get_note(0, 1, 5, 0).volume == nil)
-            trakr.set_effect(0, 1, 6, 0, "0C03")
-            assert(trakr.get_effect(0, 1, 6, 0) == "0C03")
-            print("ok", 1, true)
-        "#)
-        .unwrap();
-        assert!(out.changed);
-        assert_eq!(out.output, vec!["ok\t1\ttrue".to_string()]);
-        let l = out.song.patterns[0].line(1, 5).unwrap();
-        assert_eq!((l.notes[0].note, l.notes[0].volume, l.notes[0].instrument), (52, EMPTY, 0));
-        assert_eq!(out.song.patterns[0].line(1, 6).unwrap().effects[0].amount, 3);
-    }
-
-    #[test]
-    fn errors_report_the_problem_and_change_nothing() {
-        for (src, needle) in [
-            ("trakr.set_note(0, 0, 0, 0, { note = 'H-9' })", "bad note"),
-            ("trakr.get_note(5, 0, 0, 0)", "pattern 5"),
-            ("trakr.get_note(0, 99, 0, 0)", "track 99"),
-            ("trakr.get_note(0, 0, 999, 0)", "line 999"),
-            ("trakr.set_effect(0, 0, 0, 0, 'zz')", "bad effect"),
-            ("trakr.set_song{ bpm = 5 }", "bpm"),
-            ("error('boom')", "boom"),
-            ("this is not lua", "script"),
-            ("trakr.get_note(-1, 0, 0, 0)", "negative"),
-        ] {
-            let e = go(src).unwrap_err().to_string();
-            assert!(e.contains(needle), "{src}: {e}");
-        }
-    }
-
-    #[test]
-    fn song_level_edits_and_patterns() {
-        let out = go(r#"
-            trakr.set_song{ bpm = 140, lpb = 8, name = "Renamed" }
-            local p = trakr.add_pattern(32)
-            assert(p == 1 and trakr.pattern_lines(p) == 32)
-            trakr.append_to_sequence(p)
-            trakr.set_pattern_lines(p, 16)
-            local s = trakr.song()
-            assert(s.patterns == 2 and #s.sequence == 2 and s.bpm == 140)
-        "#)
-        .unwrap();
-        assert_eq!((out.song.bpm, out.song.lpb, out.song.name.as_str()), (140.0, 8, "Renamed"));
-        assert_eq!(out.song.sequence, vec![0, 1]);
-        assert_eq!(out.song.patterns[1].number_of_lines, 16);
-    }
-
-    #[test]
-    fn requests_status_and_context() {
-        let ctx = ScriptCtx {
-            pattern: 0,
-            track: 2,
-            line: 7,
-            selection: Some(Selection { track0: 1, track1: 3, line0: 4, line1: 9 }),
-            ..ScriptCtx::default()
-        };
-        let out = run(&song(), &ctx, "assert(trakr.ctx.track == 2 and trakr.ctx.selection.line1 == 9); trakr.status('hi'); trakr.play()").unwrap();
-        assert_eq!(out.status.as_deref(), Some("hi"));
-        assert_eq!(out.requests, vec![Request::Play]);
-        assert!(!out.changed, "reading does not count as a change");
-    }
-
-    #[test]
-    fn sandbox_blocks_files_os_and_code_loading() {
-        for src in [
-            "io.open('/etc/passwd')",
-            "os.execute('true')",
-            "dofile('x')",
-            "load('return 1')()",
-            "require('os')",
-            "debug.getinfo(1)",
-            "package.loadlib('a','b')",
-        ] {
-            assert!(go(src).is_err(), "{src} must fail");
-        }
-    }
-
-    #[test]
-    fn runaway_scripts_are_stopped() {
-        let t = Instant::now();
-        let e = go("while true do end").unwrap_err().to_string();
-        assert!(e.contains("too long"), "{e}");
-        assert!(t.elapsed() < Duration::from_secs(15));
-        let e = go("local t = {} for i = 1, 1e9 do t[i] = ('x'):rep(1000) .. i end").unwrap_err().to_string();
-        assert!(e.to_lowercase().contains("memory") || e.contains("too long"), "{e}");
-    }
-
-    #[test]
-    fn shipped_examples_run() {
-        let mut s = Song::demo();
-        s.patterns[0] = Arc::new(Pattern::new(s.tracks.len(), 32));
-        let ctx = ScriptCtx {
-            track: 1,
-            selection: Some(Selection { track0: 0, track1: 1, line0: 0, line1: 31 }),
-            ..ScriptCtx::default()
-        };
-        for (name, src) in EXAMPLES {
-            let out = run(&s, &ctx, src).unwrap_or_else(|e| panic!("{name}: {e}"));
-            if *name == "Euclidean rhythm" {
-                let hits = (0..32).filter(|&l| out.song.patterns[0].line(1, l).is_some()).count();
-                assert!(hits >= 5 && out.changed, "{hits}");
-            }
-            if *name == "Song report" {
-                assert!(out.output.len() >= 3, "{:?}", out.output);
-            }
-        }
-    }
-
-    #[test]
-    fn instruments_tracks_devices_and_automation() {
-        let out = go(r#"
-            local i = trakr.instrument(0)
-            assert(i.name == "Sine C-4" and i.samples == 1 and i.nna == "cut")
-            assert(trakr.instrument(99) == nil)
-            trakr.set_instrument(0, { name = "Lead", volume = 0.5, nna = "note-off" })
-            assert(trakr.instrument(0).name == "Lead" and trakr.instrument(0).nna == "note-off")
-
-            local t = trakr.track(0)
-            assert(t.kind == "track" and t.volume == 1 and t.mute == "active")
-            assert(trakr.track(8).kind == "master")
-            trakr.set_track(0, { name = "Bass", volume = 0.8, panning = -0.5, mute = "muted", solo = true })
-            local t2 = trakr.track(0)
-            assert(t2.name == "Bass" and t2.panning == -0.5 and t2.mute == "muted" and t2.solo)
-
-            local d = trakr.add_device(0, "native.filter")
-            assert(d == 0)
-            trakr.set_device_param(0, d, 1, 2000)
-            local dev = trakr.devices(0)[0]
-            assert(dev.id == "native.filter" and dev.params["Cutoff"] == 2000, dev.params["Cutoff"])
-            trakr.set_device_bypass(0, 0, true)
-            assert(trakr.devices(0)[0].bypass)
-            local e = trakr.add_device(0, "native.gainer")
-            trakr.remove_device(0, 0)
-            assert(trakr.devices(0)[0].id == "native.gainer" and trakr.track(0).devices == 1)
-
-            trakr.automate(0, 0, "volume", { {0, 0.5}, {8, 1.0} })
-            trakr.automate(0, 0, "device:0:0", { {0, 0}, {16, 1} })
-            trakr.automate(0, 0, "device:0:0", {})
-            local p2 = trakr.add_pattern(16)
-            trakr.set_sequence{ 0, p2, 0 }
-        "#)
-        .unwrap();
-        let s = &out.song;
-        assert_eq!((s.instruments[0].name.as_str(), s.instruments[0].volume), ("Lead", 0.5));
-        assert_eq!(s.tracks[0].name, "Bass");
-        assert_eq!(s.tracks[0].devices.len(), 1);
-        let lanes = &s.patterns[0].automation;
-        assert_eq!(lanes.len(), 1, "device lane removed again: {lanes:?}");
-        assert_eq!(s.sequence, vec![0, 1, 0]);
-    }
-
-    #[test]
-    fn mixer_api_validates_arguments() {
-        for (src, needle) in [
-            ("trakr.set_track(0, { volume = 9 })", "range"),
-            ("trakr.set_track(0, { mute = 'loud' })", "mute"),
-            ("trakr.set_track(99, { volume = 1 })", "track 99"),
-            ("trakr.add_device(0, 'nope')", "unknown device"),
-            ("trakr.add_device(0, 'native.filter'); trakr.set_device_param(0, 0, 1, 99999999)", "between"),
-            ("trakr.add_device(0, 'native.filter'); trakr.set_device_param(0, 0, 9, 1)", "parameter 9"),
-            ("trakr.remove_device(0, 3)", "device 3"),
-            ("trakr.automate(0, 0, 'device:0:0', {})", "no such device"),
-            ("trakr.automate(0, 0, 'volume', { {0, 7} })", "0..1"),
-            ("trakr.automate(0, 0, 'zzz', {})", "target"),
-            ("trakr.set_sequence{ 9 }", "pattern 9"),
-            ("trakr.set_sequence{}", "needs"),
-            ("trakr.set_instrument(0, { nna = 'x' })", "nna"),
-            ("trakr.set_instrument(0, { volume = 99 })", "range"),
-        ] {
-            let e = go(src).unwrap_err().to_string();
-            assert!(e.contains(needle), "{src}: {e}");
-        }
-    }
-
-    #[test]
-    fn touched_patterns_are_compacted() {
-        let out = go("trakr.set_note(0, 0, 3, 0, { note = 48 }); trakr.clear_note(0, 0, 3, 0)").unwrap();
-        assert!(out.song.patterns[0].line(0, 3).is_none());
-    }
-}
-
 fn mute_name(m: trakr_core::MuteState) -> &'static str {
     match m {
         trakr_core::MuteState::Active => "active",
@@ -1131,4 +926,209 @@ fn install_mixer_api(lua: &Lua, state: &Shared, t: &Table) -> mlua::Result<()> {
         })?,
     )?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn song() -> Song {
+        let mut s = Song::demo();
+        s.name = "T".into();
+        s
+    }
+
+    fn go(src: &str) -> Result<ScriptOutput, ScriptError> {
+        run(&song(), &ScriptCtx::default(), src)
+    }
+
+    #[test]
+    fn reads_and_writes_cells() {
+        let out = go(r#"
+            local n = trakr.get_note(0, 0, 0, 0)
+            assert(n.name == "C-4" and n.instrument == 0)
+            trakr.set_note(0, 1, 5, 0, { note = "E-4", instrument = 0, volume = 64, fx = "0a40" })
+            local m = trakr.get_note(0, 1, 5, 0)
+            assert(m.note == 52 and m.volume == 64 and m.fx == "0A40", m.name)
+            trakr.set_note(0, 1, 5, 0, { volume = false })
+            assert(trakr.get_note(0, 1, 5, 0).volume == nil)
+            trakr.set_effect(0, 1, 6, 0, "0C03")
+            assert(trakr.get_effect(0, 1, 6, 0) == "0C03")
+            print("ok", 1, true)
+        "#)
+        .unwrap();
+        assert!(out.changed);
+        assert_eq!(out.output, vec!["ok\t1\ttrue".to_string()]);
+        let l = out.song.patterns[0].line(1, 5).unwrap();
+        assert_eq!((l.notes[0].note, l.notes[0].volume, l.notes[0].instrument), (52, EMPTY, 0));
+        assert_eq!(out.song.patterns[0].line(1, 6).unwrap().effects[0].amount, 3);
+    }
+
+    #[test]
+    fn errors_report_the_problem_and_change_nothing() {
+        for (src, needle) in [
+            ("trakr.set_note(0, 0, 0, 0, { note = 'H-9' })", "bad note"),
+            ("trakr.get_note(5, 0, 0, 0)", "pattern 5"),
+            ("trakr.get_note(0, 99, 0, 0)", "track 99"),
+            ("trakr.get_note(0, 0, 999, 0)", "line 999"),
+            ("trakr.set_effect(0, 0, 0, 0, 'zz')", "bad effect"),
+            ("trakr.set_song{ bpm = 5 }", "bpm"),
+            ("error('boom')", "boom"),
+            ("this is not lua", "script"),
+            ("trakr.get_note(-1, 0, 0, 0)", "negative"),
+        ] {
+            let e = go(src).unwrap_err().to_string();
+            assert!(e.contains(needle), "{src}: {e}");
+        }
+    }
+
+    #[test]
+    fn song_level_edits_and_patterns() {
+        let out = go(r#"
+            trakr.set_song{ bpm = 140, lpb = 8, name = "Renamed" }
+            local p = trakr.add_pattern(32)
+            assert(p == 1 and trakr.pattern_lines(p) == 32)
+            trakr.append_to_sequence(p)
+            trakr.set_pattern_lines(p, 16)
+            local s = trakr.song()
+            assert(s.patterns == 2 and #s.sequence == 2 and s.bpm == 140)
+        "#)
+        .unwrap();
+        assert_eq!((out.song.bpm, out.song.lpb, out.song.name.as_str()), (140.0, 8, "Renamed"));
+        assert_eq!(out.song.sequence, vec![0, 1]);
+        assert_eq!(out.song.patterns[1].number_of_lines, 16);
+    }
+
+    #[test]
+    fn requests_status_and_context() {
+        let ctx = ScriptCtx {
+            pattern: 0,
+            track: 2,
+            line: 7,
+            selection: Some(Selection { track0: 1, track1: 3, line0: 4, line1: 9 }),
+            ..ScriptCtx::default()
+        };
+        let out = run(&song(), &ctx, "assert(trakr.ctx.track == 2 and trakr.ctx.selection.line1 == 9); trakr.status('hi'); trakr.play()").unwrap();
+        assert_eq!(out.status.as_deref(), Some("hi"));
+        assert_eq!(out.requests, vec![Request::Play]);
+        assert!(!out.changed, "reading does not count as a change");
+    }
+
+    #[test]
+    fn sandbox_blocks_files_os_and_code_loading() {
+        for src in [
+            "io.open('/etc/passwd')",
+            "os.execute('true')",
+            "dofile('x')",
+            "load('return 1')()",
+            "require('os')",
+            "debug.getinfo(1)",
+            "package.loadlib('a','b')",
+        ] {
+            assert!(go(src).is_err(), "{src} must fail");
+        }
+    }
+
+    #[test]
+    fn runaway_scripts_are_stopped() {
+        let t = Instant::now();
+        let e = go("while true do end").unwrap_err().to_string();
+        assert!(e.contains("too long"), "{e}");
+        assert!(t.elapsed() < Duration::from_secs(15));
+        let e = go("local t = {} for i = 1, 1e9 do t[i] = ('x'):rep(1000) .. i end").unwrap_err().to_string();
+        assert!(e.to_lowercase().contains("memory") || e.contains("too long"), "{e}");
+    }
+
+    #[test]
+    fn shipped_examples_run() {
+        let mut s = Song::demo();
+        s.patterns[0] = Arc::new(Pattern::new(s.tracks.len(), 32));
+        let ctx = ScriptCtx {
+            track: 1,
+            selection: Some(Selection { track0: 0, track1: 1, line0: 0, line1: 31 }),
+            ..ScriptCtx::default()
+        };
+        for (name, src) in EXAMPLES {
+            let out = run(&s, &ctx, src).unwrap_or_else(|e| panic!("{name}: {e}"));
+            if *name == "Euclidean rhythm" {
+                let hits = (0..32).filter(|&l| out.song.patterns[0].line(1, l).is_some()).count();
+                assert!(hits >= 5 && out.changed, "{hits}");
+            }
+            if *name == "Song report" {
+                assert!(out.output.len() >= 3, "{:?}", out.output);
+            }
+        }
+    }
+
+    #[test]
+    fn instruments_tracks_devices_and_automation() {
+        let out = go(r#"
+            local i = trakr.instrument(0)
+            assert(i.name == "Sine C-4" and i.samples == 1 and i.nna == "cut")
+            assert(trakr.instrument(99) == nil)
+            trakr.set_instrument(0, { name = "Lead", volume = 0.5, nna = "note-off" })
+            assert(trakr.instrument(0).name == "Lead" and trakr.instrument(0).nna == "note-off")
+
+            local t = trakr.track(0)
+            assert(t.kind == "track" and t.volume == 1 and t.mute == "active")
+            assert(trakr.track(8).kind == "master")
+            trakr.set_track(0, { name = "Bass", volume = 0.8, panning = -0.5, mute = "muted", solo = true })
+            local t2 = trakr.track(0)
+            assert(t2.name == "Bass" and t2.panning == -0.5 and t2.mute == "muted" and t2.solo)
+
+            local d = trakr.add_device(0, "native.filter")
+            assert(d == 0)
+            trakr.set_device_param(0, d, 1, 2000)
+            local dev = trakr.devices(0)[0]
+            assert(dev.id == "native.filter" and dev.params["Cutoff"] == 2000, dev.params["Cutoff"])
+            trakr.set_device_bypass(0, 0, true)
+            assert(trakr.devices(0)[0].bypass)
+            local e = trakr.add_device(0, "native.gainer")
+            trakr.remove_device(0, 0)
+            assert(trakr.devices(0)[0].id == "native.gainer" and trakr.track(0).devices == 1)
+
+            trakr.automate(0, 0, "volume", { {0, 0.5}, {8, 1.0} })
+            trakr.automate(0, 0, "device:0:0", { {0, 0}, {16, 1} })
+            trakr.automate(0, 0, "device:0:0", {})
+            local p2 = trakr.add_pattern(16)
+            trakr.set_sequence{ 0, p2, 0 }
+        "#)
+        .unwrap();
+        let s = &out.song;
+        assert_eq!((s.instruments[0].name.as_str(), s.instruments[0].volume), ("Lead", 0.5));
+        assert_eq!(s.tracks[0].name, "Bass");
+        assert_eq!(s.tracks[0].devices.len(), 1);
+        let lanes = &s.patterns[0].automation;
+        assert_eq!(lanes.len(), 1, "device lane removed again: {lanes:?}");
+        assert_eq!(s.sequence, vec![0, 1, 0]);
+    }
+
+    #[test]
+    fn mixer_api_validates_arguments() {
+        for (src, needle) in [
+            ("trakr.set_track(0, { volume = 9 })", "range"),
+            ("trakr.set_track(0, { mute = 'loud' })", "mute"),
+            ("trakr.set_track(99, { volume = 1 })", "track 99"),
+            ("trakr.add_device(0, 'nope')", "unknown device"),
+            ("trakr.add_device(0, 'native.filter'); trakr.set_device_param(0, 0, 1, 99999999)", "between"),
+            ("trakr.add_device(0, 'native.filter'); trakr.set_device_param(0, 0, 9, 1)", "parameter 9"),
+            ("trakr.remove_device(0, 3)", "device 3"),
+            ("trakr.automate(0, 0, 'device:0:0', {})", "no such device"),
+            ("trakr.automate(0, 0, 'volume', { {0, 7} })", "0..1"),
+            ("trakr.automate(0, 0, 'zzz', {})", "target"),
+            ("trakr.set_sequence{ 9 }", "pattern 9"),
+            ("trakr.set_sequence{}", "needs"),
+            ("trakr.set_instrument(0, { nna = 'x' })", "nna"),
+            ("trakr.set_instrument(0, { volume = 99 })", "range"),
+        ] {
+            let e = go(src).unwrap_err().to_string();
+            assert!(e.contains(needle), "{src}: {e}");
+        }
+    }
+
+    #[test]
+    fn touched_patterns_are_compacted() {
+        let out = go("trakr.set_note(0, 0, 3, 0, { note = 48 }); trakr.clear_note(0, 0, 3, 0)").unwrap();
+        assert!(out.song.patterns[0].line(0, 3).is_none());
+    }
 }

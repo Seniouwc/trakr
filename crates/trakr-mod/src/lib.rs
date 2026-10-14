@@ -3,11 +3,16 @@
 //! Layout: 20-byte title, 31 sample headers (30 bytes), song length, restart byte, 128-entry order table,
 //! 4-byte tag, then 64-row patterns of 4 bytes per channel, then 8-bit signed sample data.
 //!
+//! Also reads Scream Tracker 3 (`.s3m`, see [`s3m`]) and FastTracker 2 (`.xm`, see [`xm`]) modules.
+//!
 //! Mapping notes:
 //! - Amiga period index 0 (PT C-1) becomes internal note 24, so PT C-2 (the sample's native 8363 Hz) is note 36.
 //! - Timing keeps each line's real duration: LPB is 4, TPL is the first speed command, and tempo `F20..FFF`
 //!   becomes `BPM = 6 * tempo / speed`.
 //! - Effects without an equivalent are skipped and counted in the warnings.
+
+pub mod s3m;
+pub mod xm;
 
 use std::sync::Arc;
 use thiserror::Error;
@@ -60,12 +65,12 @@ fn period_to_note(period: u16) -> Option<u8> {
         .map(|(i, _)| 24 + i as u8)
 }
 
-fn fx(id: &[u8; 2], amount: u8) -> EffectCmd {
+pub(crate) fn fx(id: &[u8; 2], amount: u8) -> EffectCmd {
     EffectCmd { id: *id, amount }
 }
 
 /// Convert a MOD slide speed (Amiga period units per tick) to trakr's 1/16 semitone per tick.
-fn slide_amount(xx: u8) -> u8 {
+pub(crate) fn slide_amount(xx: u8) -> u8 {
     ((xx as f32) * 0.65).round().clamp(1.0, 255.0) as u8
 }
 
@@ -250,8 +255,19 @@ pub fn import(bytes: &[u8]) -> Result<(Song, Vec<String>), ModError> {
     Ok((song, warnings))
 }
 
+/// Import a module in any supported format, chosen by its content (`.mod`, `.s3m` or `.xm`).
+pub fn import_any(bytes: &[u8]) -> Result<(Song, Vec<String>), ModError> {
+    if bytes.len() > 0x30 && &bytes[0x2C..0x30] == b"SCRM" {
+        s3m::import(bytes)
+    } else if bytes.starts_with(b"Extended Module: ") {
+        xm::import(bytes)
+    } else {
+        import(bytes)
+    }
+}
+
 pub fn import_path(path: &std::path::Path) -> Result<(Song, Vec<String>), Box<dyn std::error::Error>> {
-    Ok(import(&std::fs::read(path)?)?)
+    Ok(import_any(&std::fs::read(path)?)?)
 }
 
 #[cfg(test)]
