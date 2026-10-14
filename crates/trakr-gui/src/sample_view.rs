@@ -131,6 +131,35 @@ impl GuiApp {
             if nna != before {
                 self.editor.edit_instrument("nna", |i| i.nna = nna);
             }
+            let mut interp = self
+                .editor
+                .current_instrument()
+                .map_or(trakr_core::Interpolation::Cubic, |i| i.interpolation);
+            let before_i = interp;
+            egui::ComboBox::from_id_salt("interp")
+                .selected_text(match interp {
+                    trakr_core::Interpolation::Linear => "Interpolation: linear",
+                    trakr_core::Interpolation::Cubic => "Interpolation: cubic",
+                    trakr_core::Interpolation::Sinc => "Interpolation: sinc",
+                })
+                .show_ui(ui, |ui| {
+                    ui.selectable_value(&mut interp, trakr_core::Interpolation::Linear, "Linear: cheapest");
+                    ui.selectable_value(
+                        &mut interp,
+                        trakr_core::Interpolation::Cubic,
+                        "Cubic: smooth (default)",
+                    );
+                    ui.selectable_value(
+                        &mut interp,
+                        trakr_core::Interpolation::Sinc,
+                        "Sinc: cleanest, more CPU",
+                    );
+                })
+                .response
+                .on_hover_text("How the sample is read between frames when pitched");
+            if interp != before_i {
+                self.editor.edit_instrument("interp", |i| i.interpolation = interp);
+            }
             ui.separator();
             if ui.button("Play").on_hover_text("Audition the instrument at the sample's base note").clicked()
             {

@@ -15,7 +15,7 @@ pub mod track;
 pub use automation::{AutoTarget, Automation};
 pub use device::{device_info, DeviceInfo, ParamInfo, DEVICES};
 pub use envelope::Envelope;
-pub use instrument::{FilterMode, Instrument, InstrumentFilter, LoopMode, Nna, Sample};
+pub use instrument::{FilterMode, Instrument, InstrumentFilter, Interpolation, LoopMode, Nna, Sample};
 pub use note::{EffectCmd, NoteColumn, EMPTY, NOTE_EMPTY, NOTE_OFF};
 pub use pattern::{Line, Pattern, PatternTrack, MAX_EFFECT_COLUMNS, MAX_LINES, MAX_NOTE_COLUMNS};
 pub use song::Song;

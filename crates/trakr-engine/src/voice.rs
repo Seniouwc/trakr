@@ -1,9 +1,40 @@
 use crate::dsp::{Biquad, Coeffs};
 use std::sync::Arc;
-use trakr_core::{Envelope, FilterMode, Instrument, InstrumentFilter, LoopMode, Nna, Sample};
+use std::sync::OnceLock;
+use trakr_core::{Envelope, FilterMode, Instrument, InstrumentFilter, Interpolation, LoopMode, Nna, Sample};
 
 /// How fast a voice's gain and pitch follow their targets (smooths ticks, fades and envelopes).
 const SMOOTH_SECONDS: f32 = 0.003;
+/// Windowed-sinc taps for 8-point interpolation: `SINC_PHASES` fractional positions of 8 taps each.
+const SINC_PHASES: usize = 256;
+static SINC_TABLE: OnceLock<Vec<[f32; 8]>> = OnceLock::new();
+
+/// Build the interpolation tables. Must run before audio starts (`create` does) so the audio thread
+/// never allocates here.
+pub fn init_tables() {
+    SINC_TABLE.get_or_init(|| {
+        (0..=SINC_PHASES) // one extra phase so the last interval can be interpolated
+            .map(|p| {
+                let frac = p as f32 / SINC_PHASES as f32;
+                let mut taps = [0.0f32; 8];
+                for (k, t) in taps.iter_mut().enumerate() {
+                    let x = (k as f32 - 3.0) - frac; // distance from the interpolation point
+                    let sinc = if x.abs() < 1e-6 {
+                        1.0
+                    } else {
+                        (std::f32::consts::PI * x).sin() / (std::f32::consts::PI * x)
+                    };
+                    let w = 0.5 + 0.5 * (std::f32::consts::PI * x / 4.0).cos(); // Hann over +-4 taps
+                    *t = sinc * w;
+                }
+                let sum: f32 = taps.iter().sum();
+                taps.iter_mut().for_each(|t| *t /= sum); // unity gain at DC for every phase
+                taps
+            })
+            .collect()
+    });
+}
+
 /// Envelopes, LFOs and tick targets are re-evaluated about every millisecond.
 fn control_block(rate: u32) -> u32 {
     (rate / 1000).clamp(1, 64)
@@ -69,6 +100,7 @@ pub struct Voice {
     /// Jump straight to the targets on the first control update instead of smoothing from zero.
     snap: bool,
     nna: Nna,
+    interp: Interpolation,
     /// An effect command was applied on the current line; its slides and fades start on tick 1.
     fresh_fx: bool,
 }
@@ -160,6 +192,7 @@ impl Voice {
             ctr: 0,
             snap: true,
             nna: inst.nna,
+            interp: inst.interpolation,
             fresh_fx: false,
         }
     }
@@ -355,6 +388,41 @@ impl Voice {
         self.data.get(i * self.channels + ch.min(self.channels - 1)).copied().unwrap_or(0.0)
     }
 
+    /// Like `frame` but clamps the index into the sample (for the neighbours interpolation looks at).
+    #[inline]
+    fn at(&self, i: isize, ch: usize) -> f32 {
+        self.frame(i.clamp(0, self.frames as isize - 1) as usize, ch)
+    }
+
+    /// Sample value at fractional position `i + frac` on channel `ch`.
+    #[inline]
+    fn sample_at(&self, i: usize, frac: f32, ch: usize) -> f32 {
+        let i = i as isize;
+        match self.interp {
+            Interpolation::Linear => self.at(i, ch) * (1.0 - frac) + self.at(i + 1, ch) * frac,
+            Interpolation::Cubic => {
+                let (p0, p1, p2, p3) =
+                    (self.at(i - 1, ch), self.at(i, ch), self.at(i + 1, ch), self.at(i + 2, ch));
+                let c1 = 0.5 * (p2 - p0);
+                let c2 = p0 - 2.5 * p1 + 2.0 * p2 - 0.5 * p3;
+                let c3 = 0.5 * (p3 - p0) + 1.5 * (p1 - p2);
+                ((c3 * frac + c2) * frac + c1) * frac + p1
+            }
+            Interpolation::Sinc => match SINC_TABLE.get() {
+                Some(table) => {
+                    // Interpolate between the two nearest tabulated phases so the table's resolution
+                    // does not become a timing error of its own.
+                    let pos = frac * SINC_PHASES as f32;
+                    let p0 = (pos as usize).min(SINC_PHASES - 1);
+                    let w = pos - p0 as f32;
+                    let (a, b) = (&table[p0], &table[p0 + 1]);
+                    (0..8).map(|k| self.at(i + k as isize - 3, ch) * (a[k] * (1.0 - w) + b[k] * w)).sum()
+                }
+                None => self.at(i, ch) * (1.0 - frac) + self.at(i + 1, ch) * frac,
+            },
+        }
+    }
+
     /// Add this voice into interleaved stereo `buf`; returns the peak it contributed.
     pub fn mix(&mut self, buf: &mut [f32], engine_rate: u32, track_vol: f32, track_pan: f32) -> f32 {
         let k = 1.0 - (-1.0 / (engine_rate as f32 * SMOOTH_SECONDS)).exp();
@@ -389,10 +457,8 @@ impl Voice {
             }
             let i = self.pos as usize;
             let frac = (self.pos - i as f64) as f32;
-            let j = (i + 1).min(self.frames - 1);
-            let l = self.frame(i, 0) * (1.0 - frac) + self.frame(j, 0) * frac;
-            let r =
-                if self.channels > 1 { self.frame(i, 1) * (1.0 - frac) + self.frame(j, 1) * frac } else { l };
+            let l = self.sample_at(i, frac, 0);
+            let r = if self.channels > 1 { self.sample_at(i, frac, 1) } else { l };
             let (l, r) = if self.filter.mode != FilterMode::Off {
                 (
                     self.filter_state[0].process(&self.filter_coeffs, l),

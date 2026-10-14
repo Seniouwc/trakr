@@ -330,6 +330,23 @@ impl Sample {
     }
 }
 
+/// How samples are read between their stored frames when played at another pitch.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Interpolation {
+    /// Straight line between neighbours: cheapest, dull and slightly noisy on big pitch shifts.
+    Linear,
+    /// 4-point Hermite spline: smooth and cheap. The default.
+    Cubic,
+    /// 8-point windowed sinc: the cleanest, a little more CPU.
+    Sinc,
+}
+
+impl Default for Interpolation {
+    fn default() -> Self {
+        Interpolation::Cubic
+    }
+}
+
 /// What happens to a still-sounding note when a new note starts in the same column.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Nna {
@@ -393,6 +410,8 @@ pub struct Instrument {
     pub cutoff_env: Arc<Envelope>,
     #[serde(default)]
     pub nna: Nna,
+    #[serde(default)]
+    pub interpolation: Interpolation,
 }
 
 impl Instrument {
@@ -407,6 +426,7 @@ impl Instrument {
             filter: InstrumentFilter::default(),
             cutoff_env: Arc::default(),
             nna: Nna::Cut,
+            interpolation: Interpolation::Cubic,
         }
     }
 

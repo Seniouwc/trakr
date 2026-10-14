@@ -19,7 +19,7 @@ An open source tracker DAW written in Rust, with a native window (egui) and a te
 - Render the song to a sample or a WAV file; forward/reverse/ping-pong loops
 - Delay column and timing effects (sample offset, backwards, cut, delay, retrigger)
 - Pitch and volume effects: slides, glide, vibrato, tremolo, arpeggio, volume slide, fade in/out (`0I`/`0O`), plus Block > Fade in/out that ramps the volume column
-- Instrument volume, pan, pitch and cutoff envelopes with a hold point, key and velocity zones, NNA modes
+- Instrument volume, pan, pitch and cutoff envelopes with a hold point, key and velocity zones, NNA modes, linear/cubic/sinc interpolation
 - Group and send tracks with nested routing and pre/post-fader feeds
 - A synthesized showcase song opens by default so there is something to play and edit straight away
 - MIDI keyboard input (play and record notes, CC volume/pan, transport)

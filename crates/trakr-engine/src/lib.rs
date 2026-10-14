@@ -168,6 +168,7 @@ impl EngineHandle {
 }
 
 pub fn create(sample_rate: u32) -> (Engine, EngineHandle) {
+    voice::init_tables();
     let (tx, rx) = rtrb::RingBuffer::new(QUEUE_CAP);
     let (gtx, grx) = rtrb::RingBuffer::new(QUEUE_CAP);
     let pos = Arc::new(SharedPos::default());
@@ -1823,5 +1824,35 @@ mod device_tests {
             }
         }
         true
+    }
+
+    // ---- interpolation quality ----
+
+    #[test]
+    fn better_interpolation_modes_track_a_pitched_sine_more_closely() {
+        use trakr_core::Interpolation::*;
+        let f0 = 8000.0f32;
+        let semis = 3.0f32;
+        let ratio = 2f32.powf(semis / 12.0);
+        let rms_error = |mode| {
+            let data: Vec<f32> = (0..20_000)
+                .map(|i| (i as f32 / RATE as f32 * f0 * std::f32::consts::TAU).sin() * 0.5)
+                .collect();
+            let mut song = song_with(data);
+            song.instruments[0].interpolation = mode;
+            Arc::make_mut(&mut song.patterns[0]).line_mut(0, 0).notes[0].note = 48 + semis as u8;
+            let out = render(song, 6000);
+            let mut sum = 0.0f32;
+            for (i, o) in out.iter().enumerate().take(5000).skip(200) {
+                let ideal = (i as f32 / RATE as f32 * f0 * ratio * std::f32::consts::TAU).sin() * 0.5;
+                sum += (o - ideal).powi(2);
+            }
+            (sum / 4800.0).sqrt()
+        };
+        let (lin, cub, sinc) = (rms_error(Linear), rms_error(Cubic), rms_error(Sinc));
+        // An 8 kHz tone pitched up 3 semitones is where cheap interpolation falls apart.
+        assert!(cub < lin * 0.5, "cubic {cub} should clearly beat linear {lin}");
+        assert!(sinc < cub * 0.2, "sinc {sinc} should be far better than cubic {cub}");
+        assert!(sinc < 0.002, "sinc error {sinc}");
     }
 }
