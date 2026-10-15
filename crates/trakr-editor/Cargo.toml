@@ -1,0 +1,21 @@
+[package]
+name = "trakr-editor"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+trakr-core = { workspace = true }
+trakr-engine = { workspace = true }
+trakr-format = { workspace = true }
+trakr-xrns = { workspace = true }
+trakr-sample = { workspace = true }
+trakr-encode = { workspace = true }
+trakr-midi = { workspace = true }
+trakr-mod = { workspace = true }
+trakr-script = { workspace = true }
+trakr-osc = { workspace = true }
+anyhow = "1.0.104"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"

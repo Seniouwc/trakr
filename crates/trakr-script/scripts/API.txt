@@ -1,0 +1,74 @@
+trakr scripting (Lua 5.4)
+
+A script edits a copy of the song. When it finishes without an error the whole run becomes one
+undo step; on error nothing changes and the message is shown. Numbers for patterns, tracks, lines
+and columns start at 0, like the editor shows them. No files, no OS access, no loading other code;
+runs are limited in time and memory. The usual string, table, math, utf8 and coroutine libraries work.
+
+Context (read-only)
+  trakr.ctx.pattern, .seq_pos, .track, .line, .col, .instrument, .octave
+  trakr.ctx.selection  nil, or { track0, track1, line0, line1 } (inclusive)
+
+Song
+  trakr.song()                      table: name, author, bpm, lpb, tpl, tracks, patterns,
+                                    instruments, sequence (list of pattern numbers)
+  trakr.set_song{ bpm=, lpb=, tpl=, edo=, name=, author= }   any subset (edo = steps per octave, 1..240)
+  trakr.track_name(t)  trakr.instrument_name(i)        nil if it does not exist
+
+Patterns
+  trakr.pattern_lines(p)            number of lines (nil if no such pattern)
+  trakr.set_pattern_lines(p, n)     1..512
+  trakr.add_pattern([lines])        returns the new pattern number
+  trakr.append_to_sequence(p)
+  trakr.clear_pattern(p)
+
+Cells
+  trakr.get_note(p, t, l, c)        { note, name, instrument, volume, panning, delay, fx }
+                                    also micro (1/128 semitone) and step (step number in the song's tuning);
+                                    note: 0..119 (48 = C-4), 120 = OFF, 121 = empty;
+                                    instrument/volume/panning/fx are nil when empty
+  trakr.set_note(p, t, l, c, { note="C-4" or 48, instrument=1, volume=64, panning=64,
+                               delay=0, fx="0A40", micro=0, step=102 })   step sets note+micro from the tuning
+                                    fields you leave out stay as they are; false clears one
+  trakr.clear_note(p, t, l, c)
+  trakr.get_effect(p, t, l, c)      "0A40" or nil          (effect columns)
+  trakr.set_effect(p, t, l, c, "0A40")   false clears
+
+Instruments and tracks
+  trakr.instrument(i)               { name, volume, samples, phrases, lfos, nna, midi_channel } or nil
+  trakr.set_instrument(i, { name=, volume=, nna="cut"|"note-off"|"continue" })
+  trakr.track(t)                    { name, kind, volume, panning, mute, solo, devices } or nil
+                                    kind: "track" | "group" | "send" | "master";
+                                    volume 1 = 0 dB; mute: "active" | "muted" | "off"
+  trakr.set_track(t, { name=, volume=, panning=, mute=, solo= })
+
+Devices (0-based device and parameter numbers)
+  trakr.devices(t)                  list of { id, name, bypass, params = { [name] = value } }
+  trakr.add_device(t, "native.filter")   returns the new device number
+  trakr.remove_device(t, d)
+  trakr.set_device_param(t, d, p, value) value in the parameter's own range
+  trakr.set_device_bypass(t, d, true)
+
+Samples (0-based instrument and sample numbers; values are -1..1, channels interleaved)
+  trakr.sample(i, s)                { name, frames, channels, rate, base_note, loop_start, loop_end, peak }
+  trakr.sample_get(i, s, from, count)   list of values for `count` frames starting at frame `from`
+  trakr.sample_set(i, s, from, list)    overwrite values starting at frame `from` (stops at the end)
+  trakr.sample_create(i, name, rate, channels, list)   adds a sample to instrument i, returns its number
+
+Automation and order
+  trakr.automate(p, t, "volume" | "pan" | "tempo" | "lpb" | "device:D:P", { {line, value}, ... }, [curve])
+                                    replaces that lane in pattern p; value 0..1; empty list removes it;
+                                    curve: "linear" (default), "step", "smooth", "ease_in", "ease_out";
+                                    tempo maps 0..1 to 32..255 BPM, lpb to 1..16
+  trakr.set_sequence{ 0, 1, 1, 2 }  replace the play order
+
+Helpers
+  trakr.note_name(n)  trakr.parse_note("C-4")
+  trakr.status("text")              message in the status bar
+  trakr.play()  trakr.stop()        requested after the script ends
+  print(...)                        goes to the console output
+
+Event hooks
+  A file named load.lua, save.lua, play.lua or stop.lua in the scripts/hooks folder runs on that event
+  (after a song opens or is created, before it is saved, when playback starts or stops).
+  trakr.ctx.event holds the event name. A failing hook shows its error and never blocks the action.

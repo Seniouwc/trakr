@@ -1,0 +1,51 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/trakr-core",
+    "crates/trakr-engine",
+    "crates/trakr-format",
+    "crates/trakr-xrns",
+    "crates/trakr-sample",
+    "crates/trakr-encode",
+    "crates/trakr-midi",
+    "crates/trakr-mod",
+    "crates/trakr-script",
+    "crates/trakr-osc",
+    "crates/trakr-clap",
+    "crates/trakr-test-plugin",
+    "crates/trakr-editor",
+    "crates/trakr-gui",
+    "crates/trakr",
+]
+
+[workspace.package]
+version = "0.0.1"
+edition = "2021"
+license = "MIT"
+rust-version = "1.87"
+
+[workspace.dependencies]
+trakr-core = { path = "crates/trakr-core" }
+trakr-engine = { path = "crates/trakr-engine", default-features = false }
+trakr-format = { path = "crates/trakr-format" }
+trakr-xrns = { path = "crates/trakr-xrns" }
+trakr-sample = { path = "crates/trakr-sample" }
+trakr-encode = { path = "crates/trakr-encode" }
+trakr-midi = { path = "crates/trakr-midi" }
+trakr-mod = { path = "crates/trakr-mod" }
+trakr-clap = { path = "crates/trakr-clap" }
+trakr-osc = { path = "crates/trakr-osc" }
+trakr-script = { path = "crates/trakr-script" }
+trakr-editor = { path = "crates/trakr-editor" }
+trakr-gui = { path = "crates/trakr-gui" }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+
+[profile.dev]
+opt-level = 1   # keeps the audio callback usable in debug builds
+
+# fdk-aac's C++ does not compile at -O1 (always_inline of indirect calls).
+[profile.dev.package.fdk-aac-sys]
+opt-level = 0
