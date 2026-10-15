@@ -210,6 +210,7 @@ impl Editor {
                         instrument: inst,
                         note: note.clamp(0, 119) as u8,
                         volume: vel,
+                        micro: 0,
                     });
                     true
                 }

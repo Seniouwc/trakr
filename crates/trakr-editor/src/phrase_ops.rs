@@ -214,18 +214,21 @@ impl Editor {
         let PhraseCursor { col, sub, .. } = self.phrase_cursor;
         let (notes, _) = self.phrase_cols();
         if col < notes && sub == 0 {
-            let note = if c == '`' {
-                Some(NOTE_OFF)
+            let pitch = if c == '`' {
+                Some((NOTE_OFF, 0))
             } else {
-                piano_key(c).map(|s| (self.octave as u32 * 12 + s as u32).min(119) as u8)
+                piano_key(c).and_then(|s| self.key_pitch(s as u32))
             };
-            if let Some(note) = note {
+            if let Some((note, micro)) = pitch {
                 if note < NOTE_OFF {
                     let (track, instrument) = (self.cursor.track, self.instrument);
-                    self.send(Command::NoteOn { track, instrument, note, volume: 1.0 });
+                    self.send(Command::NoteOn { track, instrument, note, volume: 1.0, micro });
                 }
                 if self.edit_mode {
-                    self.phrase_edit_line(|l| l.notes[col].note = note);
+                    self.phrase_edit_line(|l| {
+                        l.notes[col].note = note;
+                        l.notes[col].micro = micro;
+                    });
                     self.phrase_step_down();
                 }
             }

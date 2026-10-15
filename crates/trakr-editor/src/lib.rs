@@ -38,7 +38,6 @@ pub type RecorderFactory = Box<dyn FnMut(&AudioSettings) -> anyhow::Result<Box<d
 
 use std::path::PathBuf;
 use std::sync::Arc;
-use trakr_core::note::note_name;
 use trakr_core::{Instrument, Line, Pattern, Song, Track, EMPTY, NOTE_OFF};
 use trakr_engine::{Command, EngineHandle};
 
@@ -75,8 +74,19 @@ pub fn note_layout(hide: [bool; 3]) -> (usize, [(usize, usize); NOTE_SUBS]) {
 
 /// Like [`cell_text`], leaving out the hidden sub-columns of note columns.
 pub fn cell_text_hidden(line: Option<&Line>, c: usize, notes: usize, hide: [bool; 3]) -> String {
+    cell_text_hidden_tuned(line, c, notes, hide, 12)
+}
+
+/// [`cell_text_hidden`] for a song with `edo` steps per octave (notes show as step numbers unless 12).
+pub fn cell_text_hidden_tuned(
+    line: Option<&Line>,
+    c: usize,
+    notes: usize,
+    hide: [bool; 3],
+    edo: u16,
+) -> String {
     if c >= notes || hide == [false; 3] {
-        return cell_text(line, c, notes);
+        return cell_text_tuned(line, c, notes, edo);
     }
     fn hex2(v: u8, empty: u8) -> String {
         if v == empty {
@@ -86,7 +96,7 @@ pub fn cell_text_hidden(line: Option<&Line>, c: usize, notes: usize, hide: [bool
         }
     }
     let n = line.map(|l| l.notes[c]).unwrap_or_default();
-    let mut s = format!("{} {}", note_name(n.note), hex2(n.instrument, EMPTY));
+    let mut s = format!("{} {}", trakr_core::tuned_name(n.note, n.micro, edo), hex2(n.instrument, EMPTY));
     let fields = [column_text(n.volume, EMPTY), column_text(n.panning, EMPTY), hex2(n.delay, 0)];
     for (f, hidden) in fields.into_iter().zip(hide) {
         if !hidden {
@@ -101,6 +111,11 @@ use trakr_core::effects::column_text;
 
 /// Text for one column of a line: a note column ("C-4 01 40 80 00") or an effect column ("0A40").
 pub fn cell_text(line: Option<&Line>, c: usize, notes: usize) -> String {
+    cell_text_tuned(line, c, notes, 12)
+}
+
+/// [`cell_text`] for a song with `edo` steps per octave.
+pub fn cell_text_tuned(line: Option<&Line>, c: usize, notes: usize, edo: u16) -> String {
     fn hex2(v: u8, empty: u8) -> String {
         if v == empty {
             "..".into()
@@ -112,7 +127,7 @@ pub fn cell_text(line: Option<&Line>, c: usize, notes: usize) -> String {
         let n = line.map(|l| l.notes[c]).unwrap_or_default();
         format!(
             "{} {} {} {} {}",
-            note_name(n.note),
+            trakr_core::tuned_name(n.note, n.micro, edo),
             hex2(n.instrument, EMPTY),
             column_text(n.volume, EMPTY),
             column_text(n.panning, EMPTY),
@@ -1006,25 +1021,54 @@ impl Editor {
         }
     }
 
+    /// The (note, micro) a piano key `offset` steps above the octave base plays. Ordinary tuning: the
+    /// semitone `octave * 12 + offset`. Other tunings: consecutive steps of the tuning, so every key is
+    /// one step and F1/F2 move by 12 steps (or one octave when the tuning has fewer than 12).
+    pub(crate) fn key_pitch(&self, offset: u32) -> Option<(u8, i8)> {
+        let edo = self.song.edo;
+        if edo == 12 {
+            return Some(((self.octave as u32 * 12 + offset).min(119) as u8, 0));
+        }
+        let block = if edo >= 12 { 12 } else { edo as u32 };
+        trakr_core::step_to_note((self.octave as u32 * block + offset) as i32, edo)
+    }
+
+    /// Set the number of equal steps per octave (1..=240; 12 is ordinary tuning).
+    pub fn set_edo(&mut self, edo: u16) {
+        let edo = edo.clamp(1, trakr_core::MAX_EDO);
+        if edo == self.song.edo {
+            return;
+        }
+        self.checkpoint();
+        self.song_mut().edo = edo;
+        self.status = if edo == 12 {
+            "tuning: 12 notes per octave".into()
+        } else {
+            format!("tuning: {edo} steps per octave; note cells show step numbers, piano keys play consecutive steps")
+        };
+        self.sync();
+    }
+
     fn type_char(&mut self, c: char) {
         let c = c.to_ascii_lowercase();
         let Cursor { track, col, sub, .. } = self.cursor;
         let (notes, _) = self.cols(track);
         if col < notes && sub == 0 {
-            let note = if c == '`' {
-                Some(NOTE_OFF)
+            let pitch = if c == '`' {
+                Some((NOTE_OFF, 0))
             } else {
-                piano_key(c).map(|s| (self.octave as u32 * 12 + s as u32).min(119) as u8)
+                piano_key(c).and_then(|s| self.key_pitch(s as u32))
             };
-            if let Some(note) = note {
+            if let Some((note, micro)) = pitch {
                 let inst = self.instrument;
                 if note < NOTE_OFF {
-                    self.send(Command::NoteOn { track, instrument: inst, note, volume: 1.0 });
+                    self.send(Command::NoteOn { track, instrument: inst, note, volume: 1.0, micro });
                 }
                 if self.edit_mode {
                     self.edit(|l| {
                         let n = &mut l.notes[col];
                         n.note = note;
+                        n.micro = micro;
                         if note < NOTE_OFF {
                             n.instrument = inst;
                         }

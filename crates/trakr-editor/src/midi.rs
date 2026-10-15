@@ -124,15 +124,27 @@ impl Editor {
     pub fn handle_midi(&mut self, e: MidiEvent) {
         match e {
             MidiEvent::NoteOn { note, velocity, .. } => {
-                let note = note.saturating_sub(12).min(119);
+                // other tunings: a MIDI key is one step of the tuning, counted from C-0 at MIDI 12
+                let (note, micro) = if self.song.edo == 12 {
+                    (note.saturating_sub(12).min(119), 0)
+                } else {
+                    trakr_core::step_to_note(note as i32 - 12, self.song.edo).unwrap_or((119, 0))
+                };
                 let (track, instrument) = (self.cursor.track, self.instrument);
-                self.send(Command::NoteOn { track, instrument, note, volume: velocity as f32 / 127.0 });
+                self.send(Command::NoteOn {
+                    track,
+                    instrument,
+                    note,
+                    volume: velocity as f32 / 127.0,
+                    micro,
+                });
                 let col = self.cursor.col;
                 if self.edit_mode && col < self.cols(track).0 {
                     let vol = ((velocity as u16 * 0x80) / 127) as u8;
                     self.edit(|l| {
                         let n = &mut l.notes[col];
                         n.note = note;
+                        n.micro = micro;
                         n.instrument = instrument;
                         n.volume = vol;
                     });

@@ -23,7 +23,10 @@ pub use instrument::{
     FilterMode, InstLfo, InstMod, Instrument, InstrumentFilter, Interpolation, LfoShape, LfoTarget, LoopMode,
     MidiOut, ModSource, Nna, Sample, MAX_INST_LFOS, MAX_INST_MODS, MAX_MACROS, MAX_STEPS,
 };
-pub use note::{EffectCmd, NoteColumn, EMPTY, NOTE_EMPTY, NOTE_OFF};
+pub use note::{
+    note_to_step, step_to_note, tuned_name, EffectCmd, NoteColumn, DEFAULT_EDO, EMPTY, MAX_EDO, NOTE_EMPTY,
+    NOTE_OFF,
+};
 pub use pattern::{Line, Pattern, PatternTrack, MAX_EFFECT_COLUMNS, MAX_LINES, MAX_NOTE_COLUMNS};
 pub use phrase::{Phrase, PhraseMode};
 pub use plugin::{

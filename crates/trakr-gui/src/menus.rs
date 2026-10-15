@@ -308,6 +308,18 @@ impl GuiApp {
                 if changed {
                     ed.set_tempo(bpm, lpb as u8, tpl as u8);
                 }
+                let mut edo = ed.song.edo as u32;
+                ui.label("EDO");
+                if ui
+                    .add(egui::DragValue::new(&mut edo).range(1..=trakr_core::MAX_EDO as u32))
+                    .on_hover_text(
+                        "Steps per octave. 12 = ordinary notes; other values (19, 31, 51...) make note cells step \
+                         numbers and piano keys consecutive steps",
+                    )
+                    .changed()
+                {
+                    ed.set_edo(edo as u16);
+                }
                 ui.separator();
                 let mut oct = ed.octave as u32;
                 ui.label("Octave");

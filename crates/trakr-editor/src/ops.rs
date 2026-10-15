@@ -406,6 +406,7 @@ impl Editor {
             return;
         }
         let b = self.target_block();
+        let edo = self.song.edo;
         let rows: Vec<Vec<Cell>> = self
             .read_block(b)
             .into_iter()
@@ -413,7 +414,17 @@ impl Editor {
                 r.into_iter()
                     .map(|c| match c {
                         Cell::Note(mut n) if n.note < NOTE_OFF => {
-                            n.note = (n.note as i32 + delta).clamp(0, NOTE_OFF as i32 - 1) as u8;
+                            if edo == 12 {
+                                n.note = (n.note as i32 + delta).clamp(0, NOTE_OFF as i32 - 1) as u8;
+                            } else {
+                                // other tunings: one step, or one octave for the +-12 commands
+                                let steps = if delta.abs() == 12 { delta / 12 * edo as i32 } else { delta };
+                                let step = trakr_core::note_to_step(n.note, n.micro, edo) + steps;
+                                if let Some((note, micro)) = trakr_core::step_to_note(step, edo) {
+                                    n.note = note;
+                                    n.micro = micro;
+                                }
+                            }
                             Cell::Note(n)
                         }
                         other => other,

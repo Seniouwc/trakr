@@ -45,6 +45,14 @@ pub struct Song {
     /// line. Empty = straight timing.
     #[serde(default)]
     pub groove: Vec<f32>,
+    /// Equal divisions of the octave used for note entry and display (12 = ordinary notes). In other
+    /// tunings a note cell is a step number; playback uses `note` + `micro`.
+    #[serde(default = "default_edo")]
+    pub edo: u16,
+}
+
+fn default_edo() -> u16 {
+    crate::note::DEFAULT_EDO
 }
 
 impl Default for Song {
@@ -69,6 +77,7 @@ impl Default for Song {
             loop_range: None,
             slot_meta: Vec::new(),
             groove: Vec::new(),
+            edo: default_edo(),
         }
     }
 }

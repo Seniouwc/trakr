@@ -905,6 +905,9 @@ fn fuzz_editor(seed: u64) {
             9 => {
                 what = "pattern lines".into();
                 app.set_pattern_lines(rng.below(600) as u16);
+                if rng.below(4) == 0 {
+                    app.set_edo([12u16, 5, 19, 31, 51, 240][rng.below(6)]);
+                }
             }
             10 => {
                 what = "devices".into();
@@ -2648,4 +2651,32 @@ fn cell_insert_and_delete_move_one_column_only() {
     assert_eq!(p.line(0, 1).unwrap().notes[0].note, 40);
     assert_eq!(p.line(0, 2).unwrap().notes[0].note, 41);
     assert_eq!(p.line(0, 1).unwrap().notes[1].note, 50);
+}
+
+#[test]
+fn microtonal_entry_display_and_transpose() {
+    let mut e = ed();
+    e.set_edo(51);
+    assert_eq!(e.song.edo, 51);
+    e.edit_mode = true;
+    e.octave = 4; // base step 48
+    e.set_cursor(0, 0, 0, 0);
+    e.on_key(key('s')); // second key = step 49
+    let n = e.song.patterns[0].line(0, 0).unwrap().notes[0];
+    assert_eq!(trakr_core::note_to_step(n.note, n.micro, 51), 49);
+    assert_ne!(n.micro, 0, "49/51 octave is between semitones");
+    let text = crate::cell_text_tuned(e.song.patterns[0].line(0, 0), 0, 1, 51);
+    assert!(text.starts_with("049 "), "{text}");
+    // transpose: one step, then an octave (51 steps)
+    e.set_cursor(0, 0, 0, 0);
+    e.do_action(Action::TransposeUp);
+    let n = e.song.patterns[0].line(0, 0).unwrap().notes[0];
+    assert_eq!(trakr_core::note_to_step(n.note, n.micro, 51), 50);
+    e.do_action(Action::TransposeOctaveUp);
+    let n = e.song.patterns[0].line(0, 0).unwrap().notes[0];
+    assert_eq!(trakr_core::note_to_step(n.note, n.micro, 51), 101);
+    // back to 12 notes: names return
+    e.set_edo(12);
+    let back = crate::cell_text(e.song.patterns[0].line(0, 0), 0, 1);
+    assert!(!back.starts_with(|c: char| c.is_ascii_digit()), "{back}");
 }

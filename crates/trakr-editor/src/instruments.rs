@@ -288,7 +288,7 @@ impl Editor {
     /// Play the selected instrument at `note` without writing to the pattern.
     pub fn preview_note(&mut self, note: u8) {
         let (track, instrument) = (self.cursor.track, self.instrument);
-        self.send(Command::NoteOn { track, instrument, note, volume: 1.0 });
+        self.send(Command::NoteOn { track, instrument, note, volume: 1.0, micro: 0 });
     }
 }
 

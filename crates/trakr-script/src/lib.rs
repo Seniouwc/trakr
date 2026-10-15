@@ -314,6 +314,7 @@ fn install_api(lua: &Lua, state: &Shared, ctx: &ScriptCtx) -> mlua::Result<()> {
                 t.set("bpm", s.song.bpm)?;
                 t.set("lpb", s.song.lpb)?;
                 t.set("tpl", s.song.tpl)?;
+                t.set("edo", s.song.edo)?;
                 t.set("tracks", s.song.tracks.len())?;
                 t.set("patterns", s.song.patterns.len())?;
                 t.set("instruments", s.song.instruments.len())?;
@@ -353,6 +354,12 @@ fn install_api(lua: &Lua, state: &Shared, ctx: &ScriptCtx) -> mlua::Result<()> {
                         return Err(err(format!("tpl {v} is out of range 1..48")));
                     }
                     s.song.tpl = v as u8;
+                }
+                if let Some(v) = fields.get::<Option<i64>>("edo")? {
+                    if !(1..=trakr_core::MAX_EDO as i64).contains(&v) {
+                        return Err(err(format!("edo {v} is out of range 1..{}", trakr_core::MAX_EDO)));
+                    }
+                    s.song.edo = v as u16;
                 }
                 s.changed = true;
                 Ok(())
@@ -475,6 +482,10 @@ fn install_api(lua: &Lua, state: &Shared, ctx: &ScriptCtx) -> mlua::Result<()> {
                     out.set("panning", n.panning)?;
                 }
                 out.set("delay", n.delay)?;
+                out.set("micro", n.micro)?;
+                if n.note < trakr_core::NOTE_OFF {
+                    out.set("step", trakr_core::note_to_step(n.note, n.micro, s.song.edo))?;
+                }
                 if let Some(fx) = fx_text(&n.effect) {
                     out.set("fx", fx)?;
                 }
@@ -499,6 +510,24 @@ fn install_api(lua: &Lua, state: &Shared, ctx: &ScriptCtx) -> mlua::Result<()> {
                     Value::Nil => {}
                     Value::Boolean(false) => n.note = NOTE_EMPTY,
                     v => n.note = note_value(&v)?,
+                }
+                match get("micro")? {
+                    Value::Nil => {}
+                    Value::Boolean(false) => n.micro = 0,
+                    Value::Integer(i) if (-128..=127).contains(&i) => n.micro = i as i8,
+                    _ => return Err(err("micro must be an integer -128..127 (1/128 semitone)")),
+                }
+                // `step` picks the pitch by step number of the song's tuning (counted from C-0)
+                match get("step")? {
+                    Value::Nil => {}
+                    Value::Integer(i) => match trakr_core::step_to_note(i as i32, s.song.edo) {
+                        Some((note, micro)) => {
+                            n.note = note;
+                            n.micro = micro;
+                        }
+                        None => return Err(err(format!("step {i} is outside the note range"))),
+                    },
+                    _ => return Err(err("step must be an integer")),
                 }
                 for (key, slot, max) in [
                     ("instrument", &mut n.instrument, 254),
@@ -1354,5 +1383,27 @@ mod sample_tests {
         assert_eq!(out.status.as_deref(), Some("load"));
         let none = run_ok(&song(), "trakr.status(tostring(trakr.ctx.event))");
         assert_eq!(none.status.as_deref(), Some("nil"));
+    }
+
+    #[test]
+    fn microtonal_notes_by_step_or_micro() {
+        let out = run_ok(
+            &song(),
+            "trakr.set_song{ edo = 51 }
+             trakr.set_note(0, 0, 0, 0, { step = 100, instrument = 0 })
+             trakr.set_note(0, 0, 1, 0, { note = 'C-4', micro = 30 })
+             local a = trakr.get_note(0, 0, 0, 0)
+             local b = trakr.get_note(0, 0, 1, 0)
+             trakr.status(a.step .. ' ' .. b.micro .. ' ' .. trakr.song().edo)",
+        );
+        assert_eq!(out.status.as_deref(), Some("100 30 51"));
+        let s = song();
+        for bad in [
+            "trakr.set_song{ edo = 0 }",
+            "trakr.set_note(0,0,0,0,{ micro = 200 })",
+            "trakr.set_note(0,0,0,0,{ step = 99999 })",
+        ] {
+            assert!(run(&s, &ScriptCtx::default(), bad).is_err(), "{bad} must fail");
+        }
     }
 }

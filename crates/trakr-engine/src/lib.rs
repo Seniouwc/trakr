@@ -226,6 +226,8 @@ pub enum Command {
         instrument: u8,
         note: u8,
         volume: f32,
+        /// Extra pitch in 1/128 semitone (microtonal tunings).
+        micro: i8,
     },
     NoteOff {
         track: usize,
@@ -1323,7 +1325,7 @@ impl Engine {
                 Command::PitchBend(semis) => {
                     self.bend = if semis.is_finite() { semis.clamp(-24.0, 24.0) } else { 0.0 };
                 }
-                Command::NoteOn { track, instrument, note, volume } => {
+                Command::NoteOn { track, instrument, note, volume, micro } => {
                     if let Some((p, note)) = self.phrase_trigger(track, instrument, note) {
                         self.start_phrase(track, LIVE_COL, instrument, p, note, volume, 0.0);
                     } else {
@@ -1334,7 +1336,7 @@ impl Engine {
                             note,
                             volume,
                             0.0,
-                            TriggerOpts::default(),
+                            TriggerOpts { micro, ..Default::default() },
                         );
                     }
                 }
@@ -1771,18 +1773,13 @@ impl Engine {
                 let vol = if c.volume <= 0x80 { c.volume as f32 / 128.0 } else { 1.0 } * run_vol;
                 let pan = if c.panning <= 0x80 { c.panning as f32 / 64.0 - 1.0 } else { run_pan };
                 let at = c.delay as f64 / 256.0 * fpl;
-                let kind = EventKind::NoteOn {
-                    inst,
-                    note,
-                    vol,
-                    pan,
-                    opts: TriggerOpts::default(),
-                    fx: [EffectCmd::default(); FX_SLOTS],
-                };
+                let opts = TriggerOpts { micro: c.micro, ..Default::default() };
+                let kind =
+                    EventKind::NoteOn { inst, note, vol, pan, opts, fx: [EffectCmd::default(); FX_SLOTS] };
                 if at > 0.0 {
                     self.schedule(at, track, vcol, kind);
                 } else {
-                    self.note_on(track, vcol, inst, note, vol, pan, TriggerOpts::default());
+                    self.note_on(track, vcol, inst, note, vol, pan, opts);
                 }
             } else {
                 for v in self.voices.iter_mut().filter(|v| v.track == track && v.column == vcol) {
@@ -1913,12 +1910,12 @@ impl Engine {
                             .iter_mut()
                             .find(|v| v.track == ti && v.column == ci && !v.is_releasing())
                         {
-                            let target = v.semis_for_note(col.note);
+                            let target = v.semis_for_note(col.note, col.micro);
                             v.glide_to(target, speed);
                             continue;
                         }
                     }
-                    let opts = TriggerOpts { offset, backwards: col_backwards };
+                    let opts = TriggerOpts { offset, backwards: col_backwards, micro: col.micro };
                     let at = col.delay as f64 / 256.0 * fpl + delay_ticks as f64 * fpt;
                     let mut fx = [EffectCmd::default(); FX_SLOTS];
                     let cmd_fx = cmds.iter().flatten().filter_map(|c| match c {
@@ -2815,7 +2812,7 @@ mod sequencer_tests {
         let (mut engine, mut h) = create(RATE);
         h.send(Command::SetSong(Arc::new(song)));
         for track in 0..8 {
-            h.send(Command::NoteOn { track, instrument: 0, note: 48, volume: 1.0 });
+            h.send(Command::NoteOn { track, instrument: 0, note: 48, volume: 1.0, micro: 0 });
         }
         let mut out = vec![0.0; 2 * 400];
         engine.render(&mut out); // the 50-frame samples end inside this block
@@ -2827,7 +2824,7 @@ mod sequencer_tests {
         let long = song_with(vec![1.0; 5000], LoopMode::Off);
         h.send(Command::SetSong(Arc::new(long)));
         for track in 0..8 {
-            h.send(Command::NoteOn { track, instrument: 0, note: 48, volume: 1.0 });
+            h.send(Command::NoteOn { track, instrument: 0, note: 48, volume: 1.0, micro: 0 });
         }
         engine.render(&mut out);
         while h.garbage.pop().is_ok() {}
@@ -3943,6 +3940,40 @@ mod device_tests {
         assert!(cont[a] > 0.9 && cont[b] > 0.9, "continue keeps sounding: {} {}", cont[a], cont[b]);
     }
 
+    /// Frequency of the strongest zero-crossing rate over `a..b` of a mono signal.
+    fn zero_cross_hz(x: &[f32], a: usize, b: usize) -> f32 {
+        let n = (a + 1..b).filter(|&i| x[i - 1] < 0.0 && x[i] >= 0.0).count();
+        n as f32 * RATE as f32 / (b - a) as f32
+    }
+
+    #[test]
+    fn micro_offsets_detune_notes() {
+        // a 100 Hz-at-C-4 looped sine; microtonal steps shift it by 1/128 semitone per unit
+        let cycle: Vec<f32> = (0..441)
+            .map(|i| (i as f32 / 441.0 * std::f32::consts::TAU).sin())
+            .cycle()
+            .take(441 * 100)
+            .collect();
+        let play = |micro: i8, note: u8| {
+            let mut song = song_with(cycle.clone());
+            song.instruments[0].samples[0].loop_mode = LoopMode::Forward;
+            song.instruments[0].samples[0].loop_end = cycle.len();
+            let n = &mut Arc::make_mut(&mut song.patterns[0]).line_mut(0, 0).notes[0];
+            n.note = note;
+            n.micro = micro;
+            let out = render(song, 200_000);
+            zero_cross_hz(&out, 5_000, 195_000)
+        };
+        let base = play(0, 48);
+        assert!((base - 100.0).abs() < 2.0, "{base}");
+        // 64/128 = half a semitone up
+        let half = play(64, 48);
+        assert!((half / base - 2f32.powf(0.5 / 12.0)).abs() < 0.01, "{half} {base}");
+        // note 47 + micro 127 is just under note 48
+        let almost = play(127, 47);
+        assert!((almost / base - 1.0).abs() < 0.01, "{almost}");
+    }
+
     #[test]
     fn mute_groups_cut_other_instruments_only() {
         let probe = 44_100 + 4410;
@@ -4178,6 +4209,7 @@ mod device_tests {
                         n.instrument = rng.below(6) as u8;
                         n.volume = rng.below(256) as u8;
                         n.delay = rng.below(256) as u8;
+                        n.micro = rng.below(256) as u8 as i8;
                         n.effect = EffectCmd { id: **rng.pick(&FX_IDS), amount: rng.below(256) as u8 };
                     }
                     inst.phrases.push(Arc::new(p));
@@ -4362,6 +4394,7 @@ mod device_tests {
                             instrument: rng.below(5) as u8,
                             note: rng.below(130) as u8,
                             volume: 1.0,
+                            micro: rng.below(256) as u8 as i8,
                         });
                     }
                     _ => {}

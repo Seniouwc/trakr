@@ -1234,7 +1234,7 @@ mod tests {
             instrument: 0,
             device: Some(host.load(&p.path, &p.plugin_id, 1000).unwrap().0),
         });
-        h.send(Command::NoteOn { track: 0, instrument: 0, note: 57, volume: 1.0 });
+        h.send(Command::NoteOn { track: 0, instrument: 0, note: 57, volume: 1.0, micro: 0 });
         let mut buf = vec![0.0; 800];
         engine.render(&mut buf);
         assert!(peak(&buf[200..]) > 0.05, "a live note sounds");

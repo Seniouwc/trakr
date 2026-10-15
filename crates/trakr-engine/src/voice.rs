@@ -171,6 +171,8 @@ pub struct TriggerOpts {
     /// Start offset in 1/256 of the sample length.
     pub offset: u8,
     pub backwards: bool,
+    /// Extra pitch in 1/128 semitone (microtonal steps).
+    pub micro: i8,
 }
 
 fn nibbles(amount: u8) -> (f32, f32) {
@@ -212,7 +214,7 @@ impl Voice {
             dir: if reverse { -1.0 } else { 1.0 },
             sample_rate: s.sample_rate as f64,
             note_bias: bias,
-            semis: note as f32 + bias,
+            semis: note as f32 + bias + opts.micro as f32 / 128.0,
             glide: None,
             slide: 0.0,
             vib: (0.0, 0.0),
@@ -340,8 +342,8 @@ impl Voice {
     }
 
     /// Pitch (in semitones relative to native) that `note` would have on this voice's sample.
-    pub fn semis_for_note(&self, note: u8) -> f32 {
-        note as f32 + self.note_bias
+    pub fn semis_for_note(&self, note: u8, micro: i8) -> f32 {
+        note as f32 + self.note_bias + micro as f32 / 128.0
     }
 
     pub fn set_col_volume(&mut self, v: f32) {

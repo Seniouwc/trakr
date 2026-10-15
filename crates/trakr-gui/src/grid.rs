@@ -4,7 +4,7 @@
 use crate::GuiApp;
 use eframe::egui::{self, Align2, Color32, EventFilter, FontId, Pos2, Rect, Sense, Stroke, Vec2};
 use trakr_core::MuteState;
-use trakr_editor::{cell_text_hidden, note_layout, Action, Editor, FX_HL, FX_SUBS, NOTE_SUBS};
+use trakr_editor::{cell_text_hidden_tuned, note_layout, Action, Editor, FX_HL, FX_SUBS, NOTE_SUBS};
 
 const FX_COL_W: usize = 5;
 
@@ -256,7 +256,7 @@ impl GuiApp {
                         painter.text(
                             Pos2::new(x, y),
                             Align2::LEFT_TOP,
-                            cell_text_hidden(line, c, n, hide),
+                            cell_text_hidden_tuned(line, c, n, hide, ed.song.edo),
                             font.clone(),
                             text_color,
                         );

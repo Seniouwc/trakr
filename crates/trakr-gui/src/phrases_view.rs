@@ -4,7 +4,7 @@ use crate::GuiApp;
 use eframe::egui::{self, Align2, FontId, Pos2, Rect, Sense, Vec2};
 use trakr_core::note::note_name;
 use trakr_core::PhraseMode;
-use trakr_editor::{cell_text, FX_HL, FX_SUBS, NOTE_HL, NOTE_SUBS};
+use trakr_editor::{cell_text_tuned, FX_HL, FX_SUBS, NOTE_HL, NOTE_SUBS};
 
 const NOTE_COL_W: usize = 16;
 const FX_COL_W: usize = 5;
@@ -194,7 +194,7 @@ impl GuiApp {
             );
             let line = p.line(li as u16);
             for c in 0..nn + nf {
-                let text = cell_text(line, c, nn);
+                let text = cell_text_tuned(line, c, nn, self.editor.song.edo);
                 let x = col_x(c);
                 if li == cur.line as isize && c == cur.col {
                     let (a, b) = if c < nn {
