@@ -12,7 +12,7 @@ Context (read-only)
 Song
   trakr.song()                      table: name, author, bpm, lpb, tpl, tracks, patterns,
                                     instruments, sequence (list of pattern numbers)
-  trakr.set_song{ bpm=, lpb=, tpl=, name=, author= }   any subset
+  trakr.set_song{ bpm=, lpb=, tpl=, edo=, name=, author= }   any subset (edo = steps per octave, 1..240)
   trakr.track_name(t)  trakr.instrument_name(i)        nil if it does not exist
 
 Patterns
@@ -24,10 +24,11 @@ Patterns
 
 Cells
   trakr.get_note(p, t, l, c)        { note, name, instrument, volume, panning, delay, fx }
+                                    also micro (1/128 semitone) and step (step number in the song's tuning);
                                     note: 0..119 (48 = C-4), 120 = OFF, 121 = empty;
                                     instrument/volume/panning/fx are nil when empty
   trakr.set_note(p, t, l, c, { note="C-4" or 48, instrument=1, volume=64, panning=64,
-                               delay=0, fx="0A40" })
+                               delay=0, fx="0A40", micro=0, step=102 })   step sets note+micro from the tuning
                                     fields you leave out stay as they are; false clears one
   trakr.clear_note(p, t, l, c)
   trakr.get_effect(p, t, l, c)      "0A40" or nil          (effect columns)

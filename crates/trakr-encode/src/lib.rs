@@ -573,16 +573,25 @@ fn flac_with_tags(mut flac: Vec<u8>, tags: &Tags) -> Vec<u8> {
     flac
 }
 
-/// A FLAC block size (16..=65535) dividing `total` exactly, as close to 4096 as possible.
+/// A FLAC block size (64..=65535) dividing `total` exactly, as close to 4096 as possible.
 fn flac_block_size(total: usize) -> Option<usize> {
     if total == 0 {
         return None;
     }
-    (16..=total.min(65_535)).filter(|b| total.is_multiple_of(*b)).min_by_key(|b| b.abs_diff(4096))
+    (64..=total.min(65_535)).filter(|b| total.is_multiple_of(*b)).min_by_key(|b| b.abs_diff(4096))
 }
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn flac_handles_lengths_without_a_usable_block_size() {
+        // 2 * 11 * 2 * 11 = 484 frames' worth: its small divisors (22, 44) are below the encoder's minimum
+        for frames in [22usize, 484, 1001, 4099] {
+            let s = Sample::new("t", 44_100, 1, (0..frames).map(|i| (i as f32 * 0.1).sin() * 0.5).collect());
+            ExportFormat { codec: Codec::Flac, ..Default::default() }.encode(&s, 0, frames).unwrap();
+        }
+    }
+
     use super::*;
 
     fn tone(rate: u32, channels: u8, seconds: f32) -> Sample {

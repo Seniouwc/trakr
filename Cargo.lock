@@ -4005,6 +4005,7 @@ dependencies = [
  "trakr-clap",
  "trakr-core",
  "trakr-editor",
+ "trakr-encode",
  "trakr-engine",
  "trakr-format",
  "trakr-gui",

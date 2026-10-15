@@ -65,9 +65,11 @@ impl trakr_editor::AudioControl for Audio {
 
 const USAGE: &str = "usage: trakr [song.trkr | song.xrns | song.mod | song.s3m | song.xm | song.it]
        trakr --check song.trkr                     load, validate and summarize (no GUI, no audio device)
-       trakr --render out.wav song.trkr [--rate N] [--seconds N]
-                                                   render offline to a 16-bit stereo WAV (default 44100 Hz, 600 s max)
+       trakr --render out.<ext> song.trkr [--rate N] [--seconds N] [--quality 0-10] [--bits 16|24|32] [--stems DIR]
+                                                   render offline; ext = wav flac ogg mp3 aac opus (default 44100 Hz, 600 s max);
+                                                   --stems DIR also writes one file per sequencer track (others muted)
        trakr --devices | --effects                 list native devices (ids, parameters in order, ranges) or effect commands
+       trakr --example-full out.trkr               a project that uses every feature (exact JSON spelling of every field and enum)
        trakr --example out.trkr                    write a small valid project to start from";
 
 /// Headless commands used by scripts and agents. Returns `Ok(true)` when one ran.
@@ -91,11 +93,16 @@ fn headless(args: &[String]) -> Result<bool> {
     let mut mode = None;
     let (mut out, mut input) = (None, None);
     let (mut rate, mut seconds) = (44_100u32, 600.0f32);
+    let (mut quality, mut bits, mut stems) = (8u8, 16u8, None::<String>);
     while let Some(a) = it.next() {
         match a.as_str() {
             "--check" => mode = Some("check"),
             "--render" => {
                 mode = Some("render");
+                out = it.next().cloned();
+            }
+            "--example-full" => {
+                mode = Some("example-full");
                 out = it.next().cloned();
             }
             "--example" => {
@@ -108,6 +115,19 @@ fn headless(args: &[String]) -> Result<bool> {
                     .and_then(|v| v.parse().ok())
                     .ok_or_else(|| anyhow::anyhow!("--rate needs a number"))?
             }
+            "--quality" => {
+                quality = it
+                    .next()
+                    .and_then(|v| v.parse().ok())
+                    .ok_or_else(|| anyhow::anyhow!("--quality needs 0..10"))?
+            }
+            "--bits" => {
+                bits = it
+                    .next()
+                    .and_then(|v| v.parse().ok())
+                    .ok_or_else(|| anyhow::anyhow!("--bits needs 16, 24 or 32"))?
+            }
+            "--stems" => stems = it.next().cloned(),
             "--seconds" => {
                 seconds = it
                     .next()
@@ -119,9 +139,10 @@ fn headless(args: &[String]) -> Result<bool> {
         }
     }
     let Some(mode) = mode else { return Ok(false) };
-    if mode == "example" {
-        let out = out.ok_or_else(|| anyhow::anyhow!("--example needs an output path"))?;
-        trakr_format::save_path(&Song::demo(), std::path::Path::new(&out))?;
+    if mode == "example" || mode == "example-full" {
+        let out = out.ok_or_else(|| anyhow::anyhow!("{mode} needs an output path"))?;
+        let song = if mode == "example" { Song::demo() } else { Song::kitchen_sink() };
+        trakr_format::save_path(&song, std::path::Path::new(&out))?;
         println!("wrote {out}");
         return Ok(true);
     }
@@ -134,7 +155,7 @@ fn headless(args: &[String]) -> Result<bool> {
     let used: usize =
         song.patterns.iter().map(|p| p.tracks.iter().map(|t| t.lines.len()).sum::<usize>()).sum();
     println!(
-        "ok: \"{}\", {} bpm, lpb {}, {} tracks, {} patterns, sequence of {}, {} instruments, {} non-empty lines",
+        "ok: \"{}\", {} bpm, lpb {}, {} tracks, {} patterns, sequence of {}, {} instruments, {} non-empty lines{}",
         song.name,
         song.bpm,
         song.lpb,
@@ -142,29 +163,68 @@ fn headless(args: &[String]) -> Result<bool> {
         song.patterns.len(),
         song.sequence.len(),
         song.instruments.len(),
-        used
+        used,
+        if song.edo != 12 { format!(", {} EDO", song.edo) } else { String::new() }
     );
-    let pcm = trakr_engine::render_song(song, rate, seconds);
+    let pcm = trakr_engine::render_song(song.clone(), rate, seconds);
+    report("render", &pcm, rate);
+    if mode == "render" {
+        let out = out.ok_or_else(|| anyhow::anyhow!("--render needs an output path"))?;
+        let path = std::path::Path::new(&out);
+        let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("wav");
+        let codec = trakr_encode::Codec::from_extension(ext)
+            .ok_or_else(|| anyhow::anyhow!("unknown output type .{ext} (wav flac ogg mp3 aac opus)"))?;
+        let format =
+            trakr_encode::ExportFormat { codec, quality: quality.min(10), bits, ..Default::default() };
+        let tags = trakr_encode::Tags {
+            title: song.name.clone(),
+            artist: song.author.clone(),
+            comment: song.comments.clone(),
+            ..Default::default()
+        };
+        let write = |path: &std::path::Path, pcm: Vec<f32>| -> Result<()> {
+            let frames = pcm.len() / 2;
+            let s = trakr_core::Sample::new("render", rate, 2, pcm);
+            format.write_tagged(path, &s, 0, frames, &tags)?;
+            Ok(())
+        };
+        write(path, pcm)?;
+        println!("wrote {}", path.with_extension(format.extension()).display());
+        if let Some(dir) = stems {
+            std::fs::create_dir_all(&dir)?;
+            for (i, t) in song.tracks.iter().enumerate() {
+                if t.kind != trakr_core::TrackKind::Sequencer {
+                    continue;
+                }
+                let mut solo = (*song).clone();
+                solo.tracks.iter_mut().for_each(|t| t.solo = false);
+                solo.tracks[i].solo = true;
+                let pcm = trakr_engine::render_song(std::sync::Arc::new(solo), rate, seconds);
+                report(&format!("stem {i} ({})", t.name), &pcm, rate);
+                let name: String =
+                    t.name.chars().map(|c| if c.is_alphanumeric() { c } else { '_' }).collect();
+                write(
+                    &std::path::Path::new(&dir).join(format!("{i:02}_{name}.{}", format.extension())),
+                    pcm,
+                )?;
+            }
+        }
+    }
+    Ok(true)
+}
+
+fn report(what: &str, pcm: &[f32], rate: u32) {
     let frames = pcm.len() / 2;
     let peak = pcm.iter().fold(0.0f32, |m, s| m.max(s.abs()));
     let rms = (pcm.iter().map(|s| (*s as f64).powi(2)).sum::<f64>() / pcm.len().max(1) as f64).sqrt();
     println!(
-        "render: {:.2} s, peak {:.3}, rms {:.4}{}",
+        "{what}: {:.2} s, peak {peak:.3}, rms {rms:.4}{}",
         frames as f32 / rate as f32,
-        peak,
-        rms,
         if frames == 0 { " (SILENT: no sound produced)" } else { "" }
     );
     if peak > 1.0 {
-        println!("warning: peak above 1.0 clips; lower track or master volume");
+        println!("warning: {what} peak above 1.0 clips; lower track or master volume");
     }
-    if mode == "render" {
-        let out = out.ok_or_else(|| anyhow::anyhow!("--render needs an output path"))?;
-        let s = trakr_core::Sample::new("render", rate, 2, pcm);
-        trakr_sample::write_wav(std::path::Path::new(&out), &s, 0, frames, trakr_sample::WavFormat::Pcm16)?;
-        println!("wrote {out}");
-    }
-    Ok(true)
 }
 
 fn main() -> Result<()> {

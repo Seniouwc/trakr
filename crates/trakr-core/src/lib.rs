@@ -8,6 +8,7 @@ pub mod effects;
 pub mod envelope;
 pub mod fft;
 pub mod instrument;
+pub mod kitchen;
 pub mod note;
 pub mod pattern;
 pub mod phrase;

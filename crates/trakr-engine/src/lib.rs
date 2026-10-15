@@ -1211,6 +1211,14 @@ impl Engine {
         }
     }
 
+    /// Send note-off to every sounding voice (they play out their release).
+    fn release_all(&mut self) {
+        self.release_plugin(|_| true);
+        for v in self.voices.iter_mut() {
+            v.release();
+        }
+    }
+
     /// True when nothing is playing, ringing out or scheduled.
     pub fn is_idle(&self) -> bool {
         !self.playing && self.voices.is_empty() && self.events.is_empty()
@@ -2146,9 +2154,20 @@ pub fn render_song_with_plugins(
     let max_frames = (max_seconds * sample_rate as f32) as usize;
     let mut out: Vec<f32> = Vec::new();
     let mut block = vec![0.0f32; 1024 * 2];
+    // When the sequence ends, notes still held (looped samples waiting for a note-off) are released and
+    // given up to this long to ring out, so a missing note-off cannot make a render run forever.
+    let tail_frames = sample_rate as usize * 8;
+    let mut tail_start: Option<usize> = None;
     while out.len() / 2 < max_frames {
         engine.render(&mut block);
         out.extend_from_slice(&block);
+        if tail_start.is_none() && !engine.playing {
+            engine.release_all();
+            tail_start = Some(out.len() / 2);
+        }
+        if tail_start.is_some_and(|t| out.len() / 2 - t > tail_frames) {
+            break;
+        }
         handle.collect_garbage();
         if engine.is_idle() {
             break;
@@ -3972,6 +3991,18 @@ mod device_tests {
         // note 47 + micro 127 is just under note 48
         let almost = play(127, 47);
         assert!((almost / base - 1.0).abs() < 0.01, "{almost}");
+    }
+
+    #[test]
+    fn the_kitchen_sink_song_renders_clean_sound() {
+        let song = Song::kitchen_sink();
+        assert!(song.sequence.iter().all(|&p| p < song.patterns.len()));
+        assert!(song.patterns.iter().all(|p| p.tracks.len() == song.tracks.len()));
+        let out = render_song(Arc::new(song), 44_100, 30.0);
+        assert!(out.len() > 44_100, "renders for a while: {}", out.len());
+        assert!(out.iter().all(|s| s.is_finite()));
+        let peak = out.iter().fold(0.0f32, |m, s| m.max(s.abs()));
+        assert!(peak > 0.05 && peak < 4.0, "peak {peak}");
     }
 
     #[test]

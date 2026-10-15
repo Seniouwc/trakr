@@ -154,6 +154,22 @@ pub fn load_path(path: &std::path::Path) -> Result<Song, FormatError> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_kitchen_sink_song_roundtrips() {
+        let song = trakr_core::Song::kitchen_sink();
+        let mut buf = std::io::Cursor::new(Vec::new());
+        save(&song, &mut buf).unwrap();
+        buf.set_position(0);
+        let back = load(buf).unwrap();
+        assert_eq!(back.edo, 19);
+        assert_eq!(back.tracks, song.tracks);
+        assert_eq!(back.patterns, song.patterns);
+        assert_eq!(back.slot_meta, song.slot_meta);
+        assert_eq!(back.instruments.len(), song.instruments.len());
+        assert_eq!(back.instruments[0].lfos, song.instruments[0].lfos);
+        assert_eq!(back.instruments[0].samples[0].data, song.instruments[0].samples[0].data);
+    }
+
     use super::*;
     use std::io::Cursor;
 
