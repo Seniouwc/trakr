@@ -708,12 +708,16 @@ fn action_all_is_complete() {
             OpenPalette => 62,
             OpenFind => 63,
             OpenPreferences => 64,
+            PlayBlock => 65,
+            SectionToggle => 66,
+            PlaySection => 67,
+            SlotMuteToggle => 68,
         }
     }
     for (i, a) in Action::ALL.iter().enumerate() {
         assert_eq!(index(*a), i, "{a:?} is out of order in Action::ALL");
     }
-    assert_eq!(Action::ALL.len(), 65);
+    assert_eq!(Action::ALL.len(), 69);
     for a in Action::ALL {
         assert!(!a.label().is_empty());
     }
@@ -766,6 +770,8 @@ fn check_invariants(app: &Editor, step: usize, what: &str) {
         assert!(a <= b && b < s.sequence.len(), "step {step} ({what}): loop range {a}..{b}");
     }
     assert!((app.instrument as usize) < 255);
+    assert!(s.slot_meta.len() <= s.sequence.len(), "step {step} ({what}): slot meta outgrew the sequence");
+    assert!(s.groove.len() <= trakr_core::song::MAX_GROOVE && s.groove.iter().all(|g| g.is_finite()));
 }
 
 fn fuzz_editor(seed: u64) {
@@ -790,7 +796,7 @@ fn fuzz_editor(seed: u64) {
     let chars: Vec<char> = "zsxdcvgbhnjmqwertyuiop234567890`abcdef ,./;[]-=".chars().collect();
     for step in 0..12_000 {
         let what: String;
-        match rng.below(15) {
+        match rng.below(16) {
             0..=4 => {
                 let k = if rng.below(2) == 0 {
                     KeyCode::Char(chars[rng.below(chars.len())])
@@ -880,6 +886,21 @@ fn fuzz_editor(seed: u64) {
                     app.automation_edit("fuzz", rng.below(n), target, |a| {
                         a.set_point(l, v);
                     });
+                }
+            }
+            14 => {
+                what = "structure".into();
+                match rng.below(6) {
+                    0 => app.slot_toggle_mute(rng.below(8), rng.below(40)),
+                    1 => {
+                        app.section_set(rng.below(8), if rng.below(3) == 0 { None } else { Some("s".into()) })
+                    }
+                    2 => app.play_section(),
+                    3 => app.play_block(),
+                    4 => app.set_groove(
+                        (0..rng.below(12)).map(|_| rng.below(300) as f32 / 100.0 - 1.5).collect(),
+                    ),
+                    _ => app.section_toggle_here(),
                 }
             }
             13 => {
@@ -1562,4 +1583,53 @@ fn osc_server_feeds_the_editor_through_tick() {
     assert_eq!(e.song.bpm, 99.0);
     e.osc_stop();
     assert!(e.osc_addr().is_none());
+}
+
+#[test]
+fn slot_mutes_sections_and_groove_follow_the_sequence_and_undo() {
+    let mut e = ed();
+    e.seq_clone();
+    e.seq_clone();
+    assert_eq!(e.song.sequence.len(), 3);
+    e.slot_toggle_mute(1, 2);
+    assert!(e.song.slot_muted(1, 2));
+    e.seq_goto(1);
+    e.seq_clone(); // the copy inherits the mutes
+    assert!(e.song.slot_muted(2, 2));
+    e.seq_goto(2);
+    e.seq_move(-1);
+    assert!(e.song.slot_muted(1, 2) && e.song.slot_muted(2, 2));
+    e.seq_delete();
+    assert!(e.song.slot_meta.len() <= e.song.sequence.len());
+    e.undo();
+    assert_eq!(e.song.sequence.len(), 4);
+    e.slot_toggle_mute(0, 99); // no such track: ignored
+    e.slot_toggle_mute(77, 0);
+    // sections
+    e.seq_goto(1);
+    e.section_toggle_here();
+    e.seq_goto(3);
+    e.section_toggle_here();
+    assert_eq!(e.song.sections().len(), 2);
+    e.seq_goto(2);
+    e.play_section();
+    assert_eq!(e.song.loop_range, Some((1, 2)));
+    e.seq_goto(0);
+    e.play_section();
+    assert!(e.status.contains("not in a section"));
+    e.seq_goto(1);
+    e.section_toggle_here();
+    assert_eq!(e.song.sections().len(), 1, "toggling again removes it");
+    // groove is clamped and cleaned
+    e.set_groove(vec![0.0, 9.0, f32::NAN, -9.0]);
+    assert_eq!(e.song.groove, vec![0.0, 0.45, 0.0, -0.45]);
+    e.undo();
+    assert!(e.song.groove.is_empty());
+    // play block needs a selection
+    e.play_block();
+    assert!(e.status.contains("select"));
+    e.set_cursor(0, 0, 0, 2);
+    e.select_to(0, 0, 5);
+    e.play_block();
+    assert!(e.status.contains("02-05"));
 }

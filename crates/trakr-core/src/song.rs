@@ -6,6 +6,17 @@ use crate::track::{Track, TrackKind};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
+/// Per-slot extras that sit beside the play order (one entry per sequence slot).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct SlotMeta {
+    /// Bit `t` set: track `t` is silent while this slot plays.
+    #[serde(default)]
+    pub mutes: u64,
+    /// A section starts at this slot, with this name.
+    #[serde(default)]
+    pub section: Option<String>,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Song {
     pub name: String,
@@ -24,6 +35,13 @@ pub struct Song {
     /// Inclusive range of sequence slots to loop during playback.
     #[serde(default)]
     pub loop_range: Option<(usize, usize)>,
+    /// Parallel to `sequence` (shorter is fine: missing entries are defaults).
+    #[serde(default)]
+    pub slot_meta: Vec<SlotMeta>,
+    /// Shuffle: how far each line of a repeating group starts late (+) or early (-), as a fraction of a
+    /// line. Empty = straight timing.
+    #[serde(default)]
+    pub groove: Vec<f32>,
 }
 
 impl Default for Song {
@@ -46,11 +64,88 @@ impl Default for Song {
             sequence: vec![0],
             instruments: Vec::new(),
             loop_range: None,
+            slot_meta: Vec::new(),
+            groove: Vec::new(),
         }
     }
 }
 
+/// Longest groove cycle.
+pub const MAX_GROOVE: usize = 8;
+
 impl Song {
+    /// Whether `track` is muted in sequence slot `slot`.
+    pub fn slot_muted(&self, slot: usize, track: usize) -> bool {
+        track < 64 && self.slot_meta.get(slot).is_some_and(|m| m.mutes >> track & 1 != 0)
+    }
+
+    /// Make `slot_meta` exactly as long as the sequence.
+    pub fn normalize_slot_meta(&mut self) {
+        self.slot_meta.resize(self.sequence.len(), SlotMeta::default());
+    }
+
+    pub fn insert_slot(&mut self, at: usize, pattern: usize, meta: SlotMeta) {
+        self.normalize_slot_meta();
+        let at = at.min(self.sequence.len());
+        self.sequence.insert(at, pattern);
+        self.slot_meta.insert(at, meta);
+    }
+
+    pub fn remove_slot(&mut self, at: usize) {
+        self.normalize_slot_meta();
+        if at < self.sequence.len() {
+            self.sequence.remove(at);
+            self.slot_meta.remove(at);
+        }
+    }
+
+    pub fn swap_slots(&mut self, a: usize, b: usize) {
+        self.normalize_slot_meta();
+        self.sequence.swap(a, b);
+        self.slot_meta.swap(a, b);
+    }
+
+    /// Sections as (first slot, last slot, name). Slots before the first marker belong to no section.
+    pub fn sections(&self) -> Vec<(usize, usize, String)> {
+        let marks: Vec<(usize, &str)> = self
+            .slot_meta
+            .iter()
+            .enumerate()
+            .take(self.sequence.len())
+            .filter_map(|(i, m)| m.section.as_deref().map(|n| (i, n)))
+            .collect();
+        marks
+            .iter()
+            .enumerate()
+            .map(|(k, (start, name))| {
+                let end = marks.get(k + 1).map_or(self.sequence.len(), |n| n.0).saturating_sub(1);
+                (*start, end.max(*start), name.to_string())
+            })
+            .collect()
+    }
+
+    /// The section a slot belongs to, if any: (first slot, last slot, name).
+    pub fn section_of(&self, slot: usize) -> Option<(usize, usize, String)> {
+        self.sections().into_iter().find(|(a, b, _)| (*a..=*b).contains(&slot))
+    }
+
+    /// Length of line `line` relative to a straight line (1.0), following the groove.
+    pub fn groove_scale(&self, line: u16) -> f64 {
+        let n = self.groove.len().min(MAX_GROOVE);
+        if n == 0 {
+            return 1.0;
+        }
+        let g = |l: usize| {
+            let v = self.groove[l % n] as f64;
+            if v.is_finite() {
+                v.clamp(-0.45, 0.45)
+            } else {
+                0.0
+            }
+        };
+        1.0 + g(line as usize + 1) - g(line as usize)
+    }
+
     /// Frames per pattern line at the given rate and tempo.
     pub fn frames_per_line(bpm: f32, lpb: u8, sample_rate: u32) -> f64 {
         sample_rate as f64 * 60.0 / (bpm as f64 * lpb.max(1) as f64)
@@ -240,5 +335,53 @@ impl Song {
         song.patterns = vec![std::sync::Arc::new(groove), std::sync::Arc::new(with_lead)];
         song.sequence = vec![0, 1, 1, 0];
         song
+    }
+}
+
+#[cfg(test)]
+mod structure_tests {
+    use super::*;
+
+    #[test]
+    fn slot_meta_follows_the_sequence() {
+        let mut s = Song::default();
+        s.insert_slot(1, 0, SlotMeta { mutes: 0b10, section: Some("Verse".into()) });
+        s.insert_slot(2, 0, SlotMeta::default());
+        assert_eq!(s.sequence.len(), 3);
+        assert!(s.slot_muted(1, 1) && !s.slot_muted(1, 0) && !s.slot_muted(0, 1) && !s.slot_muted(9, 1));
+        s.swap_slots(1, 2);
+        assert!(s.slot_muted(2, 1));
+        s.remove_slot(2);
+        assert_eq!(s.slot_meta.len(), 2);
+        assert!(!s.slot_muted(2, 1) && !s.slot_muted(0, 70));
+    }
+
+    #[test]
+    fn sections_cover_the_slots_up_to_the_next_marker() {
+        let mut s = Song::default();
+        for i in 0..5 {
+            s.insert_slot(i + 1, 0, SlotMeta::default());
+        }
+        s.slot_meta[1].section = Some("A".into());
+        s.slot_meta[4].section = Some("B".into());
+        assert_eq!(s.sections(), vec![(1, 3, "A".to_string()), (4, 5, "B".to_string())]);
+        assert_eq!(s.section_of(2).unwrap().2, "A");
+        assert_eq!(s.section_of(5).unwrap().0, 4);
+        assert!(s.section_of(0).is_none());
+    }
+
+    #[test]
+    fn groove_lengthens_and_shortens_lines_but_keeps_the_total() {
+        let mut s = Song::default();
+        assert_eq!(s.groove_scale(3), 1.0);
+        s.groove = vec![0.0, 0.25, 0.0, 0.25];
+        let total: f64 = (0..4).map(|l| s.groove_scale(l)).sum();
+        assert!((total - 4.0).abs() < 1e-9);
+        assert!(
+            s.groove_scale(0) > 1.0 && s.groove_scale(1) < 1.0,
+            "line 1 starts late, so line 0 is longer"
+        );
+        s.groove = vec![f32::NAN; 3];
+        assert_eq!(s.groove_scale(1), 1.0, "damaged values are ignored");
     }
 }

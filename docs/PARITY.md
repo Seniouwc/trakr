@@ -6,13 +6,13 @@ Compiled from memory of Renoise 3.x behavior. Verify each item against the offic
 ## Song and sequencer
 - [x] BPM, LPB, TPL stored per song
 - [~] Pattern sequence (play order) with song loop; no loop range
-- [~] Sequence editor: insert, clone, delete, reorder, pick pattern per slot work; section markers and pattern matrix do not
+- [x] Sequence editor: insert, clone, delete, reorder, pick pattern per slot; named sections (Loop section plays one); pattern matrix dock (tracks x slots, click to mute a track in one slot); per-slot track mutes follow slot edits and undo
 - [~] Pattern length 1..512 editing and pattern names work; resize with content scaling does not
 - [~] Sub-line delay column works (1/256 line); tick-quantized timing exists only for the effects `0Q`, `0C`, `0R`; per-tick voice processing (slides, vibrato) does not
-- [~] Song loop range (slot range) and pattern loop work; block loop does not
+- [x] Song loop range (slot range), pattern loop and block loop (Play > Loop selected block) work
 - [~] Follow playback, play from cursor, play pattern, stop work; play block, panic do not
-- [ ] Song comments, metadata, tags
-- [ ] Groove / shuffle, global BPM/LPB automation via Zxx commands
+- [~] Song title, artist and comments (Pattern > Song properties); no tags
+- [~] Groove / shuffle (up to eight lines per cycle, in Song properties) works; BPM/LPB automation via lanes does not
 
 ## Pattern editor
 - [x] 12 note columns per track (data model), 8 effect columns (data model)

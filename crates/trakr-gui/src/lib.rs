@@ -16,6 +16,7 @@ mod phrases_view;
 mod prefs_view;
 mod sample_view;
 mod scripts_view;
+mod structure_view;
 #[cfg(test)]
 mod tests;
 mod theme;
@@ -51,6 +52,7 @@ pub enum Dock {
     Devices,
     Automation,
     Phrases,
+    Matrix,
     Hidden,
 }
 
@@ -115,6 +117,7 @@ pub(crate) struct GuiApp {
     pub phrase_focus: bool,
     pub show_console: bool,
     pub show_midi_map: bool,
+    pub show_song: bool,
     pub show_palette: bool,
     pub palette_query: String,
     pub show_find: bool,
@@ -152,6 +155,7 @@ impl GuiApp {
                 "devices" => Dock::Devices,
                 "automation" => Dock::Automation,
                 "phrases" => Dock::Phrases,
+                "matrix" => Dock::Matrix,
                 "hidden" => Dock::Hidden,
                 _ => Dock::Instrument,
             },
@@ -168,6 +172,7 @@ impl GuiApp {
             phrase_focus: false,
             show_console: false,
             show_midi_map: false,
+            show_song: false,
             show_palette: false,
             palette_query: String::new(),
             show_find: false,
@@ -205,6 +210,7 @@ impl Dock {
             Dock::Devices => "devices",
             Dock::Automation => "automation",
             Dock::Phrases => "phrases",
+            Dock::Matrix => "matrix",
             Dock::Hidden => "hidden",
         }
     }
@@ -297,6 +303,7 @@ impl GuiApp {
         self.console_window(ctx);
         self.tool_windows(ctx);
         self.midi_window(ctx);
+        self.song_window(ctx);
         self.text_editing = ctx.output(|o| o.ime.is_some());
     }
 }
@@ -326,6 +333,7 @@ impl GuiApp {
                     Dock::Devices => self.devices_ui(ui),
                     Dock::Automation => self.automation_ui(ui),
                     Dock::Phrases => self.phrases_ui(ui),
+                    Dock::Matrix => self.matrix_ui(ui),
                     Dock::Hidden => {}
                 });
         }
@@ -336,6 +344,7 @@ impl GuiApp {
                 ui.selectable_value(&mut self.dock, Dock::Devices, "Devices");
                 ui.selectable_value(&mut self.dock, Dock::Automation, "Automation");
                 ui.selectable_value(&mut self.dock, Dock::Phrases, "Phrases");
+                ui.selectable_value(&mut self.dock, Dock::Matrix, "Pattern matrix");
                 ui.selectable_value(&mut self.dock, Dock::Hidden, "Hide");
             });
         });

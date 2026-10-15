@@ -49,6 +49,15 @@ impl GuiApp {
                         p.number_of_lines
                     );
                     let sel = slot == self.editor.seq_pos;
+                    if let Some(sec) = self.editor.song.slot_meta.get(slot).and_then(|m| m.section.clone()) {
+                        ui.label(
+                            egui::RichText::new(format!("-- {sec} --"))
+                                .small()
+                                .color(egui::Color32::from_rgb(230, 170, 40)),
+                        );
+                    }
+                    let muted = self.editor.song.slot_meta.get(slot).map_or(0, |m| m.mutes.count_ones());
+                    let text = if muted > 0 { format!("{text} m{muted}") } else { text };
                     let r = ui.selectable_label(sel, egui::RichText::new(text).monospace());
                     if r.clicked() {
                         self.editor.seq_goto(slot);

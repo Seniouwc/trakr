@@ -156,7 +156,15 @@ fn every_dock_and_tab_draws_without_panicking() {
         SampleTab::Env(envelopes::EnvKind::Pitch),
         SampleTab::Env(envelopes::EnvKind::Cutoff),
     ];
-    for dock in [Dock::Instrument, Dock::Mixer, Dock::Devices, Dock::Automation, Dock::Hidden] {
+    for dock in [
+        Dock::Instrument,
+        Dock::Mixer,
+        Dock::Devices,
+        Dock::Automation,
+        Dock::Phrases,
+        Dock::Matrix,
+        Dock::Hidden,
+    ] {
         h.app.dock = dock;
         for tab in tabs {
             h.app.sample_tab = tab;
@@ -549,5 +557,28 @@ fn sample_process_rows_and_spectrum_draw_and_work() {
         s.reduce_bit_depth(8, true);
     });
     h.app.editor.undo();
+    h.frame(vec![]);
+}
+
+#[test]
+fn pattern_matrix_and_song_properties_work() {
+    let mut h = Harness::new();
+    h.app.editor.seq_clone();
+    h.app.editor.seq_clone();
+    h.app.editor.section_set(1, Some("Verse".into()));
+    h.app.dock = Dock::Matrix;
+    h.app.show_song = true;
+    for _ in 0..4 {
+        h.frame(vec![]);
+    }
+    h.app.editor.slot_toggle_mute(2, 0);
+    h.app.editor.set_groove(vec![0.0, 0.2]);
+    h.app.editor.set_song_comments("hello".into());
+    for _ in 0..3 {
+        h.frame(vec![]);
+    }
+    assert!(h.app.editor.song.slot_muted(2, 0));
+    // a click somewhere in the dock must not panic or freeze the matrix
+    h.click(Pos2::new(200.0, 640.0));
     h.frame(vec![]);
 }

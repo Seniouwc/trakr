@@ -123,6 +123,11 @@ impl GuiApp {
                     }
                 });
                 ui.menu_button("Pattern", |ui| {
+                    if ui.button("Song properties...").on_hover_text("Title, artist, tempo, groove and comments").clicked() {
+                        self.show_song = true;
+                        ui.close_menu();
+                    }
+                    ui.separator();
                     for a in [SeqInsert, SeqClone, SeqDelete, SeqMoveUp, SeqMoveDown] {
                         self.item(ui, a);
                     }
@@ -131,7 +136,7 @@ impl GuiApp {
                         self.item(ui, a);
                     }
                     ui.separator();
-                    for a in [LoopStart, LoopEnd, LoopClear] {
+                    for a in [LoopStart, LoopEnd, LoopClear, SectionToggle, PlaySection, SlotMuteToggle] {
                         self.item(ui, a);
                     }
                     ui.separator();
@@ -179,10 +184,11 @@ impl GuiApp {
                     ui.radio_value(&mut self.dock, crate::Dock::Devices, "Track devices");
                     ui.radio_value(&mut self.dock, crate::Dock::Automation, "Automation");
                     ui.radio_value(&mut self.dock, crate::Dock::Phrases, "Phrases");
+                    ui.radio_value(&mut self.dock, crate::Dock::Matrix, "Pattern matrix");
                     ui.radio_value(&mut self.dock, crate::Dock::Hidden, "Hide bottom panel");
                 });
                 ui.menu_button("Play", |ui| {
-                    for a in [PlaySong, PlayPattern, PlayFromCursor, Stop, ToggleFollow] {
+                    for a in [PlaySong, PlayPattern, PlayFromCursor, PlayBlock, Stop, ToggleFollow] {
                         self.item(ui, a);
                     }
                     ui.separator();

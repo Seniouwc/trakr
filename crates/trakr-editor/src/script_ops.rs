@@ -34,6 +34,7 @@ impl Editor {
                 if out.changed {
                     self.checkpoint();
                     self.song = Arc::new(out.song);
+                    self.song_mut().normalize_slot_meta();
                     self.clamp_cursor();
                     self.sync();
                 }

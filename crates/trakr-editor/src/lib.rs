@@ -16,6 +16,7 @@ mod plugin_ops;
 mod prefs;
 mod sampling;
 mod script_ops;
+mod structure_ops;
 
 pub use action::Action;
 pub use edit_tools::{CellSpec, Scope};
@@ -127,6 +128,8 @@ struct Snapshot {
     tracks: Vec<Track>,
     instruments: Vec<Instrument>,
     loop_range: Option<(usize, usize)>,
+    slot_meta: Vec<trakr_core::SlotMeta>,
+    groove: Vec<f32>,
     bpm: f32,
     lpb: u8,
     tpl: u8,
@@ -430,6 +433,8 @@ impl Editor {
             tracks: s.tracks.clone(),
             instruments: s.instruments.clone(),
             loop_range: s.loop_range,
+            slot_meta: s.slot_meta.clone(),
+            groove: s.groove.clone(),
             bpm: s.bpm,
             lpb: s.lpb,
             tpl: s.tpl,
@@ -443,6 +448,8 @@ impl Editor {
         s.tracks = snap.tracks;
         s.instruments = snap.instruments;
         s.loop_range = snap.loop_range;
+        s.slot_meta = snap.slot_meta;
+        s.groove = snap.groove;
         s.bpm = snap.bpm;
         s.lpb = snap.lpb;
         s.tpl = snap.tpl;

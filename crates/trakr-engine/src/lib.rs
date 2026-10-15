@@ -132,6 +132,12 @@ pub enum Command {
         line: u16,
         loop_pattern: bool,
     },
+    /// Loop lines `first..=last` of one slot until stopped.
+    PlayBlock {
+        seq_pos: usize,
+        first: u16,
+        last: u16,
+    },
     Stop,
     /// When true, playback stops (voices keep ringing out) once the sequence ends instead of looping.
     SetStopAtEnd(bool),
@@ -304,6 +310,7 @@ pub fn create(sample_rate: u32) -> (Engine, EngineHandle) {
         pos: pos.clone(),
         playing: false,
         loop_pattern: false,
+        block: None,
         seq_pos: 0,
         line: 0,
         frames_to_line: 0.0,
@@ -355,6 +362,8 @@ pub struct Engine {
     pos: Arc<SharedPos>,
     playing: bool,
     loop_pattern: bool,
+    /// Lines looped by `PlayBlock`.
+    block: Option<(u16, u16)>,
     seq_pos: usize,
     line: u16,
     frames_to_line: f64,
@@ -451,7 +460,8 @@ impl Engine {
                 self.trigger_line();
                 self.playing_seq = self.seq_pos;
                 self.playing_line = self.line;
-                self.frames_to_line += Song::frames_per_line(self.bpm, self.lpb, self.sample_rate);
+                let straight = Song::frames_per_line(self.bpm, self.lpb, self.sample_rate);
+                self.frames_to_line += straight * self.song.groove_scale(self.line);
                 self.tick = 0;
                 self.frames_to_tick = self.frames_per_tick();
                 for v in &mut self.voices {
@@ -932,6 +942,26 @@ impl Engine {
                     self.line = line;
                     self.clamp_position();
                     self.loop_pattern = loop_pattern;
+                    self.block = None;
+                    self.frames_to_line = 0.0;
+                    self.events.clear();
+                    self.clear_phrases();
+                    self.pending_break = None;
+                    self.playing = true;
+                }
+                Command::PlayBlock { seq_pos, first, last } => {
+                    self.bpm = self.song.bpm;
+                    self.lpb = self.song.lpb;
+                    self.tpl = self.song.tpl;
+                    self.fx_vol = [None; MAX_TRACKS];
+                    self.fx_pan = [None; MAX_TRACKS];
+                    self.seq_pos = seq_pos;
+                    self.clamp_position();
+                    let lines = self.song.pattern_at(self.seq_pos).map_or(1, |p| p.number_of_lines);
+                    let (a, b) = (first.min(last).min(lines - 1), first.max(last).min(lines - 1));
+                    self.line = a;
+                    self.block = Some((a, b));
+                    self.loop_pattern = true;
                     self.frames_to_line = 0.0;
                     self.events.clear();
                     self.clear_phrases();
@@ -939,6 +969,7 @@ impl Engine {
                     self.playing = true;
                 }
                 Command::Stop => {
+                    self.block = None;
                     self.playing = false;
                     self.voices.clear();
                     self.events.clear();
@@ -1282,6 +1313,9 @@ impl Engine {
         let fpl = Song::frames_per_line(self.bpm, self.lpb, self.sample_rate);
         let fpt = fpl / self.tpl.max(1) as f64;
         for (ti, track) in pat.tracks.iter().enumerate() {
+            if song.slot_muted(self.seq_pos, ti) {
+                continue;
+            }
             let Some(line) = track.lines.get(&self.line) else { continue };
 
             // Effect commands from the effect columns and the per-note-column slots.
@@ -1422,6 +1456,12 @@ impl Engine {
         let lines = self.song.pattern_at(self.seq_pos).map_or(1, |p| p.number_of_lines);
         self.line += 1;
         let brk = self.pending_break.take();
+        if let Some((first, last)) = self.block {
+            if self.line > last {
+                self.line = first;
+            }
+            return;
+        }
         if self.line >= lines || brk.is_some() {
             self.line = 0;
             if !self.loop_pattern {
@@ -1885,6 +1925,49 @@ mod sequencer_tests {
         assert!((len(0, 60.0) as i32 - 1000).abs() < 20, "off: native length");
         assert!((len(2, 60.0) as i32 - 2000).abs() < 40, "two lines of 1000 frames: {}", len(2, 60.0));
         assert!((len(2, 120.0) as i32 - 1000).abs() < 40, "twice the tempo, half the length");
+    }
+
+    #[test]
+    fn slot_mutes_silence_a_track_in_one_slot_only() {
+        let mut song = song_with(vec![1.0; 100], LoopMode::Off);
+        Arc::make_mut(&mut song.patterns[0]).number_of_lines = 2;
+        song.sequence = vec![0, 0];
+        put(&mut song, 0, |l| note(&mut l.notes[0]));
+        song.insert_slot(2, 0, trakr_core::SlotMeta::default());
+        song.slot_meta[0].mutes = 1; // track 0 is silent in slot 0
+        song.sequence.truncate(2);
+        song.slot_meta.truncate(2);
+        // slot 0 lasts 2 lines = 2000 frames; the second slot's note is at 2000
+        assert_eq!(onsets(&render(song, 5000)), vec![2000]);
+    }
+
+    #[test]
+    fn groove_delays_every_other_line() {
+        let mut song = song_with(vec![1.0; 100], LoopMode::Off);
+        song.groove = vec![0.0, 0.25];
+        put(&mut song, 1, |l| note(&mut l.notes[0]));
+        put(&mut song, 2, |l| note(&mut l.notes[0]));
+        put(&mut song, 3, |l| note(&mut l.notes[0]));
+        // line 1 starts a quarter late; lines 2 and 3 follow the 1250 / 750 pattern
+        assert_eq!(onsets(&render(song, 5000)), vec![1250, 2000, 3250]);
+    }
+
+    #[test]
+    fn play_block_loops_the_chosen_lines() {
+        let mut song = song_with(vec![1.0; 100], LoopMode::Off);
+        put(&mut song, 1, |l| note(&mut l.notes[0]));
+        put(&mut song, 2, |l| note(&mut l.notes[0]));
+        let (mut engine, mut h) = create(RATE);
+        h.send(Command::SetSong(Arc::new(song)));
+        h.send(Command::PlayBlock { seq_pos: 0, first: 1, last: 2 });
+        let mut out = vec![0.0; 2 * 5500];
+        engine.render(&mut out);
+        let mono: Vec<f32> = out.chunks_exact(2).map(|f| f[0]).collect();
+        assert_eq!(onsets(&mono), vec![0, 1000, 2000, 3000, 4000, 5000]);
+        h.send(Command::Stop);
+        let mut more = vec![0.0; 2 * 3000];
+        engine.render(&mut more);
+        assert!(onsets(&more.chunks_exact(2).map(|f| f[0]).collect::<Vec<_>>()).is_empty());
     }
 
     #[test]
@@ -2918,7 +3001,9 @@ mod device_tests {
             pat.automation.push(a);
         }
         song.patterns = vec![Arc::new(pat)];
-        song.sequence = vec![0];
+        song.sequence = vec![0, 0];
+        song.slot_meta = vec![trakr_core::SlotMeta { mutes: rng.below(1 << 10) as u64, section: None }];
+        song.groove = (0..rng.below(10)).map(|_| *rng.pick(&[0.0, 0.3, -0.7, f32::NAN, 5.0])).collect();
         song
     }
 

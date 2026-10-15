@@ -77,6 +77,10 @@ pub enum Action {
     OpenPalette,
     OpenFind,
     OpenPreferences,
+    PlayBlock,
+    SectionToggle,
+    PlaySection,
+    SlotMuteToggle,
 }
 
 impl Action {
@@ -147,6 +151,10 @@ impl Action {
         Action::OpenPalette,
         Action::OpenFind,
         Action::OpenPreferences,
+        Action::PlayBlock,
+        Action::SectionToggle,
+        Action::PlaySection,
+        Action::SlotMuteToggle,
     ];
 
     pub fn label(self) -> &'static str {
@@ -217,6 +225,10 @@ impl Action {
             OpenPalette => "Command palette",
             OpenFind => "Find and replace",
             OpenPreferences => "Preferences",
+            PlayBlock => "Loop selected block",
+            SectionToggle => "Section starts here",
+            PlaySection => "Loop section",
+            SlotMuteToggle => "Mute track in this slot",
         }
     }
 

@@ -444,7 +444,7 @@ impl Editor {
         let song = self.song_mut();
         song.patterns.push(Arc::new(Pattern::new(tracks, lines)));
         let idx = song.patterns.len() - 1;
-        song.sequence.insert(at, idx);
+        song.insert_slot(at, idx, trakr_core::SlotMeta::default());
         self.seq_pos = at;
         self.cursor.line = 0;
         self.after_structure_change();
@@ -458,7 +458,8 @@ impl Editor {
         let copy = (*song.patterns[pi]).clone();
         song.patterns.push(Arc::new(copy));
         let idx = song.patterns.len() - 1;
-        song.sequence.insert(at, idx);
+        let mutes = song.slot_meta.get(at - 1).map_or(0, |m| m.mutes);
+        song.insert_slot(at, idx, trakr_core::SlotMeta { mutes, section: None });
         self.seq_pos = at;
         self.after_structure_change();
     }
@@ -471,7 +472,7 @@ impl Editor {
         self.checkpoint();
         let at = self.seq_pos;
         let song = self.song_mut();
-        song.sequence.remove(at);
+        song.remove_slot(at);
         let n = song.sequence.len();
         song.loop_range = song.loop_range.map(|(a, b)| (a.min(n - 1), b.min(n - 1)));
         self.after_structure_change();
@@ -484,7 +485,7 @@ impl Editor {
         }
         self.checkpoint();
         let from = self.seq_pos;
-        self.song_mut().sequence.swap(from, to as usize);
+        self.song_mut().swap_slots(from, to as usize);
         self.seq_pos = to as usize;
         self.after_structure_change();
     }
@@ -856,6 +857,13 @@ impl Editor {
             OpenPalette => self.palette_requested = true,
             OpenFind => self.find_requested = true,
             OpenPreferences => self.prefs_requested = true,
+            PlayBlock => self.play_block(),
+            SectionToggle => self.section_toggle_here(),
+            PlaySection => self.play_section(),
+            SlotMuteToggle => {
+                let (s, t) = (self.seq_pos, self.cursor.track);
+                self.slot_toggle_mute(s, t);
+            }
             RecordToggle => self.record_toggle(),
             RenderToSample => self.render_to_sample(),
             InstrumentPrev => {
