@@ -27,4 +27,5 @@ pub const EFFECTS: &[(&str, &str, &str)] = &[
     ("0P", "Track pan", "set the track's pan, 00 = left, 80 = center, FF = right, until play or stop"),
     ("0X", "Stop track", "cut every note playing on the track"),
     ("ZK", "Set ticks per line", "xx = ticks per line"),
+    ("M1", "Macro 1", "move the instrument's macro 1 knob (M2 to M4 likewise): 00 = 0, FF = 1"),
 ];

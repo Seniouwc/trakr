@@ -53,9 +53,11 @@ impl EnvKind {
     fn preset(self) -> Envelope {
         match self {
             EnvKind::Volume => Envelope::adsr(0.02, 0.2, 0.6, 0.3),
-            EnvKind::Pan => Envelope { enabled: true, points: vec![(0.0, 0.5), (1.0, 0.5)], sustain: None },
+            EnvKind::Pan => {
+                Envelope { enabled: true, points: vec![(0.0, 0.5), (1.0, 0.5)], ..Default::default() }
+            }
             EnvKind::Pitch | EnvKind::Cutoff => {
-                Envelope { enabled: true, points: vec![(0.0, 0.5), (0.5, 0.5)], sustain: None }
+                Envelope { enabled: true, points: vec![(0.0, 0.5), (0.5, 0.5)], ..Default::default() }
             }
         }
     }
@@ -93,6 +95,43 @@ impl GuiApp {
                         e.sustain = if e.sustain == Some(i) { None } else { Some(i) };
                     });
                 }
+            }
+            ui.label(match env.loop_points {
+                Some((a, b)) => format!("Loop {a}-{b}"),
+                None => "No loop".to_string(),
+            });
+            if ui
+                .add_enabled(sel.is_some(), egui::Button::new("Loop start"))
+                .on_hover_text("Repeat from the selected point while the key is held")
+                .clicked()
+            {
+                if let Some(i) = sel {
+                    self.editor.edit_instrument("env_loop", |inst| {
+                        let e = kind.get_mut(inst);
+                        let end = e
+                            .loop_points
+                            .map_or(e.points.len().saturating_sub(1), |l| l.1)
+                            .max(i + 1)
+                            .min(e.points.len().saturating_sub(1));
+                        e.loop_points = (end > i).then_some((i, end));
+                    });
+                }
+            }
+            if ui
+                .add_enabled(sel.is_some(), egui::Button::new("Loop end"))
+                .on_hover_text("...up to the selected point")
+                .clicked()
+            {
+                if let Some(i) = sel {
+                    self.editor.edit_instrument("env_loop", |inst| {
+                        let e = kind.get_mut(inst);
+                        let start = e.loop_points.map_or(0, |l| l.0).min(i.saturating_sub(1));
+                        e.loop_points = (i > start).then_some((start, i));
+                    });
+                }
+            }
+            if ui.add_enabled(env.loop_points.is_some(), egui::Button::new("No loop")).clicked() {
+                self.editor.edit_instrument("env_loop", |inst| kind.get_mut(inst).loop_points = None);
             }
             ui.label("View");
             ui.add(egui::DragValue::new(&mut self.env_span).range(0.1..=30.0).speed(0.05).suffix(" s"));

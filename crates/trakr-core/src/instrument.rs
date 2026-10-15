@@ -364,6 +364,8 @@ pub enum LfoTarget {
     Pitch,
     /// depth = octaves (0..5); needs an instrument filter
     Cutoff,
+    /// depth = octaves of filter resonance (0..3); needs an instrument filter
+    Resonance,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -373,8 +375,16 @@ pub enum LfoShape {
     Triangle,
     Saw,
     Square,
+    /// A new random level each cycle, held.
     Random,
+    /// A new random level each cycle, glided to.
+    SmoothRandom,
+    /// Walks through `InstLfo::steps`, one step per `1/n` of a cycle.
+    Stepper,
 }
+
+/// Steps in a stepper LFO.
+pub const MAX_STEPS: usize = 16;
 
 /// A low-frequency oscillator that runs per note.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
@@ -387,13 +397,60 @@ pub struct InstLfo {
     /// Seconds for the LFO to reach full depth after the note starts.
     #[serde(default)]
     pub fade_in: f32,
+    /// Levels (-1..1) for `LfoShape::Stepper`; only the first `steps` are used.
+    #[serde(default = "default_steps")]
+    pub step_values: [f32; MAX_STEPS],
+    #[serde(default = "default_step_count")]
+    pub steps: u8,
+}
+
+fn default_steps() -> [f32; MAX_STEPS] {
+    let mut v = [0.0; MAX_STEPS];
+    for (i, s) in v.iter_mut().enumerate() {
+        *s = if i % 2 == 0 { 1.0 } else { -1.0 };
+    }
+    v
+}
+
+fn default_step_count() -> u8 {
+    8
 }
 
 impl Default for InstLfo {
     fn default() -> Self {
-        Self { target: LfoTarget::Volume, shape: LfoShape::Sine, rate: 4.0, depth: 0.3, fade_in: 0.0 }
+        Self {
+            target: LfoTarget::Volume,
+            shape: LfoShape::Sine,
+            rate: 4.0,
+            depth: 0.3,
+            fade_in: 0.0,
+            step_values: default_steps(),
+            steps: default_step_count(),
+        }
     }
 }
+
+/// Where a note-level modulation value comes from, besides LFOs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ModSource {
+    /// The played key: -1 at C-0 .. 0 at C-4 .. +1 at C-8.
+    Key,
+    /// The note velocity: -1 (silent) .. +1 (full).
+    Velocity,
+    /// One of the instrument's macro knobs (0-based, `MAX_MACROS`), -1..1 around the middle.
+    Macro(u8),
+}
+
+/// One routed modulation: a source scaled by `depth` into a target.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct InstMod {
+    pub source: ModSource,
+    pub target: LfoTarget,
+    pub depth: f32,
+}
+
+pub const MAX_INST_MODS: usize = 8;
+pub const MAX_MACROS: usize = 4;
 
 /// Most LFOs per instrument.
 pub const MAX_INST_LFOS: usize = 4;
@@ -487,6 +544,19 @@ pub struct Instrument {
     /// How much a low velocity darkens the note: octaves of cutoff lost at velocity 0 (0..5).
     #[serde(default)]
     pub vel_cutoff: f32,
+    /// Key / velocity / macro routings (at most `MAX_INST_MODS` are used).
+    #[serde(default)]
+    pub mods: Vec<InstMod>,
+    /// Macro knob positions 0..1 (pattern commands `M1`..`M4` move them while playing).
+    #[serde(default = "default_macros")]
+    pub macros: [f32; MAX_MACROS],
+    /// Seconds a note takes to fade away after note-off (0 = off).
+    #[serde(default)]
+    pub fade_out: f32,
+}
+
+fn default_macros() -> [f32; MAX_MACROS] {
+    [0.5; MAX_MACROS]
 }
 
 impl Instrument {
@@ -508,6 +578,9 @@ impl Instrument {
             lfos: Vec::new(),
             key_track: 0.0,
             vel_cutoff: 0.0,
+            mods: Vec::new(),
+            macros: default_macros(),
+            fade_out: 0.0,
         }
     }
 

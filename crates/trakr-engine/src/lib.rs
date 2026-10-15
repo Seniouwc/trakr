@@ -1971,6 +1971,50 @@ mod sequencer_tests {
     }
 
     #[test]
+    fn macros_scale_targets_and_pattern_commands_move_them() {
+        let setup = |amount: Option<u8>| {
+            let mut song = song_with(vec![1.0; 30_000], LoopMode::Forward);
+            song.instruments[0].mods.push(trakr_core::InstMod {
+                source: trakr_core::ModSource::Macro(0),
+                target: trakr_core::LfoTarget::Volume,
+                depth: 1.0,
+            });
+            put(&mut song, 0, |l| note(&mut l.notes[0]));
+            if let Some(a) = amount {
+                put(&mut song, 1, |l| l.effects[0] = EffectCmd { id: *b"M1", amount: a });
+            }
+            render(song, 3000)
+        };
+        let still = setup(None);
+        assert!((still[500] - 1.0).abs() < 0.05, "the middle position changes nothing: {}", still[500]);
+        let off = setup(Some(0));
+        assert!(
+            off[1500] < 0.05 && off[500] > 0.9,
+            "macro down silences it after the command: {}",
+            off[1500]
+        );
+        let up = setup(Some(255));
+        assert!(up[1500] > 1.9, "macro up doubles it: {}", up[1500]);
+    }
+
+    #[test]
+    fn fade_out_lets_a_released_note_die_away() {
+        let mut song = song_with(vec![1.0; 30_000], LoopMode::Forward);
+        song.instruments[0].fade_out = 0.5;
+        put(&mut song, 0, |l| note(&mut l.notes[0]));
+        put(&mut song, 1, |l| l.notes[0].note = NOTE_OFF);
+        let out = render(song, 3000);
+        assert!(out[1000 + 50] > 0.8, "starts fading from full: {}", out[1050]);
+        assert!(out[1250] > 0.3 && out[1250] < 0.7, "half way: {}", out[1250]);
+        assert!(out[1700] < 0.02, "gone after the fade: {}", out[1700]);
+        // without it the note ends at once
+        let mut plain = song_with(vec![1.0; 30_000], LoopMode::Forward);
+        put(&mut plain, 0, |l| note(&mut l.notes[0]));
+        put(&mut plain, 1, |l| l.notes[0].note = NOTE_OFF);
+        assert!(render(plain, 3000)[1100] < 0.05);
+    }
+
+    #[test]
     fn delay_column_offsets_the_note() {
         let mut song = song_with(vec![1.0; 100], LoopMode::Off);
         put(&mut song, 0, |l| {
@@ -2232,7 +2276,11 @@ mod sequencer_tests {
     fn pitch_envelope_bends_the_note() {
         let mut song = ramp_song();
         // 0 -> +12 semitones over half a second
-        let env = trakr_core::Envelope { enabled: true, points: vec![(0.0, 0.5), (0.5, 1.0)], sustain: None };
+        let env = trakr_core::Envelope {
+            enabled: true,
+            points: vec![(0.0, 0.5), (0.5, 1.0)],
+            ..Default::default()
+        };
         *Arc::make_mut(&mut song.instruments[0].pitch_env) = env;
         put(&mut song, 0, |l| note(&mut l.notes[0]));
         let out = render(song, 600);
@@ -2544,6 +2592,7 @@ mod device_tests {
             enabled: true,
             points: vec![(0.0, 1.0), (1.0, 1.0)],
             sustain: None,
+            loop_points: None,
         });
         let out = render(song, 20_000);
         assert!(peak(&out[5000..20_000]) > 0.5);
@@ -2566,6 +2615,7 @@ mod device_tests {
             rate: 2.0,
             depth: 1.0,
             fade_in: 0.0,
+            ..Default::default()
         });
         song.instruments[0].samples[0].loop_mode = LoopMode::Forward;
         let out = render(song, 22_000);
@@ -2581,6 +2631,7 @@ mod device_tests {
             rate: 2.0,
             depth: 1.0,
             fade_in: 1.0,
+            ..Default::default()
         });
         let out = render(song, 22_000);
         assert!((out[2000] - 1.0).abs() < 0.3 && out[12_000] < 0.9 || out[12_000] > 1.1);
@@ -2592,10 +2643,32 @@ mod device_tests {
             rate: 1.0,
             depth: 5.0,
             fade_in: 0.0,
+            ..Default::default()
         });
         song.instruments[0].samples[0].loop_mode = LoopMode::Forward;
         let out = render(song, 22_000);
         assert!(peak(&out[10_000..20_000]) < 0.2 || peak(&out[1000..9000]) > 0.4);
+    }
+
+    #[test]
+    fn stepper_lfo_follows_its_steps() {
+        let mut song = song_with(vec![1.0; 30_000]);
+        song.instruments[0].samples[0].loop_mode = LoopMode::Forward;
+        let mut l = trakr_core::InstLfo {
+            target: trakr_core::LfoTarget::Volume,
+            shape: trakr_core::LfoShape::Stepper,
+            rate: 1.0, // one cycle per second
+            depth: 0.5,
+            ..Default::default()
+        };
+        l.steps = 4;
+        l.step_values[..4].copy_from_slice(&[1.0, 0.0, -1.0, 0.0]);
+        song.instruments[0].lfos.push(l);
+        let out = render(song, 44_100);
+        // steps of a quarter second: gain 1.5, 1.0, 0.5, 1.0
+        let at = |s: f32| out[(s * RATE as f32) as usize];
+        assert!((at(0.1) - 1.5).abs() < 0.1 && (at(0.35) - 1.0).abs() < 0.1, "{} {}", at(0.1), at(0.35));
+        assert!((at(0.6) - 0.5).abs() < 0.1 && (at(0.85) - 1.0).abs() < 0.1, "{} {}", at(0.6), at(0.85));
     }
 
     #[test]
@@ -2820,9 +2893,10 @@ mod device_tests {
         }
     }
 
-    const FX_IDS: [&[u8; 2]; 27] = [
+    const FX_IDS: [&[u8; 2]; 31] = [
         b"ZT", b"ZL", b"ZB", b"0S", b"0B", b"0C", b"0Q", b"0R", b"0U", b"0D", b"0G", b"0V", b"0T", b"0A",
-        b"0W", b"0I", b"0O", b"XX", b"00", b"ZZ", b"0M", b"0N", b"0Y", b"0L", b"0P", b"0X", b"ZK",
+        b"0W", b"0I", b"0O", b"XX", b"00", b"ZZ", b"0M", b"0N", b"0Y", b"0L", b"0P", b"0X", b"ZK", b"M1",
+        b"M2", b"M4", b"M9",
     ];
 
     /// Stands in for a hosted plugin: scales the signal by the first parameter.
@@ -2890,6 +2964,7 @@ mod device_tests {
                         trakr_core::LfoTarget::Pan,
                         trakr_core::LfoTarget::Pitch,
                         trakr_core::LfoTarget::Cutoff,
+                        trakr_core::LfoTarget::Resonance,
                     ]),
                     shape: *rng.pick(&[
                         trakr_core::LfoShape::Sine,
@@ -2897,11 +2972,48 @@ mod device_tests {
                         trakr_core::LfoShape::Saw,
                         trakr_core::LfoShape::Square,
                         trakr_core::LfoShape::Random,
+                        trakr_core::LfoShape::SmoothRandom,
+                        trakr_core::LfoShape::Stepper,
                     ]),
                     rate: rng.below(100_000) as f32 / 1000.0 - 20.0,
                     depth: rng.below(100_000) as f32 / 1000.0 - 50.0,
                     fade_in: rng.below(3000) as f32 / 100.0 - 5.0,
+                    ..Default::default()
                 });
+            }
+            for _ in 0..rng.below(10) {
+                inst.mods.push(trakr_core::InstMod {
+                    source: {
+                        let k = rng.below(9) as u8;
+                        *rng.pick(&[
+                            trakr_core::ModSource::Key,
+                            trakr_core::ModSource::Velocity,
+                            trakr_core::ModSource::Macro(k),
+                        ])
+                    },
+                    target: *rng.pick(&[
+                        trakr_core::LfoTarget::Volume,
+                        trakr_core::LfoTarget::Pan,
+                        trakr_core::LfoTarget::Pitch,
+                        trakr_core::LfoTarget::Cutoff,
+                        trakr_core::LfoTarget::Resonance,
+                    ]),
+                    depth: rng.below(4000) as f32 / 100.0 - 20.0,
+                });
+            }
+            inst.macros = [rng.below(100) as f32 / 50.0 - 0.5; 4];
+            inst.fade_out = rng.below(300) as f32 / 100.0 - 0.5;
+            if rng.below(3) == 0 {
+                *Arc::make_mut(&mut inst.volume_env) = trakr_core::Envelope {
+                    enabled: true,
+                    points: vec![(0.0, 0.0), (0.05, 1.0), (0.2, 0.5), (0.4, 0.0)],
+                    sustain: if rng.below(2) == 0 { Some(rng.below(6) as usize) } else { None },
+                    loop_points: if rng.below(2) == 0 {
+                        Some((rng.below(6) as usize, rng.below(6) as usize))
+                    } else {
+                        None
+                    },
+                };
             }
             inst.key_track = rng.below(1000) as f32 / 100.0 - 3.0;
             inst.vel_cutoff = rng.below(1000) as f32 / 100.0 - 3.0;

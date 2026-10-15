@@ -582,3 +582,43 @@ fn pattern_matrix_and_song_properties_work() {
     h.click(Pos2::new(200.0, 640.0));
     h.frame(vec![]);
 }
+
+#[test]
+fn modulation_tab_with_every_kind_of_source_draws() {
+    let mut h = Harness::new();
+    h.app.dock = Dock::Instrument;
+    h.app.sample_tab = SampleTab::Modulation;
+    h.app.editor.edit_instrument("t", |i| {
+        let mut l = trakr_core::InstLfo { shape: trakr_core::LfoShape::Stepper, ..Default::default() };
+        l.steps = 6;
+        i.lfos.push(l);
+        i.lfos.push(trakr_core::InstLfo {
+            shape: trakr_core::LfoShape::SmoothRandom,
+            target: trakr_core::LfoTarget::Resonance,
+            ..Default::default()
+        });
+        i.mods.push(trakr_core::InstMod {
+            source: trakr_core::ModSource::Macro(2),
+            target: trakr_core::LfoTarget::Pan,
+            depth: 0.5,
+        });
+        i.mods.push(trakr_core::InstMod {
+            source: trakr_core::ModSource::Velocity,
+            target: trakr_core::LfoTarget::Pitch,
+            depth: -3.0,
+        });
+        i.fade_out = 0.4;
+    });
+    for _ in 0..4 {
+        h.frame(vec![]);
+    }
+    h.app.sample_tab = SampleTab::Env(envelopes::EnvKind::Volume);
+    h.app.editor.edit_instrument("t", |i| {
+        let mut e = trakr_core::Envelope::adsr(0.01, 0.1, 0.5, 0.2);
+        e.loop_points = Some((1, 2));
+        i.volume_env = std::sync::Arc::new(e);
+    });
+    for _ in 0..3 {
+        h.frame(vec![]);
+    }
+}

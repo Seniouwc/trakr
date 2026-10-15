@@ -10,6 +10,9 @@ pub struct Envelope {
     pub points: Vec<(f32, f32)>,
     /// Index into `points` where the envelope waits for note-off.
     pub sustain: Option<usize>,
+    /// Point indices `(from, to)`: while the key is held the envelope repeats the stretch between them.
+    #[serde(default)]
+    pub loop_points: Option<(usize, usize)>,
 }
 
 impl Envelope {
@@ -24,6 +27,7 @@ impl Envelope {
                 (attack + decay + release, 0.0),
             ],
             sustain: Some(2),
+            loop_points: None,
         }
     }
 
@@ -38,6 +42,19 @@ impl Envelope {
 
     /// Map elapsed note time to envelope time: held at the sustain point until `released_at`.
     pub fn effective_time(&self, age: f32, released_at: Option<f32>) -> f32 {
+        if let Some((a, b)) = self.loop_points {
+            if let (Some(pa), Some(pb)) = (self.points.get(a), self.points.get(b)) {
+                let (ta, tb) = (pa.0, pb.0);
+                if tb > ta + 1e-4 {
+                    let looped = |t: f32| if t > tb { ta + (t - ta) % (tb - ta) } else { t };
+                    return match released_at {
+                        None => looped(age),
+                        // after note-off the envelope carries on forward from where the loop was
+                        Some(r) => looped(r) + (age - r).max(0.0),
+                    };
+                }
+            }
+        }
         match (self.sustain_time(), released_at) {
             (Some(st), None) => age.min(st),
             (Some(st), Some(r)) => st + (age - r).max(0.0),
@@ -129,5 +146,27 @@ mod tests {
         assert!(e.points[1].0 <= e.points[2].0 && e.points[1].1 == 1.0);
         e.remove(2);
         assert_eq!(e.sustain, None);
+    }
+
+    #[test]
+    fn loop_repeats_while_held_and_carries_on_after_release() {
+        let e = Envelope {
+            enabled: true,
+            points: vec![(0.0, 0.0), (0.1, 1.0), (0.2, 0.0), (0.5, 0.0)],
+            sustain: None,
+            loop_points: Some((1, 2)),
+        };
+        // held: 0..0.1 plays once, then 0.1..0.2 repeats forever
+        assert!((e.effective_time(0.05, None) - 0.05).abs() < 1e-6);
+        assert!((e.effective_time(0.25, None) - 0.15).abs() < 1e-5);
+        assert!((e.effective_time(1.05, None) - 0.15).abs() < 1e-4);
+        // released at 0.25 (inside the loop at 0.15): continues forward from there
+        assert!((e.effective_time(0.35, Some(0.25)) - 0.25).abs() < 1e-5);
+        // a damaged loop (end before start, or out of range) is ignored
+        let mut bad = e.clone();
+        bad.loop_points = Some((2, 1));
+        assert_eq!(bad.effective_time(0.3, None), 0.3);
+        bad.loop_points = Some((1, 99));
+        assert_eq!(bad.effective_time(0.3, None), 0.3);
     }
 }

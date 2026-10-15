@@ -2,8 +2,8 @@ use crate::dsp::{Biquad, Coeffs};
 use std::sync::Arc;
 use std::sync::OnceLock;
 use trakr_core::{
-    Envelope, FilterMode, InstLfo, Instrument, InstrumentFilter, Interpolation, LfoShape, LfoTarget,
-    LoopMode, Nna, Sample, MAX_INST_LFOS,
+    Envelope, FilterMode, InstLfo, InstMod, Instrument, InstrumentFilter, Interpolation, LfoShape, LfoTarget,
+    LoopMode, ModSource, Nna, Sample, MAX_INST_LFOS, MAX_INST_MODS, MAX_MACROS, MAX_STEPS,
 };
 
 /// How fast a voice's gain and pitch follow their targets (smooths ticks, fades and envelopes).
@@ -78,6 +78,14 @@ pub struct Voice {
     n_lfos: usize,
     lfo_phase: [f32; MAX_INST_LFOS],
     lfo_held: [f32; MAX_INST_LFOS],
+    /// Previous random level, for gliding random LFOs.
+    lfo_prev: [f32; MAX_INST_LFOS],
+    mods: [InstMod; MAX_INST_MODS],
+    n_mods: usize,
+    macros: [f32; MAX_MACROS],
+    key_val: f32,
+    vel_val: f32,
+    fade_out: f32,
     lfo_rng: u32,
     /// Octaves of cutoff offset from key tracking and velocity.
     cutoff_bias: f32,
@@ -191,6 +199,20 @@ impl Voice {
             n_lfos: inst.lfos.len().min(MAX_INST_LFOS),
             lfo_phase: [0.0; MAX_INST_LFOS],
             lfo_held: [0.0; MAX_INST_LFOS],
+            lfo_prev: [0.0; MAX_INST_LFOS],
+            mods: {
+                let mut a = [InstMod { source: ModSource::Key, target: LfoTarget::Volume, depth: 0.0 };
+                    MAX_INST_MODS];
+                for (d, s) in a.iter_mut().zip(&inst.mods) {
+                    *d = *s;
+                }
+                a
+            },
+            n_mods: inst.mods.len().min(MAX_INST_MODS),
+            macros: inst.macros,
+            key_val: ((note as f32 - 48.0) / 48.0).clamp(-1.0, 1.0),
+            vel_val: vol.clamp(0.0, 1.0) * 2.0 - 1.0,
+            fade_out: inst.fade_out.clamp(0.0, 60.0),
             lfo_rng: 0x1234_5678 ^ (note as u32) << 8 ^ column as u32,
             cutoff_bias: inst.key_track.clamp(0.0, 2.0) * (note as f32 - 48.0) / 12.0
                 - inst.vel_cutoff.clamp(0.0, 5.0) * (1.0 - vol.clamp(0.0, 1.0)),
@@ -240,7 +262,7 @@ impl Voice {
         }
         self.releasing = true;
         self.released_at = Some(self.age_frames as f32);
-        if !self.vol_env.enabled {
+        if !self.vol_env.enabled && self.fade_out <= 0.0 {
             self.ending = true;
         }
     }
@@ -317,6 +339,7 @@ impl Voice {
             b"0W" => self.vslide = (x - y) / 64.0,
             b"0M" => self.dyn_gain = (amount as f32 / 128.0).min(2.0),
             b"0N" => self.autopan = (x, y / 15.0),
+            [b'M', d @ b'1'..=b'4'] => self.macros[(*d - b'1') as usize] = amount as f32 / 255.0,
             b"0I" if amount > 0 => {
                 self.dyn_gain = 0.0;
                 self.fade = Some((1.0, 1.0 / amount as f32));
@@ -381,13 +404,15 @@ impl Voice {
         self.trem_phase = (self.trem_phase + self.trem.0 * 0.5 * dt).fract();
         self.trem_gain = 1.0 - self.trem.1 * (0.5 + 0.5 * (self.trem_phase * std::f32::consts::TAU).sin());
         // per-note instrument LFOs
-        let (mut lfo_vol, mut lfo_pan, mut lfo_semis, mut lfo_oct) = (1.0f32, 0.0f32, 0.0f32, 0.0f32);
+        let (mut lfo_vol, mut lfo_pan, mut lfo_semis, mut lfo_oct, mut lfo_res) =
+            (1.0f32, 0.0f32, 0.0f32, 0.0f32, 0.0f32);
         for i in 0..self.n_lfos {
             let l = self.lfos[i];
             let before = self.lfo_phase[i];
             self.lfo_phase[i] = (before + l.rate.clamp(0.05, 30.0) * dt).fract();
             if self.lfo_phase[i] < before {
                 self.lfo_rng = self.lfo_rng.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                self.lfo_prev[i] = self.lfo_held[i];
                 self.lfo_held[i] = (self.lfo_rng >> 8) as f32 / (1u32 << 24) as f32 * 2.0 - 1.0;
             }
             let ph = self.lfo_phase[i];
@@ -403,6 +428,11 @@ impl Voice {
                     }
                 }
                 LfoShape::Random => self.lfo_held[i],
+                LfoShape::SmoothRandom => self.lfo_prev[i] + (self.lfo_held[i] - self.lfo_prev[i]) * ph,
+                LfoShape::Stepper => {
+                    let n = (l.steps as usize).clamp(1, MAX_STEPS);
+                    l.step_values[((ph * n as f32) as usize).min(n - 1)].clamp(-1.0, 1.0)
+                }
             };
             let fade = if l.fade_in > 0.0 { (age / l.fade_in).min(1.0) } else { 1.0 };
             let v = v * fade * l.depth;
@@ -411,6 +441,26 @@ impl Voice {
                 LfoTarget::Pan => lfo_pan += v,
                 LfoTarget::Pitch => lfo_semis += v.clamp(-12.0, 12.0),
                 LfoTarget::Cutoff => lfo_oct += v.clamp(-5.0, 5.0),
+                LfoTarget::Resonance => lfo_res += v.clamp(-3.0, 3.0),
+            }
+        }
+        // key / velocity / macro routings
+        for i in 0..self.n_mods {
+            let m = self.mods[i];
+            let src = match m.source {
+                ModSource::Key => self.key_val,
+                ModSource::Velocity => self.vel_val,
+                ModSource::Macro(k) => {
+                    self.macros[(k as usize).min(MAX_MACROS - 1)].clamp(0.0, 1.0) * 2.0 - 1.0
+                }
+            };
+            let v = src * m.depth;
+            match m.target {
+                LfoTarget::Volume => lfo_vol *= (1.0 + v).clamp(0.0, 2.0),
+                LfoTarget::Pan => lfo_pan += v,
+                LfoTarget::Pitch => lfo_semis += v.clamp(-12.0, 12.0),
+                LfoTarget::Cutoff => lfo_oct += v.clamp(-5.0, 5.0),
+                LfoTarget::Resonance => lfo_res += v.clamp(-3.0, 3.0),
             }
         }
         let mut semis = self.semis + self.arp_offset;
@@ -437,6 +487,13 @@ impl Voice {
                 self.ending = true;
             }
         }
+        if let (Some(r), true) = (rel, self.fade_out > 0.0) {
+            let t = ((age - r) / self.fade_out).clamp(0.0, 1.0);
+            gain *= 1.0 - t;
+            if t >= 1.0 {
+                self.ending = true;
+            }
+        }
         self.gm_target = gain;
         let mut pan = self.pan;
         if self.pan_env.enabled {
@@ -457,7 +514,7 @@ impl Voice {
                 cutoff *= 2f32.powf((self.cutoff_env.value_at(t) - 0.5) * 10.0);
                 // +-5 octaves
             }
-            let (fs, q) = (rate as f32, self.filter.resonance);
+            let (fs, q) = (rate as f32, (self.filter.resonance * 2f32.powf(lfo_res)).clamp(0.1, 30.0));
             self.filter_coeffs = match self.filter.mode {
                 FilterMode::HighPass => Coeffs::highpass(fs, cutoff, q),
                 FilterMode::BandPass => Coeffs::bandpass(fs, cutoff, q),
