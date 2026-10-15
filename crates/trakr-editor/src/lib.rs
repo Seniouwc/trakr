@@ -87,7 +87,7 @@ pub fn cell_text_hidden(line: Option<&Line>, c: usize, notes: usize, hide: [bool
     }
     let n = line.map(|l| l.notes[c]).unwrap_or_default();
     let mut s = format!("{} {}", note_name(n.note), hex2(n.instrument, EMPTY));
-    let fields = [hex2(n.volume, EMPTY), hex2(n.panning, EMPTY), hex2(n.delay, 0)];
+    let fields = [column_text(n.volume, EMPTY), column_text(n.panning, EMPTY), hex2(n.delay, 0)];
     for (f, hidden) in fields.into_iter().zip(hide) {
         if !hidden {
             s.push(' ');
@@ -96,6 +96,8 @@ pub fn cell_text_hidden(line: Option<&Line>, c: usize, notes: usize, hide: [bool
     }
     s
 }
+
+use trakr_core::effects::column_text;
 
 /// Text for one column of a line: a note column ("C-4 01 40 80 00") or an effect column ("0A40").
 pub fn cell_text(line: Option<&Line>, c: usize, notes: usize) -> String {
@@ -112,8 +114,8 @@ pub fn cell_text(line: Option<&Line>, c: usize, notes: usize) -> String {
             "{} {} {} {} {}",
             note_name(n.note),
             hex2(n.instrument, EMPTY),
-            hex2(n.volume, EMPTY),
-            hex2(n.panning, EMPTY),
+            column_text(n.volume, EMPTY),
+            column_text(n.panning, EMPTY),
             hex2(n.delay, 0)
         )
     } else {
@@ -952,12 +954,64 @@ impl Editor {
             return;
         }
         if col < notes {
+            if self.column_cmd_char(col, sub, c) {
+                return;
+            }
             if let Some(d) = c.to_digit(16) {
                 self.hex_note_field(col, sub, d as u8);
             }
         } else {
             self.effect_field(col - notes, sub, c);
         }
+    }
+
+    /// Letter commands (`G4`, `U2`, ...) in the volume and panning columns: a letter on the first character
+    /// starts one, and a hex digit on the second character of an existing command sets its digit.
+    fn column_cmd_char(&mut self, col: usize, sub: usize, c: char) -> bool {
+        use trakr_core::effects::{column_cmd_decode, column_cmd_encode};
+        if !(3..=6).contains(&sub) {
+            return false;
+        }
+        let first = sub % 2 == 1;
+        let digit = c.to_digit(16);
+        let is_vol = sub <= 4;
+        let line = self
+            .song
+            .patterns
+            .get(self.pattern_index().unwrap_or(0))
+            .and_then(|p| p.line(self.cursor.track, self.cursor.line));
+        let cur = line.map_or(EMPTY, |l| if is_vol { l.notes[col].volume } else { l.notes[col].panning });
+        let new = if first {
+            // letters b, c and d are also hex digits; digits above 8 are not valid volumes anyway
+            if digit.is_some_and(|d| d <= 8) {
+                return false;
+            }
+            match column_cmd_encode(c, 0) {
+                Some(b) => b,
+                // 9, A and E are no volume and no command; F starts the empty marker FF
+                None if c == 'f' => return false,
+                None => return true,
+            }
+        } else {
+            match (column_cmd_decode(cur), digit) {
+                (Some((i, _)), Some(d)) => 0x81 + (i as u8) * 16 + d as u8,
+                _ => return false,
+            }
+        };
+        self.edit(|l| {
+            if is_vol {
+                l.notes[col].volume = new;
+            } else {
+                l.notes[col].panning = new;
+            }
+        });
+        if first {
+            self.cursor.sub += 1;
+        } else {
+            self.cursor.sub -= 1;
+            self.step_down();
+        }
+        true
     }
 
     fn hex_note_field(&mut self, col: usize, sub: usize, nib: u8) {

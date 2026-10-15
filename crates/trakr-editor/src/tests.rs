@@ -2150,3 +2150,44 @@ fn hidden_sub_columns_are_skipped_by_the_cursor_and_laid_out_tight() {
     e.track_set_sub_column(0, 9, false);
     e.track_set_color(99, None);
 }
+
+#[test]
+fn column_commands_are_typed_with_letters_and_shown_as_letters() {
+    use crate::cell_text;
+    let mut e = ed();
+    e.edit_mode = true;
+    e.set_cursor(0, 0, 0, 0);
+    e.on_key(key('z')); // C-3 style note, cursor steps down
+    e.set_cursor(0, 0, 3, 0); // first volume character
+    e.on_key(key('g'));
+    assert_eq!(e.cursor.sub, 4, "moved to the digit");
+    e.on_key(key('4'));
+    let n = e.song.patterns[0].line(0, 0).unwrap().notes[0];
+    assert_eq!(n.volume, trakr_core::effects::column_cmd_encode('G', 4).unwrap());
+    assert!(
+        cell_text(e.song.patterns[0].line(0, 0), 0, 1).contains(" G4 "),
+        "{}",
+        cell_text(e.song.patterns[0].line(0, 0), 0, 1)
+    );
+    // plain hex still works in the same field: 4 then 0 makes volume 0x40
+    e.set_cursor(0, 0, 3, 1);
+    e.on_key(key('4'));
+    e.on_key(key('0'));
+    assert_eq!(e.song.patterns[0].line(0, 1).unwrap().notes[0].volume, 0x40);
+    // letters in the panning column; b/c/d work as letters on the first character
+    e.set_cursor(0, 0, 5, 2);
+    e.on_key(key('c'));
+    e.on_key(key('2'));
+    assert_eq!(
+        e.song.patterns[0].line(0, 2).unwrap().notes[0].panning,
+        trakr_core::effects::column_cmd_encode('C', 2).unwrap()
+    );
+    // a digit above 8 on the first character that is not a command letter is ignored
+    e.set_cursor(0, 0, 3, 3);
+    e.on_key(key('a'));
+    assert!(e.song.patterns[0].line(0, 3).is_none_or(|l| l.notes[0].volume == EMPTY));
+    // a letter on the second character with no command there does nothing
+    e.set_cursor(0, 0, 4, 4);
+    e.on_key(key('g'));
+    assert!(e.song.patterns[0].line(0, 4).is_none_or(|l| l.notes[0].volume == EMPTY));
+}

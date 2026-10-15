@@ -68,6 +68,7 @@ pub trait PluginGui {
 
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
+use trakr_core::effects::{column_cmd, ColumnCmd};
 use trakr_core::{
     AutoTarget, EffectCmd, MuteState, Phrase, Song, EMPTY, MAX_NOTE_COLUMNS, NOTE_EMPTY, NOTE_OFF,
 };
@@ -78,6 +79,9 @@ const MAX_VOICES: usize = 512;
 const QUEUE_CAP: usize = 256;
 /// Room for the voices a stop or a dense block can retire at once.
 const GARBAGE_CAP: usize = 2048;
+/// Effects carried with a scheduled note: its own effect, the volume and panning column commands, and one
+/// track effect.
+const FX_SLOTS: usize = 4;
 /// Longest plugin latency that is compensated (frames, about 0.19 s at 44.1 kHz).
 const PDC_FRAMES: usize = 8192;
 const MAX_EVENTS: usize = 512;
@@ -175,7 +179,7 @@ struct PhraseRun {
 }
 
 enum EventKind {
-    NoteOn { inst: u8, note: u8, vol: f32, pan: f32, opts: TriggerOpts, fx: [EffectCmd; 3] },
+    NoteOn { inst: u8, note: u8, vol: f32, pan: f32, opts: TriggerOpts, fx: [EffectCmd; FX_SLOTS] },
     Phrase { inst: u8, phrase: usize, note: u8, vol: f32, pan: f32 },
     Release,
 }
@@ -1645,7 +1649,7 @@ impl Engine {
                     vol,
                     pan,
                     opts: TriggerOpts::default(),
-                    fx: [EffectCmd::default(); 3],
+                    fx: [EffectCmd::default(); FX_SLOTS],
                 };
                 if at > 0.0 {
                     self.schedule(at, track, vcol, kind);
@@ -1727,6 +1731,13 @@ impl Engine {
 
             let track_glide = line.effects.iter().find(|e| &e.id == b"0G").map(|e| e.amount);
             for (ci, col) in line.notes.iter().enumerate() {
+                // letter commands in the volume and panning columns
+                let cmds = [column_cmd(col.volume), column_cmd(col.panning)];
+                let col_backwards = backwards || cmds.contains(&Some(ColumnCmd::Backwards));
+                let col_cut = cmds
+                    .iter()
+                    .find_map(|c| if let Some(ColumnCmd::Cut(x)) = c { Some(*x) } else { None })
+                    .or(cut_ticks);
                 if col.note == NOTE_OFF {
                     self.stop_phrase(ti, ci);
                     let at = col.delay as f64 / 256.0 * fpl;
@@ -1758,7 +1769,15 @@ impl Engine {
                     }
                     self.stop_phrase(ti, ci);
                     // Glide: retarget the sounding note in this column instead of retriggering.
-                    let glide = if &col.effect.id == b"0G" { Some(col.effect.amount) } else { track_glide };
+                    let col_glide = cmds.iter().flatten().find_map(|c| match c {
+                        ColumnCmd::Fx(id, amount) if id == b"0G" => Some(*amount),
+                        _ => None,
+                    });
+                    let glide = if &col.effect.id == b"0G" {
+                        Some(col.effect.amount)
+                    } else {
+                        col_glide.or(track_glide)
+                    };
                     if let Some(speed) = glide {
                         if let Some(v) = self
                             .voices
@@ -1770,13 +1789,20 @@ impl Engine {
                             continue;
                         }
                     }
-                    let opts = TriggerOpts { offset, backwards };
+                    let opts = TriggerOpts { offset, backwards: col_backwards };
                     let at = col.delay as f64 / 256.0 * fpl + delay_ticks as f64 * fpt;
-                    let mut fx = [EffectCmd::default(); 3];
+                    let mut fx = [EffectCmd::default(); FX_SLOTS];
+                    let cmd_fx = cmds.iter().flatten().filter_map(|c| match c {
+                        ColumnCmd::Fx(id, amount) => Some(EffectCmd { id: *id, amount: *amount }),
+                        _ => None,
+                    });
                     for (d, f) in fx.iter_mut().zip(
-                        std::iter::once(&col.effect).chain(line.effects.iter()).filter(|f| !f.is_empty()),
+                        std::iter::once(col.effect)
+                            .chain(cmd_fx)
+                            .chain(line.effects.iter().copied())
+                            .filter(|f| !f.is_empty()),
                     ) {
-                        *d = *f;
+                        *d = f;
                     }
                     let kind = EventKind::NoteOn { inst: col.instrument, note: col.note, vol, pan, opts, fx };
                     if at > 0.0 {
@@ -1784,7 +1810,7 @@ impl Engine {
                     } else {
                         self.note_on(ti, ci, col.instrument, col.note, vol, pan, opts);
                     }
-                    if let Some(c) = cut_ticks {
+                    if let Some(c) = col_cut {
                         self.schedule(at + c as f64 * fpt, ti, ci, EventKind::Release);
                     }
                     if let Some(r) = retrig_ticks {
@@ -1796,7 +1822,7 @@ impl Engine {
                                 vol,
                                 pan,
                                 opts,
-                                fx: [EffectCmd::default(); 3],
+                                fx: [EffectCmd::default(); FX_SLOTS],
                             };
                             self.schedule(t, ti, ci, kind);
                             t += r as f64 * fpt;
@@ -1821,11 +1847,21 @@ impl Engine {
                     v.apply_effect(fx.id, fx.amount);
                 }
             }
-            for (ci, col) in line.notes.iter().enumerate().filter(|(_, c)| !c.effect.is_empty()) {
-                for v in
-                    self.voices.iter_mut().filter(|v| v.track == ti && v.column == ci && !v.is_releasing())
-                {
-                    v.apply_effect(col.effect.id, col.effect.amount);
+            for (ci, col) in line.notes.iter().enumerate() {
+                let fx = std::iter::once(col.effect)
+                    .chain([col.volume, col.panning].into_iter().filter_map(|b| match column_cmd(b) {
+                        Some(ColumnCmd::Fx(id, amount)) => Some(EffectCmd { id, amount }),
+                        _ => None,
+                    }))
+                    .filter(|f| !f.is_empty());
+                for f in fx {
+                    for v in self
+                        .voices
+                        .iter_mut()
+                        .filter(|v| v.track == ti && v.column == ci && !v.is_releasing())
+                    {
+                        v.apply_effect(f.id, f.amount);
+                    }
                 }
             }
         }
@@ -2682,6 +2718,69 @@ mod sequencer_tests {
         });
         let out = render(song, 50);
         assert!(out[0] > 0.9 && out[40] < out[0]);
+    }
+
+    #[test]
+    fn volume_and_panning_column_commands() {
+        use trakr_core::effects::column_cmd_encode;
+        let cmd = |letter, x| column_cmd_encode(letter, x).unwrap();
+        // B: backwards, from the volume column
+        let ramp: Vec<f32> = (0..100).map(|i| i as f32 / 100.0).collect();
+        let mut song = song_with(ramp, LoopMode::Off);
+        put(&mut song, 0, |l| {
+            note(&mut l.notes[0]);
+            l.notes[0].volume = cmd('B', 0);
+        });
+        let out = render(song, 50);
+        assert!(out[0] > 0.9 && out[40] < out[0], "backwards from the volume column");
+        // C: cut after 2 of 4 ticks (500 frames), from the panning column; the volume stays full
+        let mut song = song_with(vec![1.0; 3000], LoopMode::Off);
+        put(&mut song, 0, |l| {
+            note(&mut l.notes[0]);
+            l.notes[0].panning = cmd('C', 2);
+        });
+        let out = render(song, 1000);
+        let end = out.iter().rposition(|s| s.abs() > 0.1).unwrap();
+        assert!((495..=530).contains(&end), "cut after two ticks: {end}");
+        // I: fade in over 4 ticks (1000 frames)
+        let mut song = song_with(vec![1.0; 3000], LoopMode::Off);
+        put(&mut song, 0, |l| {
+            note(&mut l.notes[0]);
+            l.notes[0].volume = cmd('I', 3);
+        });
+        let out = render(song, 1500);
+        assert!(out[100] < 0.3 && out[1400] > 0.9, "{} {}", out[100], out[1400]);
+        // the same command with a delayed note still applies (it is carried with the note)
+        let mut song = song_with(vec![1.0; 3000], LoopMode::Off);
+        put(&mut song, 0, |l| {
+            note(&mut l.notes[0]);
+            l.notes[0].delay = 128;
+            l.notes[0].volume = cmd('I', 3);
+        });
+        let out = render(song, 2000);
+        assert!(out[600] < 0.3 && out[1900] > 0.9, "delayed fade in: {} {}", out[600], out[1900]);
+        // U: slide up makes a ramp play faster than the plain one
+        let slide = |amount_letter: Option<char>| {
+            let ramp: Vec<f32> = (0..3000).map(|i| (i as f32 / 3000.0).min(1.0)).collect();
+            let mut song = song_with(ramp, LoopMode::Off);
+            put(&mut song, 0, |l| {
+                note(&mut l.notes[0]);
+                if let Some(c) = amount_letter {
+                    l.notes[0].volume = cmd(c, 15);
+                }
+            });
+            let out = render(song, 1300);
+            out[1200]
+        };
+        assert!(slide(Some('U')) > slide(None) * 1.1, "slide up is ahead");
+        assert!(slide(Some('D')) < slide(None) * 0.95, "slide down is behind");
+        // plain volumes are unaffected: 0x80 is still full
+        let mut song = song_with(vec![1.0; 100], LoopMode::Off);
+        put(&mut song, 0, |l| {
+            note(&mut l.notes[0]);
+            l.notes[0].volume = 0x80;
+        });
+        assert!((render(song, 50)[10] - 1.0).abs() < 0.01);
     }
 
     #[test]

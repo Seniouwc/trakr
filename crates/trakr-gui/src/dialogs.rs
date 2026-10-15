@@ -383,6 +383,17 @@ impl GuiApp {
                     }
                 });
                 ui.separator();
+                ui.heading("Volume and panning column commands");
+                ui.label("On the first character of the volume or panning column, type a letter instead of a hex digit; the second character is a hex digit. They act on the note in that column.");
+                egui::Grid::new("colcmds").striped(true).show(ui, |ui| {
+                    for (letter, name, desc) in trakr_core::effects::COLUMN_CMDS {
+                        ui.monospace(letter.to_string());
+                        ui.label(*name);
+                        ui.label(*desc);
+                        ui.end_row();
+                    }
+                });
+                ui.separator();
                 ui.heading("Fading notes");
                 ui.label("Select lines and use Block > Fade in/out to ramp the volume column, or put 0I (fade in) / 0O (fade out) on the note's line. Volume values on empty lines change the sounding note.");
                 ui.separator();
