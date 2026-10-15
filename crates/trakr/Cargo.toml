@@ -10,6 +10,7 @@ anyhow = "1.0.104"
 trakr-core = { workspace = true }
 trakr-engine = { workspace = true, features = ["audio"] }
 trakr-format = { workspace = true }
+trakr-sample = { workspace = true }
 trakr-editor = { workspace = true }
 trakr-gui = { workspace = true }
 trakr-midi = { workspace = true, features = ["backend"] }

@@ -22,7 +22,7 @@ mod structure_ops;
 pub use action::Action;
 pub use audio_ops::{AudioControl, AudioInfo, AudioSettings};
 pub use edit_tools::{CellSpec, Scope};
-pub use io::load_song;
+pub use io::{load_song, load_song_report};
 pub use keys::{KeyCode, KeyEvent};
 pub use midi_map::{MapTarget, MidiMapping};
 pub use ops::{Cell, Clipboard};

@@ -4009,6 +4009,7 @@ dependencies = [
  "trakr-format",
  "trakr-gui",
  "trakr-midi",
+ "trakr-sample",
  "trakr-xrns",
 ]
 

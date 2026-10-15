@@ -11,6 +11,7 @@ cargo test --workspace             # must stay green
 cargo clippy --workspace --all-targets
 cargo fmt --all
 cargo test -p trakr-engine --no-default-features   # headless engine tests (no ALSA needed)
+trakr --check|--render|--devices|--effects|--example   # headless CLI, see docs/AGENT_GUIDE.md
 ```
 System dependency: ALSA headers (`libasound2-dev`, or `nix develop` using flake.nix).
 
