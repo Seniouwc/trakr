@@ -4,14 +4,18 @@
 use crate::GuiApp;
 use eframe::egui::{self, Align2, Color32, EventFilter, FontId, Pos2, Rect, Sense, Stroke, Vec2};
 use trakr_core::MuteState;
-use trakr_editor::{cell_text, Action, Editor, FX_HL, FX_SUBS, NOTE_HL, NOTE_SUBS};
+use trakr_editor::{cell_text_hidden, note_layout, Action, Editor, FX_HL, FX_SUBS, NOTE_SUBS};
 
-const NOTE_COL_W: usize = 16;
 const FX_COL_W: usize = 5;
+
+/// Width in characters of one note column of a track, with a separating space.
+fn note_col_w(ed: &Editor, t: usize) -> usize {
+    note_layout(ed.note_hidden(t)).0 + 1
+}
 
 fn track_width(ed: &Editor, t: usize) -> usize {
     let (n, f) = ed.cols(t);
-    n * NOTE_COL_W + f * FX_COL_W + 1
+    n * note_col_w(ed, t) + f * FX_COL_W + 1
 }
 
 /// One drawn column, for mouse hit-testing.
@@ -20,6 +24,7 @@ struct ColRect {
     col: usize,
     notes: usize,
     x: f32,
+    hide: [bool; 3],
 }
 
 enum Click {
@@ -204,11 +209,14 @@ impl GuiApp {
                     let (n, fxn) = ed.cols(t);
                     let line = pat.and_then(|p| p.line(t, li as u16));
                     let flat0 = ed.flat_index(t, 0);
+                    let note_w = note_col_w(ed, t);
+                    let (_, note_hl) = note_layout(ed.note_hidden(t));
+                    let hide = ed.note_hidden(t);
                     let muted = s.tracks[t].mute != MuteState::Active;
                     for c in 0..n + fxn {
-                        let chars = if c < n { NOTE_COL_W } else { FX_COL_W };
+                        let chars = if c < n { note_w } else { FX_COL_W };
                         if r == 0 {
-                            cols.push(ColRect { track: t, col: c, notes: n, x });
+                            cols.push(ColRect { track: t, col: c, notes: n, x, hide });
                         }
                         let selected = in_current
                             && sel.is_some_and(|b| {
@@ -224,7 +232,7 @@ impl GuiApp {
                         }
                         if is_cursor_row && t == cur.track && c == cur.col {
                             let (a, b) = if c < n {
-                                NOTE_HL[cur.sub.min(NOTE_SUBS - 1)]
+                                note_hl[cur.sub.min(NOTE_SUBS - 1)]
                             } else {
                                 FX_HL[cur.sub.min(FX_SUBS - 1)]
                             };
@@ -242,7 +250,7 @@ impl GuiApp {
                         painter.text(
                             Pos2::new(x, y),
                             Align2::LEFT_TOP,
-                            cell_text(line, c, n),
+                            cell_text_hidden(line, c, n, hide),
                             font.clone(),
                             text_color,
                         );
@@ -263,7 +271,9 @@ impl GuiApp {
                 + (((area.height() / rh) as usize).saturating_sub(1).max(1) / 2 + 1) as f32 * rh,
             cols: cols
                 .iter()
-                .map(|c| (c.track, c.col, c.x, if c.col < c.notes { NOTE_COL_W } else { FX_COL_W }))
+                .map(|c| {
+                    (c.track, c.col, c.x, if c.col < c.notes { note_layout(c.hide).0 + 1 } else { FX_COL_W })
+                })
                 .collect(),
         };
 
@@ -287,10 +297,23 @@ impl GuiApp {
             let line = (top_line + row - 1).clamp(0, nlines - 1) as u16;
             let c = cols.iter().rev().find(|c| pos.x >= c.x)?;
             let chars = ((pos.x - c.x) / cw).floor().max(0.0) as usize;
-            let ranges: &[(usize, usize)] = if c.col < c.notes { &NOTE_HL } else { &FX_HL };
-            let sub = ranges.iter().position(|(a, b)| chars >= *a && chars < *b).unwrap_or_else(|| {
-                ranges.iter().position(|(a, _)| *a > chars).unwrap_or(ranges.len()).saturating_sub(1)
-            });
+            // visible sub-fields only: (sub index, start, end)
+            let ranges: Vec<(usize, usize, usize)> = if c.col < c.notes {
+                note_layout(c.hide)
+                    .1
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, r)| r.1 > r.0)
+                    .map(|(i, r)| (i, r.0, r.1))
+                    .collect()
+            } else {
+                FX_HL.iter().enumerate().map(|(i, r)| (i, r.0, r.1)).collect()
+            };
+            let sub = ranges
+                .iter()
+                .find(|(_, a, b)| chars >= *a && chars < *b)
+                .or_else(|| ranges.iter().rev().find(|(_, a, _)| *a <= chars))
+                .map_or(0, |r| r.0);
             Some(Click::Cell { track: c.track, col: c.col, sub, line })
         };
 
@@ -345,6 +368,35 @@ impl GuiApp {
                     ui.close_menu();
                 }
             }
+            ui.separator();
+            let track = self.editor.cursor.track;
+            let hidden = self.editor.note_hidden(track);
+            for (k, label) in
+                ["Show volume column", "Show panning column", "Show delay column"].into_iter().enumerate()
+            {
+                let mut shown = !hidden[k];
+                if ui.checkbox(&mut shown, label).changed() {
+                    self.editor.track_set_sub_column(track, k, shown);
+                }
+            }
+            ui.menu_button("Track color", |ui| {
+                const COLORS: [(&str, Option<[u8; 3]>); 8] = [
+                    ("None", None),
+                    ("Red", Some([200, 70, 70])),
+                    ("Orange", Some([210, 140, 50])),
+                    ("Yellow", Some([200, 190, 60])),
+                    ("Green", Some([80, 170, 90])),
+                    ("Cyan", Some([60, 170, 180])),
+                    ("Blue", Some([80, 120, 210])),
+                    ("Purple", Some([150, 90, 200])),
+                ];
+                for (name, color) in COLORS {
+                    if ui.button(name).clicked() {
+                        self.editor.track_set_color(track, color);
+                        ui.close_menu();
+                    }
+                }
+            });
             ui.separator();
             for a in [
                 Action::TrackAdd,

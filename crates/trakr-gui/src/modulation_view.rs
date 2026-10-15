@@ -217,8 +217,9 @@ impl GuiApp {
             ui.add(egui::Slider::new(&mut vel2, 0.0..=5.0).suffix(" oct"))
                 .on_hover_text("Octaves of cutoff lost at the lowest velocity");
             ui.label("Drive");
-            ui.add(egui::Slider::new(&mut drive2, 0.0..=1.0).fixed_decimals(2))
-                .on_hover_text("Saturation applied to every note after the filter; LFOs and macros can move it");
+            ui.add(egui::Slider::new(&mut drive2, 0.0..=1.0).fixed_decimals(2)).on_hover_text(
+                "Saturation applied to every note after the filter; LFOs and macros can move it",
+            );
             ui.label("Fade out");
             ui.add(egui::DragValue::new(&mut fo2).range(0.0..=60.0).speed(0.01).suffix(" s"))
                 .on_hover_text("How long a note takes to fade away after note-off (0 = off)");

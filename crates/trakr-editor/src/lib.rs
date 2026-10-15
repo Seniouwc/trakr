@@ -53,6 +53,50 @@ pub const FX_HL: [(usize, usize); FX_SUBS] = [(0, 1), (1, 2), (2, 3), (3, 4)];
 
 const UNDO_LIMIT: usize = 500;
 
+/// Layout of a note column when some sub-columns are hidden: `hide` is [volume, panning, delay]. Returns the
+/// text width in characters and the character range of each of the `NOTE_SUBS` sub-fields (hidden ones are
+/// `(0, 0)`).
+pub fn note_layout(hide: [bool; 3]) -> (usize, [(usize, usize); NOTE_SUBS]) {
+    let mut r = [(0, 0); NOTE_SUBS];
+    r[0] = (0, 3);
+    r[1] = (4, 5);
+    r[2] = (5, 6);
+    let mut pos = 6;
+    for (k, hidden) in hide.into_iter().enumerate() {
+        if !hidden {
+            let start = pos + 1;
+            r[3 + 2 * k] = (start, start + 1);
+            r[4 + 2 * k] = (start + 1, start + 2);
+            pos = start + 2;
+        }
+    }
+    (pos, r)
+}
+
+/// Like [`cell_text`], leaving out the hidden sub-columns of note columns.
+pub fn cell_text_hidden(line: Option<&Line>, c: usize, notes: usize, hide: [bool; 3]) -> String {
+    if c >= notes || hide == [false; 3] {
+        return cell_text(line, c, notes);
+    }
+    fn hex2(v: u8, empty: u8) -> String {
+        if v == empty {
+            "..".into()
+        } else {
+            format!("{v:02X}")
+        }
+    }
+    let n = line.map(|l| l.notes[c]).unwrap_or_default();
+    let mut s = format!("{} {}", note_name(n.note), hex2(n.instrument, EMPTY));
+    let fields = [hex2(n.volume, EMPTY), hex2(n.panning, EMPTY), hex2(n.delay, 0)];
+    for (f, hidden) in fields.into_iter().zip(hide) {
+        if !hidden {
+            s.push(' ');
+            s.push_str(&f);
+        }
+    }
+    s
+}
+
 /// Text for one column of a line: a note column ("C-4 01 40 80 00") or an effect column ("0A40").
 pub fn cell_text(line: Option<&Line>, c: usize, notes: usize) -> String {
     fn hex2(v: u8, empty: u8) -> String {
@@ -397,6 +441,55 @@ impl Editor {
         (n, f)
     }
 
+    /// Which of [volume, panning, delay] are hidden for a track.
+    pub fn note_hidden(&self, track: usize) -> [bool; 3] {
+        self.song.tracks.get(track).map_or([false; 3], |t| [t.hide_volume, t.hide_panning, t.hide_delay])
+    }
+
+    fn sub_hidden(&self, track: usize, col: usize, sub: usize) -> bool {
+        let (n, _) = self.cols(track);
+        if col >= n {
+            return false;
+        }
+        let h = self.note_hidden(track);
+        match sub {
+            3 | 4 => h[0],
+            5 | 6 => h[1],
+            7 | 8 => h[2],
+            _ => false,
+        }
+    }
+
+    /// Set (or clear, with `None`) the color of a track's header.
+    pub fn track_set_color(&mut self, track: usize, color: Option<[u8; 3]>) {
+        if track >= self.song.tracks.len() || self.song.tracks[track].color == color {
+            return;
+        }
+        self.checkpoint();
+        self.song_mut().tracks[track].color = color;
+        self.sync();
+    }
+
+    /// Show or hide a sub-column (0 volume, 1 panning, 2 delay) of a track's note columns.
+    pub fn track_set_sub_column(&mut self, track: usize, which: usize, visible: bool) {
+        if track >= self.song.tracks.len() || which > 2 {
+            return;
+        }
+        self.checkpoint();
+        let t = &mut self.song_mut().tracks[track];
+        let flag = match which {
+            0 => &mut t.hide_volume,
+            1 => &mut t.hide_panning,
+            _ => &mut t.hide_delay,
+        };
+        *flag = !visible;
+        // a cursor sitting in a field that just disappeared moves to the instrument field
+        if self.cursor.track == track && self.sub_hidden(track, self.cursor.col, self.cursor.sub) {
+            self.cursor.sub = 2;
+        }
+        self.sync();
+    }
+
     fn subs(&self, track: usize, col: usize) -> usize {
         if col < self.cols(track).0 {
             NOTE_SUBS
@@ -647,6 +740,9 @@ impl Editor {
         let (n, f) = self.cols(self.cursor.track);
         self.cursor.col = self.cursor.col.min(n + f - 1);
         self.cursor.sub = self.cursor.sub.min(self.subs(self.cursor.track, self.cursor.col) - 1);
+        if self.sub_hidden(self.cursor.track, self.cursor.col, self.cursor.sub) {
+            self.cursor.sub = 2;
+        }
         self.cursor.line = self.cursor.line.min(self.lines_in_pattern().saturating_sub(1));
         if let Some((_, l)) = self.anchor {
             if l >= self.lines_in_pattern() {
@@ -707,7 +803,33 @@ impl Editor {
         self.move_lines(self.edit_step as i32);
     }
 
+    /// Move the cursor right, stepping over hidden sub-columns.
     fn right(&mut self) {
+        let before = self.cursor;
+        for _ in 0..24 {
+            self.right_raw();
+            let c = self.cursor;
+            if !self.sub_hidden(c.track, c.col, c.sub) {
+                return;
+            }
+        }
+        self.cursor = before;
+    }
+
+    /// Move the cursor left, stepping over hidden sub-columns.
+    fn left(&mut self) {
+        let before = self.cursor;
+        for _ in 0..24 {
+            self.left_raw();
+            let c = self.cursor;
+            if !self.sub_hidden(c.track, c.col, c.sub) {
+                return;
+            }
+        }
+        self.cursor = before;
+    }
+
+    fn right_raw(&mut self) {
         let c = self.cursor;
         let (n, f) = self.cols(c.track);
         if c.sub + 1 < self.subs(c.track, c.col) {
@@ -722,7 +844,7 @@ impl Editor {
         }
     }
 
-    fn left(&mut self) {
+    fn left_raw(&mut self) {
         let c = self.cursor;
         if c.sub > 0 {
             self.cursor.sub -= 1;

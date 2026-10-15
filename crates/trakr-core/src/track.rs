@@ -58,6 +58,13 @@ pub struct Track {
     #[serde(default)]
     pub solo: bool,
     pub color: Option<[u8; 3]>,
+    /// Hide the volume, panning or delay sub-column of this track's note columns in the pattern editor.
+    #[serde(default)]
+    pub hide_volume: bool,
+    #[serde(default)]
+    pub hide_panning: bool,
+    #[serde(default)]
+    pub hide_delay: bool,
     pub devices: Vec<DeviceSpec>,
     /// Index of the owning group track, if any.
     pub group: Option<usize>,
@@ -78,6 +85,9 @@ impl Track {
             mute: MuteState::Active,
             solo: false,
             color: None,
+            hide_volume: false,
+            hide_panning: false,
+            hide_delay: false,
             devices: Vec::new(),
             group: None,
             sends: Vec::new(),

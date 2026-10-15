@@ -97,6 +97,67 @@ fn copy_paste_block() {
 }
 
 #[test]
+fn mix_paste_keeps_existing_cells_and_flood_paste_repeats() {
+    let mut app = ed();
+    app.edit_mode = true;
+    // clipboard: a note on line 0 and an empty line 1
+    put(&mut app, 0, 60);
+    app.set_cursor(0, 0, 0, 0);
+    app.on_key(KeyEvent::shift(KeyCode::Down));
+    app.do_action(Action::Copy);
+    // destination already has notes on both lines
+    put(&mut app, 8, 30);
+    put(&mut app, 9, 31);
+    app.set_cursor(0, 0, 0, 8);
+    app.do_action(Action::PasteMix);
+    assert_eq!(
+        (note_at(&app, 0, 8), note_at(&app, 0, 9)),
+        (60, 31),
+        "the empty clipboard line kept the old note"
+    );
+    // a plain paste overwrites both
+    app.set_cursor(0, 0, 0, 8);
+    put(&mut app, 9, 31);
+    app.set_cursor(0, 0, 0, 8);
+    app.do_action(Action::Paste);
+    assert_eq!((note_at(&app, 0, 8), note_at(&app, 0, 9)), (60, NOTE_EMPTY));
+    app.undo();
+    // flood: the two-line clipboard repeats to the end of the pattern
+    app.set_cursor(0, 0, 0, 20);
+    app.do_action(Action::PasteFlood);
+    let last = app.lines_in_pattern() - 1;
+    assert_eq!(note_at(&app, 0, 20), 60);
+    assert_eq!(note_at(&app, 0, 22), 60);
+    assert_eq!(note_at(&app, 0, 21), NOTE_EMPTY);
+    assert_eq!(note_at(&app, 0, last - 1), 60, "an even distance from the start gets a copy");
+    app.undo();
+    // flood inside a selection stops at its end
+    app.set_cursor(0, 0, 0, 40);
+    app.on_key(KeyEvent::shift(KeyCode::Down));
+    app.on_key(KeyEvent::shift(KeyCode::Down));
+    app.on_key(KeyEvent::shift(KeyCode::Down));
+    app.do_action(Action::PasteFlood);
+    assert_eq!((note_at(&app, 0, 40), note_at(&app, 0, 42)), (60, 60));
+    assert_eq!(note_at(&app, 0, 44), NOTE_EMPTY, "stopped at the selection end");
+    // edit mode off and empty clipboard are explained
+    app.edit_mode = false;
+    app.do_action(Action::PasteMix);
+    assert!(app.status.contains("edit mode"));
+    let mut fresh = ed();
+    fresh.edit_mode = true;
+    fresh.do_action(Action::PasteFlood);
+    assert!(fresh.status.contains("clipboard is empty"));
+    assert_eq!(
+        Action::from_key(KeyEvent { code: KeyCode::Char('v'), ctrl: true, alt: false, shift: true }),
+        Some(Action::PasteMix)
+    );
+    assert_eq!(
+        Action::from_key(KeyEvent { code: KeyCode::Char('v'), ctrl: true, alt: true, shift: false }),
+        Some(Action::PasteFlood)
+    );
+}
+
+#[test]
 fn cut_clears_and_transpose_shifts() {
     let mut app = ed();
     app.edit_mode = true;
@@ -712,12 +773,14 @@ fn action_all_is_complete() {
             SectionToggle => 66,
             PlaySection => 67,
             SlotMuteToggle => 68,
+            PasteMix => 69,
+            PasteFlood => 70,
         }
     }
     for (i, a) in Action::ALL.iter().enumerate() {
         assert_eq!(index(*a), i, "{a:?} is out of order in Action::ALL");
     }
-    assert_eq!(Action::ALL.len(), 69);
+    assert_eq!(Action::ALL.len(), 71);
     for a in Action::ALL {
         assert!(!a.label().is_empty());
     }
@@ -1673,6 +1736,40 @@ fn songs_export_in_every_format_at_the_chosen_rate() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+#[test]
+fn exports_carry_song_tags_and_a_single_pattern_can_be_rendered() {
+    let dir = std::env::temp_dir().join(format!("trakr-tags-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut e = Editor::new(Song::demo(), None, None);
+    e.song_mut().name = "Night Drive".into();
+    e.song_mut().author = "Ada".into();
+    e.song_mut().comments = "first draft".into();
+    let tags = e.song_tags(Some("Lead"));
+    assert_eq!((tags.title.as_str(), tags.artist.as_str()), ("Night Drive - Lead", "Ada"));
+    let flac = ExportFormat { codec: Codec::Flac, ..Default::default() };
+    e.export_song(&dir.join("song"), flac);
+    let bytes = std::fs::read(dir.join("song.flac")).unwrap();
+    let text = String::from_utf8_lossy(&bytes);
+    assert!(
+        text.contains("TITLE=Night Drive")
+            && text.contains("ARTIST=Ada")
+            && text.contains("COMMENT=first draft")
+    );
+    e.export_pattern(&dir.join("pat"), 0, flac);
+    let bytes = std::fs::read(dir.join("pat.flac")).unwrap();
+    assert!(String::from_utf8_lossy(&bytes).contains("TITLE=Night Drive - pattern 00"));
+    assert!(trakr_sample::decode_bytes(bytes, Some("flac"), "x").unwrap().frames() > 1000);
+    e.export_pattern(&dir.join("bad"), 99, flac);
+    assert!(e.status.contains("no such pattern"));
+    // an unnamed song still exports, with empty tags
+    let mut plain = Editor::new(Song::demo(), None, None);
+    plain.song_mut().name.clear();
+    plain.song_mut().author.clear();
+    plain.song_mut().comments.clear();
+    assert!(plain.song_tags(None).is_empty());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 struct FakeAudio {
     engine: std::rc::Rc<std::cell::RefCell<Option<trakr_engine::Engine>>>,
     fail: bool,
@@ -1999,4 +2096,57 @@ fn automation_range_tools_curves_and_tempo_lane() {
     assert_eq!(empty.automation_copy(0, tg, 0.0, 4.0), 0);
     empty.automation_paste(0, tg, 0.0);
     assert!(empty.status.contains("nothing copied"));
+}
+
+#[test]
+fn hidden_sub_columns_are_skipped_by_the_cursor_and_laid_out_tight() {
+    use crate::{cell_text_hidden, note_layout};
+    let (full_w, full) = note_layout([false; 3]);
+    assert_eq!(full_w, 15);
+    assert_eq!(full, crate::NOTE_HL);
+    let (w, r) = note_layout([false, true, false]);
+    assert_eq!(w, 12, "panning hidden: note, instrument, volume, delay");
+    assert_eq!(r[5], (0, 0));
+    assert_eq!(r[7], (10, 11));
+    assert_eq!(note_layout([true; 3]).0, 6);
+    let mut e = ed();
+    e.edit_mode = true;
+    e.edit(|l| {
+        l.notes[0].note = 48;
+        l.notes[0].instrument = 1;
+        l.notes[0].volume = 0x40;
+        l.notes[0].panning = 0x10;
+        l.notes[0].delay = 0x20;
+    });
+    let line = e.song.patterns[0].line(0, 0);
+    assert_eq!(cell_text_hidden(line, 0, 1, [false; 3]), "C-4 01 40 10 20");
+    assert_eq!(cell_text_hidden(line, 0, 1, [false, true, false]), "C-4 01 40 20");
+    assert_eq!(cell_text_hidden(line, 0, 1, [true, true, true]), "C-4 01");
+    e.track_set_sub_column(0, 1, false);
+    assert!(e.song.tracks[0].hide_panning);
+    e.set_cursor(0, 0, 4, 0); // second volume digit
+    e.on_key(KeyEvent::new(KeyCode::Right));
+    assert_eq!(e.cursor.sub, 7, "panning (sub 5 and 6) is skipped");
+    e.on_key(KeyEvent::new(KeyCode::Left));
+    assert_eq!(e.cursor.sub, 4);
+    // a click-like jump into a hidden field lands on a visible one
+    e.set_cursor(0, 0, 5, 0);
+    assert_eq!(e.cursor.sub, 2);
+    // at the very end nothing is hidden-selected either
+    e.track_set_sub_column(0, 2, false);
+    e.set_cursor(0, 0, 4, 0);
+    e.on_key(KeyEvent::new(KeyCode::Right));
+    assert!(!e.sub_hidden(0, e.cursor.col, e.cursor.sub));
+    // undo brings the column back; colors are undoable too
+    e.undo();
+    e.undo();
+    assert!(!e.song.tracks[0].hide_panning);
+    e.track_set_color(0, Some([1, 2, 3]));
+    assert_eq!(e.song.tracks[0].color, Some([1, 2, 3]));
+    e.undo();
+    assert_eq!(e.song.tracks[0].color, None);
+    // nonsense is ignored
+    e.track_set_sub_column(99, 0, false);
+    e.track_set_sub_column(0, 9, false);
+    e.track_set_color(99, None);
 }

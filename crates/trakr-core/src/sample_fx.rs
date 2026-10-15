@@ -1,7 +1,7 @@
 //! Sample processing beyond the basics: loop crossfade, time-stretch, transient detection, dither.
 
-use std::sync::Arc;
 use crate::instrument::{LoopMode, Sample};
+use std::sync::Arc;
 
 /// Simple deterministic noise source for dither.
 struct Noise(u64);

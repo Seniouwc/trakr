@@ -15,6 +15,7 @@ pub enum FileMode {
     ExportXrns,
     ExportStems,
     ExportRange,
+    ExportPattern,
 }
 
 pub struct FileDialog {
@@ -43,6 +44,7 @@ impl FileDialog {
             FileMode::ExportXrns => "song.xrns".into(),
             FileMode::ExportStems => "stems.wav".into(),
             FileMode::ExportRange => "range.wav".into(),
+            FileMode::ExportPattern => "pattern.wav".into(),
             _ => String::new(),
         };
         let mut d =
@@ -59,9 +61,11 @@ impl FileDialog {
             FileMode::ImportSample | FileMode::AddSample => {
                 matches!(ext, "wav" | "flac" | "ogg" | "mp3" | "aif" | "aiff")
             }
-            FileMode::ExportSample | FileMode::ExportSong | FileMode::ExportStems | FileMode::ExportRange => {
-                ext == self.export_ext
-            }
+            FileMode::ExportSample
+            | FileMode::ExportSong
+            | FileMode::ExportStems
+            | FileMode::ExportRange
+            | FileMode::ExportPattern => ext == self.export_ext,
             FileMode::ExportXrns => ext == "xrns",
         }
     }
@@ -144,6 +148,7 @@ impl GuiApp {
             FileMode::ExportXrns => "Export song as .xrns",
             FileMode::ExportStems => "Export each track as its own file (name is the file prefix)",
             FileMode::ExportRange => "Export the loop range (or whole song)",
+            FileMode::ExportPattern => "Export the current pattern on its own",
         };
         let mut keep = true;
         let mut chosen: Option<PathBuf> = None;
@@ -181,7 +186,11 @@ impl GuiApp {
             ui.separator();
             if matches!(
                 d.mode,
-                FileMode::ExportSample | FileMode::ExportSong | FileMode::ExportStems | FileMode::ExportRange
+                FileMode::ExportSample
+                    | FileMode::ExportSong
+                    | FileMode::ExportStems
+                    | FileMode::ExportRange
+                    | FileMode::ExportPattern
             ) {
                 let mut fmt = self.editor.prefs.export;
                 if export_format_ui(ui, &mut fmt, d.mode != FileMode::ExportSample) {
@@ -213,7 +222,8 @@ impl GuiApp {
                     | FileMode::ExportSong
                     | FileMode::ExportXrns
                     | FileMode::ExportStems
-                    | FileMode::ExportRange => "Save",
+                    | FileMode::ExportRange
+                    | FileMode::ExportPattern => "Save",
                     _ => "Open",
                 };
                 if ui.button(verb).clicked() && !d.name.is_empty() {
@@ -254,6 +264,13 @@ impl GuiApp {
                     } else {
                         d.error = "file does not exist".into();
                     }
+                }
+                FileMode::ExportPattern => {
+                    let fmt = self.editor.prefs.export;
+                    path.set_extension(fmt.extension());
+                    let pattern = self.editor.pattern_index().unwrap_or(0);
+                    self.editor.export_pattern(&path, pattern, fmt);
+                    keep = false;
                 }
                 FileMode::ExportStems | FileMode::ExportRange => {
                     let fmt = self.editor.prefs.export;

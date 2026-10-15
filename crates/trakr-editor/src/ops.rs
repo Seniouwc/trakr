@@ -261,6 +261,79 @@ impl Editor {
         self.status = "pasted".into();
     }
 
+    /// Paste without erasing: cells that are empty in the clipboard leave what is already in the pattern.
+    pub fn paste_mix(&mut self) {
+        if !self.need_edit() {
+            return;
+        }
+        let Some(cb) = self.clipboard.clone() else {
+            self.status = "clipboard is empty".into();
+            return;
+        };
+        let f0 = self.flat_index(self.cursor.track, self.cursor.col);
+        let rows = self.merge_over_existing(f0, self.cursor.line, &cb.rows);
+        self.write_block(f0, self.cursor.line, &rows);
+        self.move_lines(cb.rows.len() as i32);
+        self.status = "pasted (mixed with what was there)".into();
+    }
+
+    /// Paste the clipboard again and again from the cursor to the end of the selection, or of the pattern.
+    pub fn paste_flood(&mut self) {
+        if !self.need_edit() {
+            return;
+        }
+        let Some(cb) = self.clipboard.clone().filter(|c| !c.rows.is_empty()) else {
+            self.status = "clipboard is empty".into();
+            return;
+        };
+        let (start, end, f0) = match self.anchor {
+            Some(_) => {
+                let b = self.target_block();
+                (b.line0, b.line1, b.col0)
+            }
+            None => (
+                self.cursor.line,
+                self.lines_in_pattern().saturating_sub(1),
+                self.flat_index(self.cursor.track, self.cursor.col),
+            ),
+        };
+        if end < start {
+            return;
+        }
+        let total = (end - start + 1) as usize;
+        let rows: Vec<Vec<Cell>> = (0..total).map(|i| cb.rows[i % cb.rows.len()].clone()).collect();
+        self.write_block(f0, start, &rows);
+        self.status = format!("pasted {total} line(s)");
+    }
+
+    /// `rows` with every empty cell replaced by what the pattern holds at that position.
+    fn merge_over_existing(&self, f0: usize, l0: u16, rows: &[Vec<Cell>]) -> Vec<Vec<Cell>> {
+        let Some(p) = self.pattern_index().and_then(|i| self.song.patterns.get(i)) else {
+            return rows.to_vec();
+        };
+        rows.iter()
+            .enumerate()
+            .map(|(r, row)| {
+                row.iter()
+                    .enumerate()
+                    .map(|(c, cell)| {
+                        let empty = *cell == cell.emptied();
+                        let f = f0 + c;
+                        if !empty || f >= self.total_cols() {
+                            return *cell;
+                        }
+                        let (t, col) = self.unflat(f);
+                        let line = l0 as usize + r;
+                        if line >= p.number_of_lines as usize {
+                            return *cell;
+                        }
+                        read_cell(p, t, col, self.cols(t).0, line as u16)
+                    })
+                    .collect()
+            })
+            .collect()
+    }
+
     /// Clear the selection, or just the field under the cursor when nothing is selected.
     pub fn clear(&mut self) {
         if !self.need_edit() {
@@ -851,6 +924,8 @@ impl Editor {
             LoopEnd => self.set_loop_edge(false),
             LoopClear => self.clear_loop(),
             Randomize => self.randomize_volume(32),
+            PasteMix => self.paste_mix(),
+            PasteFlood => self.paste_flood(),
             ExpandBlock => self.expand_block(),
             ShrinkBlock => self.shrink_block(),
             RepeatBlock => self.repeat_block(),

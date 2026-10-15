@@ -75,12 +75,16 @@ impl GuiApp {
                         self.open_dialog(FileMode::ExportSong);
                         ui.close_menu();
                     }
-                    if ui.button("Export tracks as separate WAVs...").clicked() {
+                    if ui.button("Export tracks as separate files...").clicked() {
                         self.open_dialog(FileMode::ExportStems);
                         ui.close_menu();
                     }
                     if ui.button("Export loop range as audio...").clicked() {
                         self.open_dialog(FileMode::ExportRange);
+                        ui.close_menu();
+                    }
+                    if ui.button("Export current pattern as audio...").clicked() {
+                        self.open_dialog(FileMode::ExportPattern);
                         ui.close_menu();
                     }
                     if ui.button("Export as .xrns...").clicked() {
@@ -114,7 +118,7 @@ impl GuiApp {
                         self.item(ui, a);
                     }
                     ui.separator();
-                    for a in [Randomize, ExpandBlock, ShrinkBlock, RepeatBlock] {
+                    for a in [PasteMix, PasteFlood, Randomize, ExpandBlock, ShrinkBlock, RepeatBlock] {
                         self.item(ui, a);
                     }
                     ui.separator();

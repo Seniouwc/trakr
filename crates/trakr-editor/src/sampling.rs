@@ -339,7 +339,13 @@ impl Editor {
                 .collect();
             let s = Sample::new("stem", rate, 2, data);
             let path = dir.join(format!("{stem}-{:02}-{name}.{}", t + 1, format.extension()));
-            match format.write(&path, &s, 0, s.frames()) {
+            match format.write_tagged(
+                &path,
+                &s,
+                0,
+                s.frames(),
+                &self.song_tags(Some(&self.song.tracks[t].name)),
+            ) {
                 Ok(()) => written += 1,
                 Err(e) => {
                     self.status = format!("stem export failed: {e}");
@@ -369,8 +375,52 @@ impl Editor {
             return;
         }
         let s = Sample::new("range", rate, 2, data);
-        match format.write(path, &s, 0, s.frames()) {
+        match format.write_tagged(path, &s, 0, s.frames(), &self.song_tags(None)) {
             Ok(()) => self.status = format!("exported slots {from:02X}-{to:02X} to {}", path.display()),
+            Err(e) => self.status = format!("export failed: {e}"),
+        }
+    }
+
+    /// Tags for an exported file taken from the song's name, author and comments. `part` names a stem or
+    /// pattern and is appended to the title.
+    pub fn song_tags(&self, part: Option<&str>) -> trakr_encode::Tags {
+        let name = self.song.name.trim();
+        let title = match (name.is_empty(), part) {
+            (true, None) => String::new(),
+            (true, Some(p)) => p.to_string(),
+            (false, None) => name.to_string(),
+            (false, Some(p)) => format!("{name} - {p}"),
+        };
+        trakr_encode::Tags {
+            title,
+            artist: self.song.author.trim().to_string(),
+            album: String::new(),
+            comment: self.song.comments.trim().chars().take(200).collect(),
+            year: String::new(),
+            genre: String::new(),
+        }
+    }
+
+    /// Render one pattern on its own (as if it were the whole song) to an audio file.
+    pub fn export_pattern(&mut self, path: &Path, pattern: usize, format: ExportFormat) {
+        if pattern >= self.song.patterns.len() {
+            self.status = "no such pattern".into();
+            return;
+        }
+        let rate = format.target_rate(RENDER_RATE);
+        let path = &path.with_extension(format.extension());
+        let mut song = (*self.song).clone();
+        song.sequence = vec![pattern];
+        song.loop_range = None;
+        let data = self.render_song_copy(song, rate);
+        if data.is_empty() {
+            self.status = "nothing to render (that pattern is silent)".into();
+            return;
+        }
+        let s = Sample::new("pattern", rate, 2, data);
+        let tags = self.song_tags(Some(&format!("pattern {pattern:02X}")));
+        match format.write_tagged(path, &s, 0, s.frames(), &tags) {
+            Ok(()) => self.status = format!("exported pattern {pattern:02X} to {}", path.display()),
             Err(e) => self.status = format!("export failed: {e}"),
         }
     }
@@ -385,7 +435,7 @@ impl Editor {
             return;
         }
         let s = Sample::new("render", rate, 2, data);
-        match format.write(path, &s, 0, s.frames()) {
+        match format.write_tagged(path, &s, 0, s.frames(), &self.song_tags(None)) {
             Ok(()) => self.status = format!("exported {}", path.display()),
             Err(e) => self.status = format!("export failed: {e}"),
         }

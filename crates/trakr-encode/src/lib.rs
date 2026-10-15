@@ -80,6 +80,60 @@ const MP3_KBPS: [u32; 11] = [64, 80, 96, 112, 128, 160, 192, 224, 256, 0, 320]; 
 const OPUS_KBPS: [u32; 11] = [24, 32, 48, 64, 80, 96, 128, 160, 192, 256, 510];
 const AAC_KBPS: [u32; 11] = [64, 96, 112, 128, 160, 192, 224, 256, 320, 384, 512];
 
+/// Metadata written into the exported file (where the format has a place for it; AAC/ADTS has none).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Tags {
+    pub title: String,
+    pub artist: String,
+    pub album: String,
+    pub comment: String,
+    pub year: String,
+    pub genre: String,
+}
+
+impl Tags {
+    pub fn is_empty(&self) -> bool {
+        self.title.is_empty()
+            && self.artist.is_empty()
+            && self.album.is_empty()
+            && self.comment.is_empty()
+            && self.year.is_empty()
+            && self.genre.is_empty()
+    }
+
+    /// (key, value) pairs using Vorbis comment names, skipping empty fields.
+    fn vorbis_pairs(&self) -> Vec<(&'static str, &str)> {
+        [
+            ("TITLE", &self.title),
+            ("ARTIST", &self.artist),
+            ("ALBUM", &self.album),
+            ("COMMENT", &self.comment),
+            ("DATE", &self.year),
+            ("GENRE", &self.genre),
+        ]
+        .into_iter()
+        .filter(|(_, v)| !v.is_empty())
+        .map(|(k, v)| (k, v.as_str()))
+        .collect()
+    }
+
+    /// A Vorbis comment block body: vendor string, then the comments.
+    fn vorbis_comment_body(&self) -> Vec<u8> {
+        let vendor = b"trakr";
+        let pairs = self.vorbis_pairs();
+        let mut b = Vec::new();
+        b.extend((vendor.len() as u32).to_le_bytes());
+        b.extend(vendor);
+        b.extend((pairs.len() as u32).to_le_bytes());
+        for (k, v) in pairs {
+            let entry = format!("{k}={v}");
+            b.extend((entry.len() as u32).to_le_bytes());
+            b.extend(entry.as_bytes());
+        }
+        b
+    }
+}
+
 /// Everything the export dialog chooses.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(default)]
@@ -131,13 +185,30 @@ impl ExportFormat {
 
     /// Write frames `a..b` of `s` to `path`. The path's extension is replaced by the codec's.
     pub fn write(&self, path: &Path, s: &Sample, a: usize, b: usize) -> Result<(), EncodeError> {
-        let bytes = self.encode(s, a, b)?;
+        self.write_tagged(path, s, a, b, &Tags::default())
+    }
+
+    /// Like `write`, with metadata.
+    pub fn write_tagged(
+        &self,
+        path: &Path,
+        s: &Sample,
+        a: usize,
+        b: usize,
+        tags: &Tags,
+    ) -> Result<(), EncodeError> {
+        let bytes = self.encode_tagged(s, a, b, tags)?;
         std::fs::write(path, bytes)?;
         Ok(())
     }
 
     /// Encode frames `a..b` of `s` into a complete file image.
     pub fn encode(&self, s: &Sample, a: usize, b: usize) -> Result<Vec<u8>, EncodeError> {
+        self.encode_tagged(s, a, b, &Tags::default())
+    }
+
+    /// Encode frames `a..b` of `s` with `tags` into a complete file image.
+    pub fn encode_tagged(&self, s: &Sample, a: usize, b: usize, tags: &Tags) -> Result<Vec<u8>, EncodeError> {
         let b = b.min(s.frames());
         let a = a.min(b);
         if a == b {
@@ -170,19 +241,19 @@ impl ExportFormat {
                     dither(&mut pcm, channels, self.bits as u32, false);
                 }
                 part.data = std::sync::Arc::new(pcm);
-                Ok(trakr_sample::encode_wav(&part, 0, part.frames(), fmt))
+                Ok(wav_with_tags(trakr_sample::encode_wav(&part, 0, part.frames(), fmt), tags))
             }
             Codec::Flac => {
                 let bits = if self.bits >= 24 { 24 } else { 16 };
                 if self.dither {
                     dither(&mut pcm, channels, bits, false);
                 }
-                encode_flac(&pcm, channels, bits, part.sample_rate)
+                encode_flac(&pcm, channels, bits, part.sample_rate).map(|f| flac_with_tags(f, tags))
             }
-            Codec::Vorbis => encode_vorbis(&pcm, channels, part.sample_rate, q),
-            Codec::Mp3 => encode_mp3(&pcm, channels, part.sample_rate, q),
+            Codec::Vorbis => encode_vorbis(&pcm, channels, part.sample_rate, q, tags),
+            Codec::Mp3 => encode_mp3(&pcm, channels, part.sample_rate, q, tags),
             Codec::Aac => encode_aac(&pcm, channels, part.sample_rate, q),
-            Codec::Opus => encode_opus(&pcm, channels, part.sample_rate, q),
+            Codec::Opus => encode_opus(&pcm, channels, part.sample_rate, q, tags),
         }
     }
 
@@ -250,7 +321,13 @@ fn vorbis_kbps(q: usize) -> u32 {
     [45, 64, 80, 96, 112, 128, 160, 192, 224, 256, 500][q.min(10)]
 }
 
-fn encode_vorbis(pcm: &[f32], channels: usize, rate: u32, q: u8) -> Result<Vec<u8>, EncodeError> {
+fn encode_vorbis(
+    pcm: &[f32],
+    channels: usize,
+    rate: u32,
+    q: u8,
+    tags: &Tags,
+) -> Result<Vec<u8>, EncodeError> {
     use std::num::{NonZeroU32, NonZeroU8};
     use vorbis_rs::{VorbisBitrateManagementStrategy, VorbisEncoderBuilder};
     let mut out = Vec::new();
@@ -263,6 +340,9 @@ fn encode_vorbis(pcm: &[f32], channels: usize, rate: u32, q: u8) -> Result<Vec<u
     builder.bitrate_management_strategy(VorbisBitrateManagementStrategy::QualityVbr {
         target_quality: vorbis_quality(q),
     });
+    for (k, v) in tags.vorbis_pairs() {
+        builder.comment_tag(k, v).map_err(codec_err)?;
+    }
     let mut enc = builder.build().map_err(codec_err)?;
     let frames = pcm.len() / channels;
     let mut at = 0;
@@ -279,13 +359,29 @@ fn encode_vorbis(pcm: &[f32], channels: usize, rate: u32, q: u8) -> Result<Vec<u
 
 // ---- MP3 -------------------------------------------------------------------------------------
 
-fn encode_mp3(pcm: &[f32], channels: usize, rate: u32, q: u8) -> Result<Vec<u8>, EncodeError> {
+fn encode_mp3(pcm: &[f32], channels: usize, rate: u32, q: u8, tags: &Tags) -> Result<Vec<u8>, EncodeError> {
     use mp3lame_encoder::{Bitrate, Builder, FlushNoGap, InterleavedPcm, Mode, MonoPcm, Quality, VbrMode};
     let mut b = Builder::new().ok_or_else(|| codec_err("LAME could not start"))?;
     b.set_sample_rate(rate).map_err(codec_err)?;
     b.set_num_channels(channels as u8).map_err(codec_err)?;
     b.set_mode(if channels == 1 { Mode::Mono } else { Mode::JointStereo }).map_err(codec_err)?;
     b.set_quality(Quality::Best).map_err(codec_err)?;
+    let comment = if tags.genre.is_empty() {
+        tags.comment.clone()
+    } else if tags.comment.is_empty() {
+        format!("Genre: {}", tags.genre)
+    } else {
+        format!("{} (Genre: {})", tags.comment, tags.genre)
+    };
+    b.set_id3_tag(mp3lame_encoder::Id3Tag {
+        title: tags.title.as_bytes(),
+        artist: tags.artist.as_bytes(),
+        album: tags.album.as_bytes(),
+        album_art: &[],
+        year: tags.year.as_bytes(),
+        comment: comment.as_bytes(),
+    })
+    .map_err(|e| codec_err(format!("{e:?}")))?;
     let kbps = MP3_KBPS[q as usize];
     if kbps == 0 {
         b.set_vbr_mode(VbrMode::Mtrh).map_err(codec_err)?;
@@ -375,7 +471,7 @@ fn encode_aac(pcm: &[f32], channels: usize, rate: u32, q: u8) -> Result<Vec<u8>,
 
 // ---- Ogg Opus --------------------------------------------------------------------------------
 
-fn encode_opus(pcm: &[f32], channels: usize, rate: u32, q: u8) -> Result<Vec<u8>, EncodeError> {
+fn encode_opus(pcm: &[f32], channels: usize, rate: u32, q: u8, tags: &Tags) -> Result<Vec<u8>, EncodeError> {
     use ogg::writing::{PacketWriteEndInfo, PacketWriter};
     let ch = if channels == 1 { opus::Channels::Mono } else { opus::Channels::Stereo };
     let mut enc = opus::Encoder::new(rate, ch, opus::Application::Audio).map_err(codec_err)?;
@@ -396,13 +492,10 @@ fn encode_opus(pcm: &[f32], channels: usize, rate: u32, q: u8) -> Result<Vec<u8>
         head.extend(0i16.to_le_bytes());
         head.push(0);
         w.write_packet(head, serial, PacketWriteEndInfo::EndPage, 0).map_err(codec_err)?;
-        let vendor = b"trakr";
-        let mut tags = Vec::new();
-        tags.extend(b"OpusTags");
-        tags.extend((vendor.len() as u32).to_le_bytes());
-        tags.extend(vendor);
-        tags.extend(0u32.to_le_bytes());
-        w.write_packet(tags, serial, PacketWriteEndInfo::EndPage, 0).map_err(codec_err)?;
+        let mut comments = Vec::new();
+        comments.extend(b"OpusTags");
+        comments.extend(tags.vorbis_comment_body());
+        w.write_packet(comments, serial, PacketWriteEndInfo::EndPage, 0).map_err(codec_err)?;
 
         let frame_len = (rate / 50) as usize; // 20 ms
         let total = pcm.len() / channels;
@@ -425,6 +518,59 @@ fn encode_opus(pcm: &[f32], channels: usize, rate: u32, q: u8) -> Result<Vec<u8>
         }
     }
     Ok(out)
+}
+
+/// Append a RIFF `LIST`/`INFO` chunk with the tags to a finished WAV image.
+fn wav_with_tags(mut wav: Vec<u8>, tags: &Tags) -> Vec<u8> {
+    let fields = [
+        (b"INAM", &tags.title),
+        (b"IART", &tags.artist),
+        (b"IPRD", &tags.album),
+        (b"ICMT", &tags.comment),
+        (b"ICRD", &tags.year),
+        (b"IGNR", &tags.genre),
+    ];
+    let mut info = Vec::new();
+    for (id, text) in fields.into_iter().filter(|(_, t)| !t.is_empty()) {
+        let mut bytes = text.as_bytes().to_vec();
+        bytes.push(0); // zero terminated
+        info.extend(id);
+        info.extend((bytes.len() as u32).to_le_bytes());
+        info.extend(&bytes);
+        if bytes.len() % 2 == 1 {
+            info.push(0); // chunks are word aligned
+        }
+    }
+    if info.is_empty() || wav.len() < 12 {
+        return wav;
+    }
+    wav.extend(b"LIST");
+    wav.extend((info.len() as u32 + 4).to_le_bytes());
+    wav.extend(b"INFO");
+    wav.extend(info);
+    let riff = (wav.len() - 8) as u32;
+    wav[4..8].copy_from_slice(&riff.to_le_bytes());
+    wav
+}
+
+/// Insert a Vorbis comment block after STREAMINFO of a finished FLAC image.
+fn flac_with_tags(mut flac: Vec<u8>, tags: &Tags) -> Vec<u8> {
+    // "fLaC", then STREAMINFO: 1 header byte (bit 7 = last block), 3 length bytes, 34 bytes of data
+    if tags.is_empty() || flac.len() < 42 || &flac[0..4] != b"fLaC" || flac[4] & 0x7F != 0 {
+        return flac;
+    }
+    let was_last = flac[4] & 0x80 != 0;
+    let body = tags.vorbis_comment_body();
+    let len = body.len() as u32;
+    if len >= 1 << 24 {
+        return flac;
+    }
+    flac[4] &= 0x7F;
+    let mut block = vec![(if was_last { 0x80 } else { 0 }) | 4];
+    block.extend(&len.to_be_bytes()[1..]);
+    block.extend(body);
+    flac.splice(42..42, block);
+    flac
 }
 
 /// A FLAC block size (16..=65535) dividing `total` exactly, as close to 4096 as possible.
@@ -528,6 +674,65 @@ mod tests {
                 assert!((a - b).abs() < tol, "{codec:?} {bits}: {a} vs {b}");
             }
         }
+    }
+
+    fn contains(hay: &[u8], needle: &str) -> bool {
+        hay.windows(needle.len()).any(|w| w == needle.as_bytes())
+    }
+
+    #[test]
+    fn tags_are_written_and_the_audio_still_decodes() {
+        let src = tone(44_100, 2, 0.5);
+        let tags = Tags {
+            title: "Night Drive".into(),
+            artist: "Ada".into(),
+            album: "Demos".into(),
+            comment: "made with trakr".into(),
+            year: "2026".into(),
+            genre: "Electronic".into(),
+        };
+        for codec in [Codec::Wav, Codec::Flac, Codec::Vorbis, Codec::Mp3, Codec::Opus, Codec::Aac] {
+            let fmt = ExportFormat { codec, quality: 6, dither: false, ..Default::default() };
+            let tagged = fmt.encode_tagged(&src, 0, src.frames(), &tags).unwrap();
+            let plain = fmt.encode(&src, 0, src.frames()).unwrap();
+            match codec {
+                Codec::Wav => {
+                    assert!(contains(&tagged, "INAM") && contains(&tagged, "Night Drive\0"));
+                    assert!(contains(&tagged, "IART") && contains(&tagged, "Ada\0"));
+                    let riff = u32::from_le_bytes(tagged[4..8].try_into().unwrap()) as usize;
+                    assert_eq!(riff, tagged.len() - 8, "RIFF size covers the added chunk");
+                }
+                Codec::Flac | Codec::Vorbis | Codec::Opus => {
+                    assert!(contains(&tagged, "TITLE=Night Drive"), "{codec:?}");
+                    assert!(contains(&tagged, "ARTIST=Ada") && contains(&tagged, "GENRE=Electronic"));
+                    assert!(!contains(&plain, "TITLE="));
+                }
+                Codec::Mp3 => {
+                    assert_eq!(&tagged[..3], b"ID3");
+                    assert!(contains(&tagged, "Night Drive") && contains(&tagged, "Demos"));
+                }
+                Codec::Aac => assert_eq!(tagged.len(), plain.len(), "ADTS has no tags"),
+            }
+            if codec == Codec::Opus || codec == Codec::Aac {
+                continue;
+            }
+            let back = trakr_sample::decode_bytes(tagged, Some(codec.extension()), "x")
+                .unwrap_or_else(|e| panic!("{codec:?} tagged file must decode: {e}"));
+            assert!(rms(&back.data) > 0.2, "{codec:?}");
+            assert!((back.frames() as f32 / back.sample_rate as f32 - 0.5).abs() < 0.15);
+        }
+        // Opus still parses: the tags packet comes second
+        let opus = ExportFormat { codec: Codec::Opus, ..Default::default() }
+            .encode_tagged(&src, 0, src.frames(), &tags)
+            .unwrap();
+        let (pcm, _, pre) = decode_opus(&opus);
+        assert!(rms(&pcm[pre * 2..]) > 0.2);
+        // no tags: bytes identical to the untagged path
+        let fmt = ExportFormat::wav(16);
+        assert_eq!(
+            fmt.encode_tagged(&src, 0, src.frames(), &Tags::default()).unwrap(),
+            fmt.encode(&src, 0, src.frames()).unwrap()
+        );
     }
 
     #[test]

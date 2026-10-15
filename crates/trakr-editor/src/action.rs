@@ -81,6 +81,8 @@ pub enum Action {
     SectionToggle,
     PlaySection,
     SlotMuteToggle,
+    PasteMix,
+    PasteFlood,
 }
 
 impl Action {
@@ -155,6 +157,8 @@ impl Action {
         Action::SectionToggle,
         Action::PlaySection,
         Action::SlotMuteToggle,
+        Action::PasteMix,
+        Action::PasteFlood,
     ];
 
     pub fn label(self) -> &'static str {
@@ -229,6 +233,8 @@ impl Action {
             SectionToggle => "Section starts here",
             PlaySection => "Loop section",
             SlotMuteToggle => "Mute track in this slot",
+            PasteMix => "Paste and mix (keep what is already there)",
+            PasteFlood => "Paste repeatedly to the end of the pattern",
         }
     }
 
@@ -271,6 +277,8 @@ impl Action {
             OpenPalette => "Ctrl-P",
             OpenFind => "Ctrl-F",
             OpenPreferences => "Ctrl-,",
+            PasteMix => "Ctrl-Shift-V",
+            PasteFlood => "Ctrl-Alt-V",
             _ => "",
         }
     }
@@ -288,6 +296,8 @@ impl Action {
                 KeyCode::Char('y') => Redo,
                 KeyCode::Char('x') => Cut,
                 KeyCode::Char('c') => Copy,
+                KeyCode::Char('v') if k.shift => PasteMix,
+                KeyCode::Char('v') if k.alt => PasteFlood,
                 KeyCode::Char('v') => Paste,
                 KeyCode::Char('a') => SelectAll,
                 KeyCode::Char('r') => RecordToggle,

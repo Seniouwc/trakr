@@ -94,7 +94,9 @@ impl GuiApp {
             ui.label("Shuffle");
             if ui
                 .add(egui::DragValue::new(&mut shuffle).range(0.0..=0.75).speed(0.01).fixed_decimals(2))
-                .on_hover_text("Swing: odd lines are shortened and even lines lengthened by this fraction of a line")
+                .on_hover_text(
+                    "Swing: odd lines are shortened and even lines lengthened by this fraction of a line",
+                )
                 .changed()
             {
                 self.editor.edit_phrase("phrase_shuffle", |p| p.shuffle = shuffle);

@@ -1522,7 +1522,6 @@ impl Engine {
         self.retire_run(run);
     }
 
-    #[allow(clippy::too_many_arguments)]
     /// The phrase (and the note to play it at) that a trigger note starts for this instrument, if any.
     fn phrase_trigger(&mut self, track: usize, inst: u8, note: u8) -> Option<(usize, u8)> {
         let i = self.song.instruments.get(inst as usize)?;
@@ -1549,6 +1548,7 @@ impl Engine {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn start_phrase(
         &mut self,
         track: usize,
@@ -1594,7 +1594,7 @@ impl Engine {
             let straight = Song::frames_per_line(self.bpm, phrase.lpb.max(1), self.sample_rate).max(1.0);
             let shuffle = phrase.shuffle.clamp(0.0, 0.75) as f64;
             // swing: a pair of lines still lasts two lines, but its first half is longer
-            let fpl = if self.phrase_runs[i].line % 2 == 0 {
+            let fpl = if self.phrase_runs[i].line.is_multiple_of(2) {
                 straight * (1.0 + shuffle)
             } else {
                 straight * (1.0 - shuffle)
@@ -1748,13 +1748,8 @@ impl Engine {
                     if let Some((pi, pnote)) = self.phrase_trigger(ti, col.instrument, col.note) {
                         let at = col.delay as f64 / 256.0 * fpl;
                         if at > 0.0 {
-                            let kind = EventKind::Phrase {
-                                inst: col.instrument,
-                                phrase: pi,
-                                note: pnote,
-                                vol,
-                                pan,
-                            };
+                            let kind =
+                                EventKind::Phrase { inst: col.instrument, phrase: pi, note: pnote, vol, pan };
                             self.schedule(at, ti, ci, kind);
                         } else {
                             self.start_phrase(ti, ci, col.instrument, pi, pnote, vol, pan);
@@ -2627,9 +2622,11 @@ mod sequencer_tests {
             song.instruments[0].samples[0].loop_start = 0;
             song.instruments[0].samples[0].loop_end = 100;
             song.instruments[0].samples[0].loop_release = release;
-            let mut env = trakr_core::Envelope::default();
-            env.enabled = true;
-            env.points = vec![(0.0, 1.0), (10.0, 1.0)];
+            let env = trakr_core::Envelope {
+                enabled: true,
+                points: vec![(0.0, 1.0), (10.0, 1.0)],
+                ..Default::default()
+            };
             song.instruments[0].volume_env = Arc::new(env);
             put(&mut song, 0, |l| note(&mut l.notes[0]));
             put(&mut song, 1, |l| l.notes[0].note = NOTE_OFF);
