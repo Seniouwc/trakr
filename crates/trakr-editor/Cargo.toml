@@ -11,6 +11,7 @@ trakr-engine = { workspace = true }
 trakr-format = { workspace = true }
 trakr-xrns = { workspace = true }
 trakr-sample = { workspace = true }
+trakr-encode = { workspace = true }
 trakr-midi = { workspace = true }
 trakr-mod = { workspace = true }
 trakr-script = { workspace = true }

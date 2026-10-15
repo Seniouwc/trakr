@@ -23,6 +23,8 @@ pub struct FileDialog {
     name: String,
     entries: Vec<(String, bool)>,
     error: String,
+    /// Extension of the export format currently chosen (filters the list).
+    export_ext: String,
 }
 
 impl FileDialog {
@@ -43,7 +45,8 @@ impl FileDialog {
             FileMode::ExportRange => "range.wav".into(),
             _ => String::new(),
         };
-        let mut d = Self { mode, dir, name, entries: vec![], error: String::new() };
+        let mut d =
+            Self { mode, dir, name, entries: vec![], error: String::new(), export_ext: String::new() };
         d.refresh();
         d
     }
@@ -57,7 +60,7 @@ impl FileDialog {
                 matches!(ext, "wav" | "flac" | "ogg" | "mp3" | "aif" | "aiff")
             }
             FileMode::ExportSample | FileMode::ExportSong | FileMode::ExportStems | FileMode::ExportRange => {
-                ext == "wav"
+                ext == self.export_ext
             }
             FileMode::ExportXrns => ext == "xrns",
         }
@@ -136,11 +139,11 @@ impl GuiApp {
             FileMode::SaveAs => "Save song as",
             FileMode::ImportSample => "Import sample as new instrument (wav, flac, ogg, mp3, aiff)",
             FileMode::AddSample => "Add sample file to the selected instrument",
-            FileMode::ExportSample => "Export sample as WAV",
-            FileMode::ExportSong => "Export song as WAV",
+            FileMode::ExportSample => "Export sample",
+            FileMode::ExportSong => "Export song",
             FileMode::ExportXrns => "Export song as .xrns",
-            FileMode::ExportStems => "Export each track as its own WAV (name is the file prefix)",
-            FileMode::ExportRange => "Export the loop range (or whole song) as WAV",
+            FileMode::ExportStems => "Export each track as its own file (name is the file prefix)",
+            FileMode::ExportRange => "Export the loop range (or whole song)",
         };
         let mut keep = true;
         let mut chosen: Option<PathBuf> = None;
@@ -176,6 +179,26 @@ impl GuiApp {
                 d.enter(p);
             }
             ui.separator();
+            if matches!(
+                d.mode,
+                FileMode::ExportSample | FileMode::ExportSong | FileMode::ExportStems | FileMode::ExportRange
+            ) {
+                let mut fmt = self.editor.prefs.export;
+                if export_format_ui(ui, &mut fmt, d.mode != FileMode::ExportSample) {
+                    self.editor.prefs.export = fmt;
+                    self.editor.save_prefs();
+                }
+                let ext = fmt.extension();
+                if d.export_ext != ext {
+                    d.export_ext = ext.to_string();
+                    let stem = Path::new(&d.name)
+                        .file_stem()
+                        .map_or("export".to_string(), |s| s.to_string_lossy().into());
+                    d.name = format!("{stem}.{ext}");
+                    d.refresh();
+                }
+                ui.separator();
+            }
             ui.horizontal(|ui| {
                 ui.label("File:");
                 ui.text_edit_singleline(&mut d.name);
@@ -233,10 +256,8 @@ impl GuiApp {
                     }
                 }
                 FileMode::ExportStems | FileMode::ExportRange => {
-                    if path.extension().is_none() {
-                        path.set_extension("wav");
-                    }
-                    let fmt = self.wav_format;
+                    let fmt = self.editor.prefs.export;
+                    path.set_extension(fmt.extension());
                     if d.mode == FileMode::ExportStems {
                         self.editor.export_stems(&path, fmt);
                     } else {
@@ -254,10 +275,8 @@ impl GuiApp {
                     keep = false;
                 }
                 FileMode::ExportSample | FileMode::ExportSong => {
-                    if path.extension().is_none() {
-                        path.set_extension("wav");
-                    }
-                    let fmt = self.wav_format;
+                    let fmt = self.editor.prefs.export;
+                    path.set_extension(fmt.extension());
                     if d.mode == FileMode::ExportSong {
                         self.editor.export_song(&path, fmt);
                     } else {
@@ -374,3 +393,68 @@ impl GuiApp {
 }
 
 use crate::menus;
+
+/// Format, quality, bit depth, dither and sample rate controls for audio export. Returns true on change.
+fn export_format_ui(
+    ui: &mut egui::Ui,
+    fmt: &mut trakr_editor::ExportFormat,
+    can_resample_render: bool,
+) -> bool {
+    use trakr_editor::Codec;
+    let before = *fmt;
+    ui.horizontal(|ui| {
+        ui.label("Format:");
+        egui::ComboBox::from_id_salt("export_codec").selected_text(fmt.codec.name()).show_ui(ui, |ui| {
+            for c in Codec::ALL {
+                ui.selectable_value(&mut fmt.codec, c, c.name());
+            }
+        });
+        if fmt.codec.uses_bit_depth() {
+            let max = if fmt.codec == Codec::Flac { 24 } else { 32 };
+            fmt.bits = fmt.bits.min(max);
+            egui::ComboBox::from_id_salt("export_bits")
+                .selected_text(if fmt.bits == 32 {
+                    "32-bit float".to_string()
+                } else {
+                    format!("{}-bit", fmt.bits)
+                })
+                .show_ui(ui, |ui| {
+                    ui.selectable_value(&mut fmt.bits, 16, "16-bit");
+                    ui.selectable_value(&mut fmt.bits, 24, "24-bit");
+                    if fmt.codec == Codec::Wav {
+                        ui.selectable_value(&mut fmt.bits, 32, "32-bit float");
+                    }
+                });
+            if fmt.bits < 32 {
+                ui.checkbox(&mut fmt.dither, "Dither")
+                    .on_hover_text("Triangular dither when reducing the bit depth");
+            }
+        }
+    });
+    if fmt.codec.uses_quality() {
+        ui.horizontal(|ui| {
+            ui.label("Quality:");
+            let mut q = fmt.quality as i32;
+            ui.add(
+                egui::Slider::new(&mut q, 0..=trakr_editor::MAX_QUALITY as i32)
+                    .text("0 = smallest, 10 = best"),
+            );
+            fmt.quality = q as u8;
+        });
+    }
+    ui.horizontal(|ui| {
+        ui.label("Sample rate:");
+        let label = fmt.sample_rate.map_or("Same as source".to_string(), |r| format!("{r} Hz"));
+        egui::ComboBox::from_id_salt("export_rate").selected_text(label).show_ui(ui, |ui| {
+            ui.selectable_value(&mut fmt.sample_rate, None, "Same as source");
+            for r in [22_050u32, 32_000, 44_100, 48_000, 88_200, 96_000, 192_000] {
+                ui.selectable_value(&mut fmt.sample_rate, Some(r), format!("{r} Hz"));
+            }
+        });
+        if can_resample_render {
+            ui.weak("songs are rendered at this rate directly");
+        }
+    });
+    ui.weak(fmt.describe());
+    *fmt != before
+}

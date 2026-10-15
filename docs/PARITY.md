@@ -40,7 +40,7 @@ Compiled from memory of Renoise 3.x behavior. Verify each item against the offic
 - [x] Import WAV, AIFF, FLAC, OGG, MP3 (symphonia); RX2/REX not required initially
 - [~] Reverse and ping-pong loops work; loop release, one-shot, sustain loop do not
 - [~] Interpolation modes: linear, cubic (Hermite, default) and 8-point sinc per instrument; no "none" mode, no oversampling, sinc does not low-pass when pitching up
-- [~] Sample editor (GUI): zoomable waveform, selection, cut/copy/paste/delete/crop, silence, fades, gain, normalize, invert, DC removal, reverse, mono/stereo, tape pitch shift, resample, WAV export (16/24/32f). Also loop crossfade, time-stretch (WSOLA, pitch kept), slice at detected transients, bit-depth reduction with shaped dither, a spectrum view and beat sync (the sample is played so it lasts N lines at the song tempo; pitch follows speed). Missing: draw-in-waveform editing, formant-preserving stretch
+- [~] Sample editor (GUI): zoomable waveform, selection, cut/copy/paste/delete/crop, silence, fades, gain, normalize, invert, DC removal, reverse, mono/stereo, tape pitch shift, resample, export to every format above. Also loop crossfade, time-stretch (WSOLA, pitch kept), slice at detected transients, bit-depth reduction with shaped dither, a spectrum view and beat sync (the sample is played so it lasts N lines at the song tempo; pitch follows speed). Missing: draw-in-waveform editing, formant-preserving stretch
 - [x] Slice markers (manual, shift-click, even split, transient detection) and split-to-keys work
 - [~] Key zones and velocity zones (layers), per-sample volume/pan/tune, and per-instrument NNA (cut, note-off, continue) work; mute-groups do not
 - [~] Instrument volume, pan, pitch and cutoff envelopes (points, sustain hold, GUI editor) work. Per-note LFOs (up to four; volume, pan, pitch, cutoff; five shapes, fade-in), key tracking and velocity-to-cutoff work (LFOs tab). Stepper and smooth-random LFOs, resonance modulation, key / velocity / macro routings (four macro knobs, moved live by `M1`-`M4`), envelope loops while held, and note fade-out work. Drive modulation does not
@@ -83,7 +83,7 @@ Compiled from memory of Renoise 3.x behavior. Verify each item against the offic
 - [~] Record: live audio input to sample works; recording MIDI into the pattern works in edit mode (no quantize, no chords-to-columns)
 
 ## Render, export, files
-- [~] Offline render: whole song and the loop range to WAV (16/24/32f), each track as a separate stem WAV; CPU and voice meters in the status bar. FLAC/OGG/MP3 encoding, dither and per-pattern render do not exist
+- [~] Offline render: whole song, the loop range and each track as a stem, to WAV (16/24/32f), FLAC (16/24), Ogg Vorbis, MP3, AAC (ADTS) or Opus, with a 0-10 quality scale per lossy codec (10 = Vorbis q1.0, MP3 CBR 320, Opus 510 kbps, AAC 512 kbps), TPDF dither, and a render sample rate up to 192 kHz (songs render at that rate directly); CPU and voice meters in the status bar. Missing: tags/metadata, M4A container, per-pattern render, encoder-side loudness normalisation
 - [ ] Sample-accurate loop export
 - [~] Native `.trkr` project save/load
 - [~] `.xrns` import: metadata, tracks, patterns, notes, effects, sequence, and instruments with decoded sample audio (volume, pan, transpose/finetune, loops, key mapping; warnings for anything skipped). Element names and the `SampleData/` layout are from memory and tested only against synthetic fixtures. Missing: instrument envelopes, filters, devices, automation, phrases, groups, sends

@@ -71,7 +71,7 @@ impl GuiApp {
                         self.open_dialog(FileMode::ImportSample);
                         ui.close_menu();
                     }
-                    if ui.button("Export song as WAV...").clicked() {
+                    if ui.button("Export song as audio...").clicked() {
                         self.open_dialog(FileMode::ExportSong);
                         ui.close_menu();
                     }
@@ -79,7 +79,7 @@ impl GuiApp {
                         self.open_dialog(FileMode::ExportStems);
                         ui.close_menu();
                     }
-                    if ui.button("Export loop range as WAV...").clicked() {
+                    if ui.button("Export loop range as audio...").clicked() {
                         self.open_dialog(FileMode::ExportRange);
                         ui.close_menu();
                     }

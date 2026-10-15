@@ -77,7 +77,6 @@ pub(crate) struct GuiApp {
     pub sample_drag: Option<usize>,
     /// Visible frame window (start, length) in the waveform; `None` = whole sample.
     pub wave_view: Option<(usize, usize)>,
-    pub wav_format: trakr_editor::WavFormat,
     pub gain_db: f32,
     pub pitch_st: f32,
     pub resample_hz: u32,
@@ -140,7 +139,6 @@ impl GuiApp {
             sample_sel: None,
             sample_drag: None,
             wave_view: None,
-            wav_format: trakr_editor::WavFormat::Pcm16,
             gain_db: 0.0,
             pitch_st: 0.0,
             resample_hz: 44_100,

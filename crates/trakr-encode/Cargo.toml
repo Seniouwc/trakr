@@ -1,0 +1,18 @@
+[package]
+name = "trakr-encode"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+trakr-core = { workspace = true }
+trakr-sample = { workspace = true }
+thiserror = "2"
+serde = { version = "1", features = ["derive"] }
+flacenc = "0.4"
+vorbis_rs = "0.5"
+mp3lame-encoder = "0.2"
+opus = "0.3"
+ogg = "0.9"
+fdk-aac = "0.7"

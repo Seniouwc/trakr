@@ -6,6 +6,7 @@ members = [
     "crates/trakr-format",
     "crates/trakr-xrns",
     "crates/trakr-sample",
+    "crates/trakr-encode",
     "crates/trakr-midi",
     "crates/trakr-mod",
     "crates/trakr-script",
@@ -29,6 +30,7 @@ trakr-engine = { path = "crates/trakr-engine", default-features = false }
 trakr-format = { path = "crates/trakr-format" }
 trakr-xrns = { path = "crates/trakr-xrns" }
 trakr-sample = { path = "crates/trakr-sample" }
+trakr-encode = { path = "crates/trakr-encode" }
 trakr-midi = { path = "crates/trakr-midi" }
 trakr-mod = { path = "crates/trakr-mod" }
 trakr-clap = { path = "crates/trakr-clap" }
@@ -43,3 +45,7 @@ codegen-units = 1
 
 [profile.dev]
 opt-level = 1   # keeps the audio callback usable in debug builds
+
+# fdk-aac's C++ does not compile at -O1 (always_inline of indirect calls).
+[profile.dev.package.fdk-aac-sys]
+opt-level = 0

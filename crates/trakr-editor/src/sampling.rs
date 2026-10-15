@@ -3,7 +3,7 @@
 use super::*;
 use std::path::Path;
 use trakr_core::Sample;
-use trakr_sample::WavFormat;
+use trakr_encode::ExportFormat;
 
 const REC_SAMPLE_CAP_SECONDS: usize = 600;
 const RENDER_RATE: u32 = 44_100;
@@ -123,10 +123,10 @@ impl Editor {
         self.sync();
     }
 
-    pub fn export_sample(&mut self, path: &Path, a: usize, b: usize, format: WavFormat) {
+    pub fn export_sample(&mut self, path: &Path, a: usize, b: usize, format: ExportFormat) {
         let Some(s) = self.current_sample() else { return };
         let (a, b) = if a == b { (0, s.frames()) } else { s.clamp_range(a, b) };
-        match trakr_sample::write_wav(path, s, a, b, format) {
+        match format.write(&path.with_extension(format.extension()), s, a, b) {
             Ok(()) => self.status = format!("exported {}", path.display()),
             Err(e) => self.status = format!("export failed: {e}"),
         }
@@ -220,6 +220,10 @@ impl Editor {
     // ---- rendering ----------------------------------------------------------------------
 
     pub(crate) fn render(&mut self) -> Vec<f32> {
+        self.render_at(RENDER_RATE)
+    }
+
+    fn render_at(&mut self, rate: u32) -> Vec<f32> {
         let chains = self
             .song
             .tracks
@@ -239,7 +243,7 @@ impl Editor {
                     .collect()
             })
             .collect();
-        trakr_engine::render_song_with_chains(self.song.clone(), RENDER_RATE, RENDER_MAX_SECONDS, chains)
+        trakr_engine::render_song_with_chains(self.song.clone(), rate, RENDER_MAX_SECONDS, chains)
     }
 
     /// Render the whole song to a new stereo instrument (bounce), e.g. for resampling it further.
@@ -283,14 +287,15 @@ impl Editor {
     }
 
     /// Render `song` offline through the plugin-aware chains.
-    fn render_song_copy(&mut self, song: Song) -> Vec<f32> {
-        let chains = self.chains_for(RENDER_RATE);
-        trakr_engine::render_song_with_chains(Arc::new(song), RENDER_RATE, RENDER_MAX_SECONDS, chains)
+    fn render_song_copy(&mut self, song: Song, rate: u32) -> Vec<f32> {
+        let chains = self.chains_for(rate);
+        trakr_engine::render_song_with_chains(Arc::new(song), rate, RENDER_MAX_SECONDS, chains)
     }
 
     /// Render each sequencer track on its own (through its group, sends and master) into
     /// `<dir>/<base>-<track name>.wav`. Returns how many files were written.
-    pub fn export_stems(&mut self, base: &Path, format: WavFormat) -> usize {
+    pub fn export_stems(&mut self, base: &Path, format: ExportFormat) -> usize {
+        let rate = format.target_rate(RENDER_RATE);
         let dir = base.parent().map(Path::to_path_buf).unwrap_or_default();
         let stem = base.file_stem().map_or("stem".to_string(), |s| s.to_string_lossy().into_owned());
         let mut written = 0;
@@ -303,7 +308,7 @@ impl Editor {
                 tr.solo = i == t;
             }
             song.loop_range = None;
-            let data = self.render_song_copy(song);
+            let data = self.render_song_copy(song, rate);
             if data.is_empty() {
                 continue; // a silent track has no stem
             }
@@ -312,9 +317,9 @@ impl Editor {
                 .chars()
                 .map(|c| if c.is_alphanumeric() || c == '-' || c == '_' { c } else { '_' })
                 .collect();
-            let s = Sample::new("stem", RENDER_RATE, 2, data);
-            let path = dir.join(format!("{stem}-{:02}-{name}.wav", t + 1));
-            match trakr_sample::write_wav(&path, &s, 0, s.frames(), format) {
+            let s = Sample::new("stem", rate, 2, data);
+            let path = dir.join(format!("{stem}-{:02}-{name}.{}", t + 1, format.extension()));
+            match format.write(&path, &s, 0, s.frames()) {
                 Ok(()) => written += 1,
                 Err(e) => {
                     self.status = format!("stem export failed: {e}");
@@ -327,7 +332,9 @@ impl Editor {
     }
 
     /// Render sequence slots `from..=to` (the loop range if set) to a WAV file.
-    pub fn export_slots(&mut self, path: &Path, from: usize, to: usize, format: WavFormat) {
+    pub fn export_slots(&mut self, path: &Path, from: usize, to: usize, format: ExportFormat) {
+        let rate = format.target_rate(RENDER_RATE);
+        let path = &path.with_extension(format.extension());
         let n = self.song.sequence.len();
         if n == 0 || from > to || from >= n {
             self.status = "nothing to export".into();
@@ -336,27 +343,29 @@ impl Editor {
         let mut song = (*self.song).clone();
         song.sequence = song.sequence[from..=to.min(n - 1)].to_vec();
         song.loop_range = None;
-        let data = self.render_song_copy(song);
+        let data = self.render_song_copy(song, rate);
         if data.is_empty() {
             self.status = "nothing to render (that part is silent)".into();
             return;
         }
-        let s = Sample::new("range", RENDER_RATE, 2, data);
-        match trakr_sample::write_wav(path, &s, 0, s.frames(), format) {
+        let s = Sample::new("range", rate, 2, data);
+        match format.write(path, &s, 0, s.frames()) {
             Ok(()) => self.status = format!("exported slots {from:02X}-{to:02X} to {}", path.display()),
             Err(e) => self.status = format!("export failed: {e}"),
         }
     }
 
-    /// Render the whole song straight to a WAV file.
-    pub fn export_song(&mut self, path: &Path, format: WavFormat) {
-        let data = self.render();
+    /// Render the whole song straight to an audio file at the format's sample rate.
+    pub fn export_song(&mut self, path: &Path, format: ExportFormat) {
+        let rate = format.target_rate(RENDER_RATE);
+        let path = &path.with_extension(format.extension());
+        let data = self.render_at(rate);
         if data.is_empty() {
             self.status = "nothing to render (song is silent)".into();
             return;
         }
-        let s = Sample::new("render", RENDER_RATE, 2, data);
-        match trakr_sample::write_wav(path, &s, 0, s.frames(), format) {
+        let s = Sample::new("render", rate, 2, data);
+        match format.write(path, &s, 0, s.frames()) {
             Ok(()) => self.status = format!("exported {}", path.display()),
             Err(e) => self.status = format!("export failed: {e}"),
         }

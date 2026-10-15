@@ -15,8 +15,8 @@ An open source tracker DAW written in Rust, with a native window (egui). The goa
 - Pattern editor with note, instrument, volume, panning, delay and effect columns
 - Undo/redo, block selection, copy/cut/paste, transpose, reverse, interpolate
 - Sequence editing (insert, clone, delete, reorder), pattern length, add/remove tracks and columns
-- Sample import (WAV, AIFF, FLAC, OGG, MP3), recording from your audio input (Ctrl-R), zoomable waveform editor (cut/copy/paste, fades, gain, normalize, reverse, pitch/resample, slices, key zones), WAV export
-- Render the song to a sample or a WAV file; forward/reverse/ping-pong loops
+- Sample import (WAV, AIFF, FLAC, OGG, MP3), recording from your audio input (Ctrl-R), zoomable waveform editor (cut/copy/paste, fades, gain, normalize, reverse, pitch/resample, slices, key zones), export
+- Render the song to a sample or export it as WAV, FLAC, Ogg Vorbis, MP3, AAC or Opus (quality 0-10, up to 192 kHz); forward/reverse/ping-pong loops
 - Delay column and timing effects (sample offset, backwards, cut, delay, retrigger)
 - Pitch and volume effects: slides, glide, vibrato, tremolo, arpeggio, volume slide, fade in/out (`0I`/`0O`), plus Block > Fade in/out that ramps the volume column
 - Instrument volume, pan, pitch and cutoff envelopes with a hold point, key and velocity zones, NNA modes, linear/cubic/sinc interpolation
@@ -33,7 +33,7 @@ An open source tracker DAW written in Rust, with a native window (egui). The goa
 - 18 colour themes (Catppuccin x4, Dracula, Gruvbox, Nord, Solarized, Tokyo Night, One Dark, Rose Pine, Everforest, Monokai) plus your own JSON theme files; Preferences (Ctrl-,) for keys, appearance, autosave, backups, OSC
 - Command palette (Ctrl-P), find and replace (Ctrl-F), randomize, expand, shrink and repeat block tools
 - Instrument LFOs, key tracking, velocity-to-cutoff; 37 native devices (incl. convolver, maximizer, formula modulator) including sidechain, bus and multiband compressors
-- MIDI learn, MIDI clock input (tempo follow), OSC remote control, per-track stem and loop-range WAV export, CPU meter
+- MIDI learn, MIDI clock input (tempo follow), OSC remote control, per-track stem and loop-range export, CPU meter
 - Local CLAP effect plugin hosting (scan, add to a track, edit and automate parameters)
 - Lua scripting (sandboxed, one undo step per run): Scripts menu, examples, your own `.lua` files in the config folder, a console window
 - Best-effort `.xrns` import and export (patterns and instruments with samples) for interoperability

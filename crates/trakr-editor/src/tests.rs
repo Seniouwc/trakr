@@ -310,7 +310,7 @@ fn render_to_sample_bounces_the_song() {
 fn export_sample_writes_a_readable_wav() {
     let mut app = Editor::new(Song::demo(), None, None);
     let path = std::env::temp_dir().join("trakr_export_test.wav");
-    app.export_sample(&path, 0, 0, WavFormat::Pcm16);
+    app.export_sample(&path, 0, 0, ExportFormat::wav(16));
     let back = trakr_sample::decode_file(&path).unwrap();
     assert_eq!(back.frames(), app.current_sample().unwrap().frames());
     let _ = std::fs::remove_file(path);
@@ -1496,7 +1496,7 @@ fn stems_and_slot_ranges_render_to_files() {
     let dir = std::env::temp_dir().join(format!("trakr-stems-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let mut e = Editor::new(Song::demo(), None, None);
-    let n = e.export_stems(&dir.join("mix.wav"), WavFormat::Pcm16);
+    let n = e.export_stems(&dir.join("mix.wav"), ExportFormat::wav(16));
     assert_eq!(n, 1, "only the track with notes has a stem");
     let stem = dir.join("mix-01-Track_01.wav");
     assert!(stem.is_file());
@@ -1507,16 +1507,16 @@ fn stems_and_slot_ranges_render_to_files() {
         l.notes[0].note = 60;
         l.notes[0].instrument = 0;
     });
-    assert_eq!(e.export_stems(&dir.join("mix.wav"), WavFormat::Pcm16), 2);
+    assert_eq!(e.export_stems(&dir.join("mix.wav"), ExportFormat::wav(16)), 2);
     assert!(dir.join("mix-02-Track_02.wav").is_file());
     // slot ranges: two copies of the pattern render about twice as long as one
     e.seq_clone();
     let (one, two) = (dir.join("one.wav"), dir.join("two.wav"));
-    e.export_slots(&one, 0, 0, WavFormat::Pcm16);
-    e.export_slots(&two, 0, 1, WavFormat::Pcm16);
+    e.export_slots(&one, 0, 0, ExportFormat::wav(16));
+    e.export_slots(&two, 0, 1, ExportFormat::wav(16));
     let (a, b) = (std::fs::metadata(&one).unwrap().len(), std::fs::metadata(&two).unwrap().len());
     assert!(b as f64 > a as f64 * 1.6, "{a} vs {b}");
-    e.export_slots(&one, 5, 9, WavFormat::Pcm16);
+    e.export_slots(&one, 5, 9, ExportFormat::wav(16));
     assert!(e.status.contains("nothing"));
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -1645,4 +1645,29 @@ fn formula_text_is_stored_undoable_and_bounded() {
     app.device_set_text(0, 9, "ignored");
     app.undo();
     assert!(app.song.tracks[0].devices[0].text.chars().count() <= 512);
+}
+
+#[test]
+fn songs_export_in_every_format_at_the_chosen_rate() {
+    let dir = std::env::temp_dir().join(format!("trakr-fmt-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut e = Editor::new(Song::demo(), None, None);
+    for codec in Codec::ALL {
+        let fmt = ExportFormat { codec, quality: 10, sample_rate: Some(48_000), ..Default::default() };
+        let path = dir.join("song.tmp");
+        e.export_song(&path, fmt);
+        let out = dir.join(format!("song.{}", codec.extension()));
+        assert!(out.is_file(), "{codec:?}: {}", e.status);
+        assert!(std::fs::metadata(&out).unwrap().len() > 1000, "{codec:?}");
+    }
+    let wav =
+        trakr_sample::decode_bytes(std::fs::read(dir.join("song.wav")).unwrap(), Some("wav"), "x").unwrap();
+    assert_eq!(wav.sample_rate, 48_000);
+    let n = e.export_stems(
+        &dir.join("s.flac"),
+        ExportFormat { codec: Codec::Flac, bits: 24, ..Default::default() },
+    );
+    assert_eq!(n, 1);
+    assert!(dir.join("s-01-Track_01.flac").is_file());
+    let _ = std::fs::remove_dir_all(&dir);
 }

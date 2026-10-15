@@ -29,7 +29,8 @@ New commands go into `trakr-editor::Action` (label + shortcut) so menus, keys an
 | `trakr-core` | Data model only: Song, Pattern (sparse lines), Track, Instrument, Sample, note/effect types. No IO, no audio, no UI. |
 | `trakr-engine` | Real-time engine: sequencer, voices, mixer, command queue, cpal backend (feature `audio`). |
 | `trakr-format` | Native `.trkr` (zip: `song.json` + raw f32 samples). Versioned via `FORMAT_VERSION`. |
-| `trakr-sample` | Audio file decoding (symphonia) into `Sample`. |
+| `trakr-sample` | Audio file decoding (symphonia) into `Sample`, WAV writer. |
+| `trakr-encode` | Export encoders: WAV, FLAC (flacenc), Ogg Vorbis (vorbis_rs), MP3 (LAME), AAC (fdk-aac, ADTS), Opus (libopus + ogg). `ExportFormat` with a 0..=10 quality scale. C encoders build at -O0 in dev (see Cargo.toml); needs cmake + a C++ compiler. |
 | `trakr-mod` | ProTracker `.mod`, Scream Tracker `.s3m` and FastTracker `.xm` importers (`import_any` sniffs the format). |
 | `trakr-xrns` | Best-effort `.xrns` importer. Element names are from memory, unverified against real files. |
 | `trakr-script` | Lua scripting (mlua, vendored Lua 5.4): `run(song, ctx, source)` edits a song copy, sandboxed with limits. Depends on core only. |

@@ -25,9 +25,9 @@ pub use keys::{KeyCode, KeyEvent};
 pub use midi_map::{MapTarget, MidiMapping};
 pub use ops::{Cell, Clipboard};
 pub use prefs::{default_config_dir, Prefs};
+pub use trakr_encode::{Codec, ExportFormat, MAX_QUALITY};
 pub use trakr_engine::InputRecorder;
 pub use trakr_midi::{ClockTempo, MidiBackend, MidiEvent, MidiInput, MidiOutMsg, MidiSink};
-pub use trakr_sample::WavFormat;
 pub use trakr_script::{API as SCRIPT_API, EXAMPLES as SCRIPT_EXAMPLES};
 
 /// Opens the audio input on demand; supplied by the binary.

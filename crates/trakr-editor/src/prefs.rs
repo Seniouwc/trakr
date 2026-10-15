@@ -48,6 +48,8 @@ pub struct Prefs {
     pub backups: bool,
     /// CC and key mappings made with MIDI learn.
     pub midi_map: Vec<crate::midi_map::MidiMapping>,
+    /// Last audio export settings (format, quality, bit depth, sample rate).
+    pub export: trakr_encode::ExportFormat,
 }
 
 impl Default for Prefs {
@@ -74,6 +76,7 @@ impl Default for Prefs {
             reopen_last: false,
             backups: true,
             midi_map: Vec::new(),
+            export: Default::default(),
         }
     }
 }

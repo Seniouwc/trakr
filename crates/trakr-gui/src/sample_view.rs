@@ -5,7 +5,6 @@ use crate::envelopes::EnvKind;
 use crate::{GuiApp, SampleTab};
 use eframe::egui::{self, Color32, PointerButton, Pos2, Rect, Sense, Stroke, Vec2};
 use trakr_core::{LoopMode, Sample};
-use trakr_editor::WavFormat;
 
 /// Copy of the selected sample's properties, so the UI can borrow the editor mutably while drawing.
 struct Info {
@@ -201,20 +200,9 @@ impl GuiApp {
                 self.editor.preview_note(note);
             }
             ui.separator();
-            egui::ComboBox::from_id_salt("wavfmt")
-                .selected_text(match self.wav_format {
-                    WavFormat::Pcm16 => "WAV 16-bit",
-                    WavFormat::Pcm24 => "WAV 24-bit",
-                    WavFormat::Float32 => "WAV 32-bit float",
-                })
-                .show_ui(ui, |ui| {
-                    ui.selectable_value(&mut self.wav_format, WavFormat::Pcm16, "WAV 16-bit");
-                    ui.selectable_value(&mut self.wav_format, WavFormat::Pcm24, "WAV 24-bit");
-                    ui.selectable_value(&mut self.wav_format, WavFormat::Float32, "WAV 32-bit float");
-                });
             if ui
                 .button("Export sample...")
-                .on_hover_text("Write the selection (or whole sample) as WAV")
+                .on_hover_text("Write the selection (or whole sample) as WAV, FLAC, Ogg, MP3, AAC or Opus")
                 .clicked()
             {
                 self.open_dialog(FileMode::ExportSample);
