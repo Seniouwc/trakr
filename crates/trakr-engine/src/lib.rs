@@ -1770,7 +1770,7 @@ impl Engine {
                     self.stop_phrase(ti, ci);
                     // Glide: retarget the sounding note in this column instead of retriggering.
                     let col_glide = cmds.iter().flatten().find_map(|c| match c {
-                        ColumnCmd::Fx(id, amount) if id == b"0G" => Some(*amount),
+                        ColumnCmd::Fx([b'0', b'G'], amount) => Some(*amount),
                         _ => None,
                     });
                     let glide = if &col.effect.id == b"0G" {
