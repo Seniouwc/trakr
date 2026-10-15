@@ -81,4 +81,75 @@ impl GuiApp {
             }
         }
     }
+
+    /// The "FX" tab: effects every note of this instrument passes through before joining its track.
+    pub fn instrument_fx_ui(&mut self, ui: &mut egui::Ui) {
+        use trakr_core::{DEVICES, MODULATORS};
+        ui.horizontal(|ui| {
+            egui::ComboBox::from_id_salt("inst_fx_add").selected_text("+ Add effect").show_ui(ui, |ui| {
+                for d in DEVICES.iter().filter(|d| !MODULATORS.contains(&d.id) && d.id != "native.send") {
+                    if ui.selectable_label(false, d.name).clicked() {
+                        self.editor.instrument_fx_add(d.id);
+                    }
+                }
+            });
+            ui.weak("Runs on the instrument's notes before the track's own devices. Notes of one instrument on several tracks share the chain.");
+        });
+        let specs = self.editor.current_instrument().map(|i| i.fx.clone()).unwrap_or_default();
+        if specs.is_empty() {
+            ui.weak(
+                "No effects. Add one to shape this instrument's sound on its own, whichever track plays it.",
+            );
+            return;
+        }
+        egui::ScrollArea::both().id_salt("inst_fx_scroll").show(ui, |ui| {
+            ui.horizontal_top(|ui| {
+                for (index, spec) in specs.iter().enumerate() {
+                    ui.group(|ui| {
+                        ui.vertical(|ui| {
+                            ui.set_width(280.0);
+                            ui.horizontal(|ui| {
+                                let mut on = !spec.bypass;
+                                if ui.checkbox(&mut on, "").on_hover_text("Active").changed() {
+                                    self.editor.instrument_fx_toggle_bypass(index);
+                                }
+                                ui.strong(spec.display_name());
+                                if ui.small_button("<").clicked() {
+                                    self.editor.instrument_fx_move(index, -1);
+                                }
+                                if ui.small_button(">").clicked() {
+                                    self.editor.instrument_fx_move(index, 1);
+                                }
+                                if ui.small_button("x").on_hover_text("Remove").clicked() {
+                                    self.editor.instrument_fx_remove(index);
+                                }
+                            });
+                            for pi in 0..spec.param_count() {
+                                let Some((pname, pmin, pmax, _, plog, pstepped, punit)) = spec.param_meta(pi)
+                                else {
+                                    continue;
+                                };
+                                let mut v = spec.param(pi);
+                                ui.horizontal(|ui| {
+                                    let label = pname.split(" (").next().unwrap_or(&pname).to_string();
+                                    ui.add_sized([78.0, 18.0], egui::Label::new(label));
+                                    ui.spacing_mut().slider_width = 90.0;
+                                    let mut slider = egui::Slider::new(&mut v, pmin..=pmax).suffix(punit);
+                                    if plog {
+                                        slider = slider.logarithmic(true);
+                                    }
+                                    if pstepped {
+                                        slider = slider.step_by(1.0);
+                                    }
+                                    if ui.add(slider).changed() {
+                                        self.editor.instrument_fx_set_param(index, pi, v);
+                                    }
+                                });
+                            }
+                        });
+                    });
+                }
+            });
+        });
+    }
 }

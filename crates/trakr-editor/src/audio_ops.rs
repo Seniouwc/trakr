@@ -93,6 +93,7 @@ impl Editor {
                 self.audio_info = Some(info);
                 self.sent_chains.clear();
                 self.sent_inst_plugins.clear();
+                self.sent_inst_fx.clear();
                 self.needs_sync = true;
                 self.flush_sync();
                 self.save_prefs();

@@ -69,6 +69,8 @@ fn control_block(rate: u32) -> u32 {
 /// One playing sample. Cubic or sinc interpolation; forward, reverse and ping-pong loops; per-tick effects
 /// (slides, glide, vibrato, tremolo, arpeggio, volume slide, fades) and instrument envelopes.
 pub struct Voice {
+    /// Instrument index, so the engine can route the voice through that instrument's FX chain.
+    pub inst: u8,
     /// Live pitch wheel offset in semitones (set by the engine for every voice).
     pub bend: f32,
     pub track: usize,
@@ -274,6 +276,7 @@ impl Voice {
             gm_cur: 0.0,
             gm_target: 0.0,
             step_cur: 0.0,
+            inst: 0,
             bend: 0.0,
             step_target: 0.0,
             pan_now: 0.0,

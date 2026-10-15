@@ -520,6 +520,9 @@ pub struct Instrument {
     /// kept but not used).
     #[serde(default)]
     pub plugin: Option<crate::track::DeviceSpec>,
+    /// Effects every note of this instrument passes through before joining its track (a sample FX chain).
+    #[serde(default)]
+    pub fx: Vec<crate::track::DeviceSpec>,
     pub volume: f32,
     /// Volume multiplier over note time.
     #[serde(default)]
@@ -578,6 +581,7 @@ impl Instrument {
             name: name.into(),
             samples: Vec::new(),
             plugin: None,
+            fx: Vec::new(),
             volume: 1.0,
             volume_env: Arc::default(),
             pan_env: Arc::default(),

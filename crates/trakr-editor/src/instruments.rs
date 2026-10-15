@@ -130,6 +130,81 @@ impl Editor {
         self.instrument_save_file(&dir.join(format!("{safe}.trki")))
     }
 
+    /// Add a native device to the selected instrument's FX chain.
+    pub fn instrument_fx_add(&mut self, id: &str) -> bool {
+        let idx = self.instrument as usize;
+        let Some(spec) = trakr_core::DeviceSpec::new(id) else {
+            self.status = format!("unknown device {id}");
+            return false;
+        };
+        if idx >= self.song.instruments.len() {
+            self.status = "no instrument selected".into();
+            return false;
+        }
+        if trakr_core::MODULATORS.contains(&id) || id == "native.send" {
+            self.status = "modulators and sends only work on tracks".into();
+            return false;
+        }
+        if self.song.instruments[idx].fx.len() >= 16 {
+            self.status = "an instrument's FX chain holds at most 16 devices".into();
+            return false;
+        }
+        self.checkpoint();
+        self.song_mut().instruments[idx].fx.push(spec);
+        self.sync();
+        true
+    }
+
+    pub fn instrument_fx_remove(&mut self, index: usize) {
+        let idx = self.instrument as usize;
+        if self.song.instruments.get(idx).is_some_and(|i| index < i.fx.len()) {
+            self.checkpoint();
+            self.song_mut().instruments[idx].fx.remove(index);
+            self.sync();
+        }
+    }
+
+    pub fn instrument_fx_toggle_bypass(&mut self, index: usize) {
+        let idx = self.instrument as usize;
+        if self.song.instruments.get(idx).is_some_and(|i| index < i.fx.len()) {
+            self.checkpoint();
+            let d = &mut self.song_mut().instruments[idx].fx[index];
+            d.bypass = !d.bypass;
+            self.sync();
+        }
+    }
+
+    pub fn instrument_fx_move(&mut self, index: usize, delta: i32) {
+        let idx = self.instrument as usize;
+        let Some(n) = self.song.instruments.get(idx).map(|i| i.fx.len()) else { return };
+        let to = index as i32 + delta;
+        if index < n && (0..n as i32).contains(&to) {
+            self.checkpoint();
+            self.song_mut().instruments[idx].fx.swap(index, to as usize);
+            self.sync();
+        }
+    }
+
+    pub fn instrument_fx_set_param(&mut self, index: usize, param: usize, value: f32) {
+        let idx = self.instrument as usize;
+        let Some(spec) = self.song.instruments.get(idx).and_then(|i| i.fx.get(index)) else { return };
+        let Some((_, min, max, _, _, _, _)) = spec.param_meta(param) else { return };
+        if !(value.is_finite() && min.is_finite() && max.is_finite()) {
+            return;
+        }
+        let value = value.clamp(min.min(max), min.max(max));
+        let defaults: Vec<f32> =
+            (0..spec.param_count()).filter_map(|i| spec.param_meta(i).map(|m| m.3)).collect();
+        self.checkpoint_key("inst_fx_param");
+        let d = &mut self.song_mut().instruments[idx].fx[index];
+        if d.params.len() < defaults.len() {
+            let have = d.params.len();
+            d.params.extend_from_slice(&defaults[have..]);
+        }
+        d.params[param] = value;
+        self.sync();
+    }
+
     pub fn instrument_add_empty(&mut self) {
         self.checkpoint();
         let n = self.song.instruments.len();

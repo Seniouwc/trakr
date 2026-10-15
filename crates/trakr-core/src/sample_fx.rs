@@ -17,6 +17,63 @@ impl Noise {
 
 /// Round `data` to `bits` bits with triangular dither, optionally shaping the quantisation noise upward
 /// (a first-order error feedback) where it is less audible. `bits` is clamped to 2..=24.
+/// Re-filter `b` so each frame's smoothed spectral envelope equals that of `a` (same length).
+fn envelope_match(a: &[f32], b: &[f32]) -> Vec<f32> {
+    use crate::fft::fft;
+    const N: usize = 2048;
+    const HOP: usize = N / 4;
+    const LIFTER: usize = 40;
+    let hann: Vec<f32> =
+        (0..N).map(|i| 0.5 - 0.5 * (std::f32::consts::TAU * i as f32 / N as f32).cos()).collect();
+    let envelope = |re: &[f32], im: &[f32]| -> Vec<f32> {
+        // log magnitude -> cepstrum -> keep the low quefrencies -> back to a smooth log spectrum
+        let mut lr: Vec<f32> = re.iter().zip(im).map(|(r, i)| (r.hypot(*i) + 1e-6).ln()).collect();
+        let mut li = vec![0.0f32; N];
+        fft(&mut lr, &mut li, true);
+        for q in 0..N {
+            let keep = q <= LIFTER || q >= N - LIFTER;
+            if !keep {
+                lr[q] = 0.0;
+                li[q] = 0.0;
+            } else {
+                lr[q] /= N as f32;
+                li[q] /= N as f32;
+            }
+        }
+        fft(&mut lr, &mut li, false);
+        lr
+    };
+    let len = a.len().min(b.len());
+    let mut out = vec![0.0f32; len + N];
+    let mut norm = vec![0.0f32; len + N];
+    let mut start = 0usize;
+    while start < len {
+        let take = |x: &[f32]| -> (Vec<f32>, Vec<f32>) {
+            let re: Vec<f32> = (0..N)
+                .map(|i| x.get(start + i).copied().filter(|_| start + i < len).unwrap_or(0.0) * hann[i])
+                .collect();
+            (re, vec![0.0f32; N])
+        };
+        let (mut ar, mut ai) = take(a);
+        let (mut br, mut bi) = take(b);
+        fft(&mut ar, &mut ai, false);
+        fft(&mut br, &mut bi, false);
+        let (ea, eb) = (envelope(&ar, &ai), envelope(&br, &bi));
+        for k in 0..N {
+            let g = (ea[k] - eb[k]).exp().clamp(0.05, 20.0);
+            br[k] *= g;
+            bi[k] *= g;
+        }
+        fft(&mut br, &mut bi, true);
+        for i in 0..N {
+            out[start + i] += br[i] / N as f32 * hann[i];
+            norm[start + i] += hann[i] * hann[i];
+        }
+        start += HOP;
+    }
+    (0..len).map(|i| if norm[i] > 1e-3 { out[i] / norm[i] } else { b[i] }).collect()
+}
+
 pub fn dither(data: &mut [f32], channels: usize, bits: u32, shaped: bool) {
     let bits = bits.clamp(2, 24);
     let steps = (1u32 << (bits - 1)) as f32;
@@ -110,6 +167,31 @@ impl Sample {
         self.loop_start = ls.min(n);
         self.loop_end = le.min(n);
         self.slices.retain(|&s| s < n);
+    }
+
+    /// Shift the pitch by `semitones` without changing the length and keep the spectral envelope (the
+    /// vowel colour of a voice or instrument body) where it was: the pitch-shifted signal is re-filtered
+    /// so its smoothed spectrum matches the original's, frame by frame (cepstral envelope, overlap-add).
+    pub fn pitch_shift_formant(&mut self, semitones: f32) {
+        let frames = self.frames();
+        if frames < 4096 || semitones.abs() < 1e-3 {
+            return self.pitch_shift_keep_length(semitones);
+        }
+        let ch = self.channels.max(1) as usize;
+        let original = self.data.clone();
+        let mut shifted = self.clone();
+        shifted.pitch_shift_keep_length(semitones);
+        let mut out = vec![0.0f32; frames * ch];
+        for c in 0..ch {
+            let a: Vec<f32> = (0..frames).map(|f| original[f * ch + c]).collect();
+            let b: Vec<f32> =
+                (0..frames).map(|f| shifted.data.get(f * ch + c).copied().unwrap_or(0.0)).collect();
+            let y = envelope_match(&a, &b);
+            for (f, v) in y.into_iter().enumerate() {
+                out[f * ch + c] = v.clamp(-1.0, 1.0);
+            }
+        }
+        self.data = Arc::new(out);
     }
 
     /// Change the length by `factor` (2.0 = twice as long) without changing the pitch (WSOLA). Loop
@@ -371,5 +453,57 @@ mod tests {
         let mut same = Sample::new("p", 44_100, 1, vec![0.1; 1000]);
         same.pitch_shift_keep_length(0.0);
         assert_eq!(same.frames(), 1000);
+    }
+
+    #[test]
+    fn formant_shift_keeps_the_spectral_envelope() {
+        use crate::fft::magnitude_spectrum;
+        // a "vowel": harmonics of 120 Hz shaped by one broad resonance at 1 kHz
+        let rate = 22_050.0f32;
+        let n = 22_050;
+        let data: Vec<f32> = (0..n)
+            .map(|i| {
+                let t = i as f32 / rate;
+                (1..=40)
+                    .map(|h| {
+                        let f = 120.0 * h as f32;
+                        let amp = (-((f - 1000.0) / 350.0).powi(2)).exp();
+                        amp * (std::f32::consts::TAU * f * t).sin()
+                    })
+                    .sum::<f32>()
+                    * 0.1
+            })
+            .collect();
+        let centroid = |v: &[f32]| {
+            let spec = magnitude_spectrum(&v[v.len() / 4..v.len() / 4 + 8192], 8192);
+            let (mut num, mut den) = (0.0f32, 0.0f32);
+            for (k, m) in spec.iter().enumerate().take(1200) {
+                let f = k as f32 * rate / 8192.0;
+                num += f * m * m;
+                den += m * m;
+            }
+            num / den.max(1e-9)
+        };
+        let original = Sample::new("v", 22_050, 1, data);
+        let base = centroid(&original.data);
+        let mut plain = original.clone();
+        plain.pitch_shift_keep_length(7.0);
+        let mut kept = original.clone();
+        kept.pitch_shift_formant(7.0);
+        let (c_plain, c_kept) = (centroid(&plain.data), centroid(&kept.data));
+        assert!(c_plain > base * 1.2, "a plain shift drags the resonance up: {base} -> {c_plain}");
+        assert!(
+            (c_kept - base).abs() < (c_plain - base).abs() * 0.6,
+            "formant-preserving shift stays nearer the original: base {base}, plain {c_plain}, kept {c_kept}"
+        );
+        // still the same length, finite, and short or silent input is handled
+        assert_eq!(kept.frames(), original.frames());
+        assert!(kept.data.iter().all(|v| v.is_finite()));
+        let mut tiny = Sample::new("t", 22_050, 1, vec![0.1; 100]);
+        tiny.pitch_shift_formant(5.0);
+        assert!(tiny.frames() > 0);
+        let mut silent = Sample::new("s", 22_050, 2, vec![0.0; 20_000]);
+        silent.pitch_shift_formant(-5.0);
+        assert!(silent.data.iter().all(|v| v.abs() < 1e-3));
     }
 }

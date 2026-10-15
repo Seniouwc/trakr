@@ -10,6 +10,7 @@ impl Editor {
         // Plugins in the song that loaded as pass-throughs before the host existed get built now.
         self.sent_chains.clear();
         self.sent_inst_plugins.clear();
+        self.sent_inst_fx.clear();
         self.needs_sync = true;
         self.flush_sync();
     }

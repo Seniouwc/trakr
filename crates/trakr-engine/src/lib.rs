@@ -207,6 +207,11 @@ pub enum Command {
     Stop,
     /// Install (or remove) the instrument plugin for one instrument slot. The device receives that
     /// instrument's notes; its audio joins the track the notes were played on.
+    /// Replace one instrument's FX chain (devices built from `Instrument::fx`).
+    SetInstrumentChain {
+        instrument: usize,
+        chain: Vec<Box<dyn Device>>,
+    },
     SetInstrumentPlugin {
         instrument: usize,
         device: Option<Box<dyn Device>>,
@@ -415,6 +420,10 @@ pub fn create(sample_rate: u32) -> (Engine, EngineHandle) {
         tick: 0,
         frames_to_tick: 0.0,
         chains: (0..MAX_TRACKS).map(|_| Vec::new()).collect(),
+        inst_chains: (0..MAX_INSTRUMENT_PLUGINS).map(|_| Vec::new()).collect(),
+        inst_bufs: vec![0.0; MAX_INSTRUMENT_PLUGINS * BLOCK * 2],
+        inst_used: [false; MAX_INSTRUMENT_PLUGINS],
+        inst_track: [0; MAX_INSTRUMENT_PLUGINS],
         pdc: vec![0.0; MAX_TRACKS * PDC_FRAMES * 2],
         pdc_pos: [0; MAX_TRACKS],
         pdc_max: 0,
@@ -488,6 +497,12 @@ pub struct Engine {
     tick: u8,
     frames_to_tick: f64,
     chains: Vec<Vec<Box<dyn Device>>>,
+    /// Per-instrument FX chains, the stereo block each one collects, whether it was written this block and
+    /// the track its output joins (the track of its latest voice).
+    inst_chains: Vec<Vec<Box<dyn Device>>>,
+    inst_bufs: Vec<f32>,
+    inst_used: [bool; MAX_INSTRUMENT_PLUGINS],
+    inst_track: [usize; MAX_INSTRUMENT_PLUGINS],
     /// Delay-compensation rings, one per track (`PDC_FRAMES` stereo frames each), write positions and the
     /// largest chain latency this block.
     pdc: Vec<f32>,
@@ -594,6 +609,25 @@ impl Engine {
                 v.set_line_frames(line_frames);
                 v.bend = self.bend;
                 let t = v.track.min(MAX_TRACKS - 1);
+                let ii = v.inst as usize;
+                if !self.inst_chains[ii.min(MAX_INSTRUMENT_PLUGINS - 1)].is_empty()
+                    && ii < MAX_INSTRUMENT_PLUGINS
+                {
+                    // an instrument with an FX chain collects its voices first
+                    let ib = ii * BLOCK * 2;
+                    if !self.inst_used[ii] {
+                        self.inst_bufs[ib..ib + frames * 2].fill(0.0);
+                        self.inst_used[ii] = true;
+                    }
+                    self.inst_track[ii] = t;
+                    v.mix(
+                        &mut self.inst_bufs[ib + done * 2..ib + (done + chunk) * 2],
+                        self.sample_rate,
+                        1.0,
+                        0.0,
+                    );
+                    continue;
+                }
                 let base = t * BLOCK * 2;
                 if !self.track_used[t] {
                     self.track_bufs[base..base + frames * 2].fill(0.0);
@@ -629,7 +663,66 @@ impl Engine {
             self.now_frames += chunk as u64;
             done += chunk;
         }
+        self.run_instrument_chains(frames);
         self.mix_down(out, frames);
+    }
+
+    /// Run the FX chain of every instrument that sounded this block and add the result to its track.
+    fn run_instrument_chains(&mut self, frames: usize) {
+        if !self.inst_used.iter().any(|u| *u) {
+            return;
+        }
+        let song = self.song.clone(); // refcount bump only
+        for i in 0..MAX_INSTRUMENT_PLUGINS {
+            if !std::mem::take(&mut self.inst_used[i]) {
+                continue;
+            }
+            let ib = i * BLOCK * 2;
+            let specs: &[trakr_core::DeviceSpec] = song.instruments.get(i).map_or(&[], |inst| &inst.fx);
+            for (d, spec) in specs.iter().enumerate() {
+                if d >= self.inst_chains[i].len() {
+                    break;
+                }
+                if spec.bypass {
+                    continue;
+                }
+                let mut params = [0.0f32; trakr_core::MAX_PLUGIN_PARAMS];
+                let dev = &mut self.inst_chains[i][d];
+                let n = if let Some(p) = &spec.plugin {
+                    if dev.id() != "clap" {
+                        continue;
+                    }
+                    let n = p.params.len().min(params.len());
+                    for (k, slot) in params.iter_mut().enumerate().take(n) {
+                        *slot = p.params[k].clamp(spec.param(k));
+                    }
+                    n
+                } else {
+                    if dev.id() != spec.id {
+                        continue;
+                    }
+                    let Some(info) = trakr_core::device_info(&spec.id) else { continue };
+                    let n = info.params.len().min(params.len());
+                    for (k, slot) in params.iter_mut().enumerate().take(n) {
+                        *slot = spec.param(k).clamp(info.params[k].min, info.params[k].max);
+                    }
+                    n
+                };
+                dev.set_tempo(self.bpm);
+                dev.process(&params[..n], &mut self.inst_bufs[ib..ib + frames * 2]);
+            }
+            let t = self.inst_track[i].min(MAX_TRACKS - 1);
+            let base = t * BLOCK * 2;
+            if !self.track_used[t] {
+                self.track_bufs[base..base + frames * 2].fill(0.0);
+                self.track_used[t] = true;
+            }
+            let (dst, src) =
+                (&mut self.track_bufs[base..base + frames * 2], &self.inst_bufs[ib..ib + frames * 2]);
+            for (d, s) in dst.iter_mut().zip(src) {
+                *d += if s.is_finite() { *s } else { 0.0 };
+            }
+        }
     }
 
     /// Set tempo and lines per beat from the pattern's tempo lanes at line position `pos`.
@@ -1146,6 +1239,16 @@ impl Engine {
                         std::mem::forget(chain);
                     }
                 }
+                Command::SetInstrumentChain { instrument, chain } => {
+                    if let Some(slot) = self.inst_chains.get_mut(instrument) {
+                        let old = std::mem::replace(slot, chain);
+                        if let Err(rtrb::PushError::Full(old)) = self.garbage.push(Garbage::Chain(old)) {
+                            std::mem::forget(old);
+                        }
+                    } else {
+                        std::mem::forget(chain);
+                    }
+                }
                 Command::SetInstrumentPlugin { instrument, device } => {
                     if let Some(slot) = self.inst_plugins.get_mut(instrument) {
                         self.plugin_notes.retain(|n| n.inst as usize != instrument);
@@ -1312,7 +1415,9 @@ impl Engine {
             let old = self.voices.remove(0);
             self.retire_voice(old);
         }
-        self.voices.push(Voice::new(track, column, instrument, sample, note, vol, pan, opts));
+        let mut voice = Voice::new(track, column, instrument, sample, note, vol, pan, opts);
+        voice.inst = inst;
+        self.voices.push(voice);
     }
 
     /// Delay track `t`'s block by `delay` frames through its compensation ring.
@@ -1596,7 +1701,8 @@ impl Engine {
             let phrase = self.phrase_runs[i].phrase.clone();
             self.fire_phrase_line(i, &phrase);
             let straight = Song::frames_per_line(self.bpm, phrase.lpb.max(1), self.sample_rate).max(1.0);
-            let shuffle = phrase.shuffle.clamp(0.0, 0.75) as f64;
+            let shuffle =
+                if phrase.shuffle.is_finite() { phrase.shuffle.clamp(0.0, 0.75) } else { 0.0 } as f64;
             // swing: a pair of lines still lasts two lines, but its first half is longer
             let fpl = if self.phrase_runs[i].line.is_multiple_of(2) {
                 straight * (1.0 + shuffle)
@@ -1904,6 +2010,19 @@ impl Engine {
     }
 }
 
+/// Instrument FX chains of `song` as (instrument index, chain), natives built and plugins as pass-throughs.
+fn song_fx_chains(song: &Song, sample_rate: u32) -> Vec<(usize, Vec<Box<dyn Device>>)> {
+    song.instruments
+        .iter()
+        .enumerate()
+        .take(MAX_INSTRUMENT_PLUGINS)
+        .filter(|(_, i)| !i.fx.is_empty())
+        .map(|(n, i)| {
+            (n, i.fx.iter().map(|d| devices::create_or_passthrough(&d.id, sample_rate)).collect::<Vec<_>>())
+        })
+        .collect()
+}
+
 /// Build every track's device chain from the song's device list (unknown ids become pass-throughs).
 pub fn build_chains(song: &Song, sample_rate: u32) -> Vec<Vec<Box<dyn Device>>> {
     song.tracks
@@ -1945,6 +2064,7 @@ pub fn render_song_with_plugins(
         song
     };
     let (mut engine, mut handle) = create(sample_rate);
+    let song_for_fx = song.clone();
     handle.send(Command::SetSong(song));
     for (track, chain) in chains.into_iter().enumerate() {
         if !chain.is_empty() {
@@ -1953,6 +2073,11 @@ pub fn render_song_with_plugins(
     }
     for (instrument, device) in instruments {
         handle.send(Command::SetInstrumentPlugin { instrument, device: Some(device) });
+    }
+    // Native effects on instruments are rebuilt here; hosted plugins in an instrument's FX chain are skipped.
+    let fx_chains: Vec<(usize, Vec<Box<dyn Device>>)> = song_fx_chains(&song_for_fx, sample_rate);
+    for (instrument, chain) in fx_chains {
+        handle.send(Command::SetInstrumentChain { instrument, chain });
     }
     handle.send(Command::SetStopAtEnd(true));
     handle.send(Command::Play { seq_pos: 0, line: 0, loop_pattern: false });
@@ -2672,6 +2797,78 @@ mod sequencer_tests {
         assert!(play(false) > 2900, "with a volume envelope the loop keeps going after note-off");
         let last = play(true);
         assert!(last < 1500, "loop release lets the sample finish its tail: ended at {last}");
+    }
+
+    #[test]
+    fn instrument_fx_chains_shape_only_their_instrument() {
+        let build = |gain_db: Option<f32>, second_instrument: bool| {
+            let mut song = song_with(vec![0.5; 400], LoopMode::Off);
+            if second_instrument {
+                let mut other = Instrument::new("other");
+                other.samples.push(Sample::new("o", RATE, 1, vec![0.25; 400]));
+                song.instruments.push(other);
+            }
+            if let Some(db) = gain_db {
+                let mut spec = trakr_core::DeviceSpec::new("native.gainer").unwrap();
+                spec.params = vec![db];
+                song.instruments[0].fx.push(spec);
+            }
+            put(&mut song, 0, |l| note(&mut l.notes[0]));
+            if second_instrument {
+                put(&mut song, 0, |l| {
+                    l.notes[1].note = 48;
+                    l.notes[1].instrument = 1;
+                });
+                Arc::make_mut(&mut song.patterns[0]).line_mut(0, 0);
+                song.tracks[0].visible_note_columns = 2;
+            }
+            let (mut engine, mut h) = create(RATE);
+            let chain: Vec<Box<dyn Device>> = song.instruments[0]
+                .fx
+                .iter()
+                .map(|d| crate::devices::create_or_passthrough(&d.id, RATE))
+                .collect();
+            h.send(Command::SetSong(Arc::new(song)));
+            h.send(Command::SetInstrumentChain { instrument: 0, chain });
+            h.send(Command::Play { seq_pos: 0, line: 0, loop_pattern: false });
+            let mut out = vec![0.0; 2 * 300];
+            engine.render(&mut out);
+            out[2 * 200]
+        };
+        let dry = build(None, false);
+        let wet = build(Some(-6.0), false);
+        assert!((dry - 0.5).abs() < 0.01, "{dry}");
+        assert!((wet / dry - 0.501).abs() < 0.02, "-6 dB halves the instrument: {dry} -> {wet}");
+        // a second instrument on the same track is not touched by the first one's chain
+        let mixed = build(Some(-6.0), true);
+        assert!((mixed - (0.25 + 0.25)).abs() < 0.02, "0.5*0.5 from the chained one + 0.25 plain: {mixed}");
+        // removing the chain restores the dry sound
+        let mut song = song_with(vec![0.5; 400], LoopMode::Off);
+        put(&mut song, 0, |l| note(&mut l.notes[0]));
+        let (mut engine, mut h) = create(RATE);
+        h.send(Command::SetSong(Arc::new(song)));
+        h.send(Command::SetInstrumentChain {
+            instrument: 0,
+            chain: vec![crate::devices::create_or_passthrough("native.gainer", RATE)],
+        });
+        h.send(Command::SetInstrumentChain { instrument: 0, chain: vec![] });
+        h.send(Command::Play { seq_pos: 0, line: 0, loop_pattern: false });
+        let mut out = vec![0.0; 2 * 300];
+        engine.render(&mut out);
+        assert!((out[2 * 200] - 0.5).abs() < 0.01);
+    }
+
+    #[test]
+    fn offline_renders_include_instrument_fx() {
+        let mut song = song_with(vec![0.5; 400], LoopMode::Off);
+        put(&mut song, 0, |l| note(&mut l.notes[0]));
+        let dry = render_song(Arc::new(song.clone()), RATE, 5.0);
+        let mut spec = trakr_core::DeviceSpec::new("native.gainer").unwrap();
+        spec.params = vec![-60.0];
+        song.instruments[0].fx.push(spec);
+        let wet = render_song(Arc::new(song), RATE, 5.0);
+        let peak = |v: &[f32]| v.iter().fold(0.0f32, |m, s| m.max(s.abs()));
+        assert!(peak(&dry) > 0.4 && peak(&wet) < 0.01, "{} vs {}", peak(&dry), peak(&wet));
     }
 
     #[test]
@@ -3629,10 +3826,10 @@ mod device_tests {
         }
     }
 
-    const FX_IDS: [&[u8; 2]; 31] = [
+    const FX_IDS: [&[u8; 2]; 33] = [
         b"ZT", b"ZL", b"ZB", b"0S", b"0B", b"0C", b"0Q", b"0R", b"0U", b"0D", b"0G", b"0V", b"0T", b"0A",
         b"0W", b"0I", b"0O", b"XX", b"00", b"ZZ", b"0M", b"0N", b"0Y", b"0L", b"0P", b"0X", b"ZK", b"M1",
-        b"M2", b"M4", b"M9",
+        b"M2", b"M4", b"M9", b"0H", b"0K",
     ];
 
     /// Stands in for a hosted plugin: scales the signal by the first parameter.
@@ -3701,6 +3898,7 @@ mod device_tests {
                         trakr_core::LfoTarget::Pitch,
                         trakr_core::LfoTarget::Cutoff,
                         trakr_core::LfoTarget::Resonance,
+                        trakr_core::LfoTarget::Drive,
                     ]),
                     shape: *rng.pick(&[
                         trakr_core::LfoShape::Sine,
@@ -3751,6 +3949,24 @@ mod device_tests {
                     },
                 };
             }
+            inst.drive = rng.below(300) as f32 / 100.0 - 1.0;
+            if rng.below(3) == 0 {
+                for _ in 0..1 + rng.below(3) {
+                    let info = rng.pick(trakr_core::DEVICES);
+                    if trakr_core::MODULATORS.contains(&info.id) || info.id == "native.send" {
+                        continue;
+                    }
+                    let mut d = DeviceSpec::new(info.id).unwrap();
+                    for (i, p) in info.params.iter().enumerate() {
+                        d.params[i] = *rng.pick(&[p.min, p.max, p.default]);
+                    }
+                    d.bypass = rng.below(6) == 0;
+                    inst.fx.push(d);
+                }
+            }
+            for s in &mut inst.samples {
+                s.loop_release = rng.below(2) == 0;
+            }
             inst.key_track = rng.below(1000) as f32 / 100.0 - 3.0;
             inst.vel_cutoff = rng.below(1000) as f32 / 100.0 - 3.0;
             if rng.below(3) == 0 {
@@ -3760,11 +3976,13 @@ mod device_tests {
                 });
             }
             if rng.below(2) == 0 {
-                inst.phrase_mode = trakr_core::PhraseMode::Keymap;
+                inst.phrase_mode =
+                    *rng.pick(&[trakr_core::PhraseMode::Keymap, trakr_core::PhraseMode::Program]);
                 for _ in 0..1 + rng.below(3) {
                     let mut p = Phrase::new("p", 1 + rng.below(20) as u16);
                     p.lpb = rng.below(40) as u8;
                     p.looping = rng.below(2) == 0;
+                    p.shuffle = *rng.pick(&[0.0, 0.5, 0.75, 3.0, -1.0, f32::NAN]);
                     p.loop_start = rng.below(30) as u16;
                     p.loop_end = rng.below(30) as u16;
                     p.base_note = rng.below(130) as u8;
@@ -3846,6 +4064,15 @@ mod device_tests {
                 trakr_core::Automation::new(rng.below(ntracks as u32) as usize, AutoTarget::TrackVolume);
             a.set_point(0.0, 0.5);
             a.set_point(lines as f32, 1.0);
+            a.curve = *rng.pick(&trakr_core::AutoCurve::ALL);
+            pat.automation.push(a);
+        }
+        if rng.below(2) == 0 {
+            let mut a = trakr_core::Automation::new(0, *rng.pick(&[AutoTarget::Bpm, AutoTarget::Lpb]));
+            for _ in 0..1 + rng.below(4) {
+                a.set_point(rng.below(lines as u32 + 3) as f32, rng.below(1000) as f32 / 500.0 - 0.5);
+            }
+            a.curve = *rng.pick(&trakr_core::AutoCurve::ALL);
             pat.automation.push(a);
         }
         song.patterns = vec![Arc::new(pat)];
@@ -3873,6 +4100,9 @@ mod device_tests {
             h.send(Command::SetSong(Arc::new(song.clone())));
             for (track, chain) in chains.into_iter().enumerate() {
                 h.send(Command::SetChain { track, chain });
+            }
+            for (instrument, chain) in song_fx_chains(&song, rate) {
+                h.send(Command::SetInstrumentChain { instrument, chain });
             }
             h.send(Command::SetMidiOut { enabled: rng.below(2) == 0, clock: rng.below(2) == 0 });
             h.send(Command::Play { seq_pos: 0, line: 0, loop_pattern: rng.below(2) == 0 });

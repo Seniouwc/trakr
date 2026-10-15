@@ -63,6 +63,7 @@ pub enum SampleTab {
     Filter,
     Modulation,
     Plugin,
+    Fx,
     Env(envelopes::EnvKind),
 }
 

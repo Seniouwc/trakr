@@ -953,7 +953,75 @@ fn fuzz_editor(seed: u64) {
             }
             14 => {
                 what = "structure".into();
-                match rng.below(6) {
+                match rng.below(10) {
+                    6 => app.track_set_sub_column(
+                        rng.below(app.song.tracks.len() + 1),
+                        rng.below(4),
+                        rng.below(2) == 0,
+                    ),
+                    7 => app.track_set_color(
+                        rng.below(app.song.tracks.len() + 1),
+                        Some([rng.below(256) as u8, 1, 2]),
+                    ),
+                    8 => {
+                        let keep = app.instrument;
+                        app.instrument = rng.below(app.song.instruments.len() + 1) as u8;
+                        match rng.below(5) {
+                            0 => {
+                                let d = &trakr_core::DEVICES[rng.below(trakr_core::DEVICES.len())];
+                                app.instrument_fx_add(d.id);
+                            }
+                            1 => app.instrument_fx_remove(rng.below(4)),
+                            2 => app.instrument_fx_move(rng.below(4), rng.below(3) as i32 - 1),
+                            3 => app.instrument_fx_toggle_bypass(rng.below(4)),
+                            _ => app.instrument_fx_set_param(
+                                rng.below(4),
+                                rng.below(6),
+                                rng.below(10_000) as f32 - 5000.0,
+                            ),
+                        }
+                        app.instrument = keep;
+                    }
+                    9 => {
+                        let n = app.song.tracks.len();
+                        let tg = if rng.below(2) == 0 {
+                            trakr_core::AutoTarget::Bpm
+                        } else {
+                            trakr_core::AutoTarget::TrackPan
+                        };
+                        let (a, b) = (rng.below(40) as f32, rng.below(40) as f32);
+                        match rng.below(6) {
+                            0 => {
+                                app.automation_edit("fuzz", rng.below(n), tg, |l| {
+                                    l.set_point(a, 0.3);
+                                    l.set_point(b, 0.8);
+                                });
+                            }
+                            1 => {
+                                app.automation_copy(0, tg, a.min(b), a.max(b));
+                                app.automation_paste(0, tg, rng.below(60) as f32);
+                            }
+                            2 => app.automation_flip(rng.below(n), tg, a.min(b), a.max(b)),
+                            3 => app.automation_shift(
+                                rng.below(n),
+                                tg,
+                                a.min(b),
+                                a.max(b),
+                                rng.below(9) as f32 - 4.0,
+                            ),
+                            4 => app.automation_scale(
+                                rng.below(n),
+                                tg,
+                                a.min(b),
+                                a.max(b),
+                                rng.below(40) as f32 / 10.0 - 1.0,
+                            ),
+                            _ => {
+                                let all = trakr_core::AutoCurve::ALL;
+                                app.automation_set_curve(rng.below(n), tg, all[rng.below(all.len())])
+                            }
+                        }
+                    }
                     0 => app.slot_toggle_mute(rng.below(8), rng.below(40)),
                     1 => {
                         app.section_set(rng.below(8), if rng.below(3) == 0 { None } else { Some("s".into()) })
@@ -2312,4 +2380,41 @@ fn instruments_save_load_through_files_and_the_bank() {
     let mut none = Editor::new(Song::default(), None, None);
     assert!(!none.instrument_save_to_bank());
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn instrument_fx_chain_edits_are_undoable_and_reach_the_engine() {
+    let (mut engine, handle) = trakr_engine::create(44_100);
+    let mut e = Editor::new(Song::demo(), None, Some(handle));
+    e.instrument = 0;
+    assert!(e.instrument_fx_add("native.gainer"));
+    assert!(e.instrument_fx_add("native.filter"));
+    assert!(!e.instrument_fx_add("native.lfo"), "modulators belong on tracks");
+    assert!(!e.instrument_fx_add("native.nope"));
+    assert_eq!(e.song.instruments[0].fx.len(), 2);
+    e.instrument_fx_set_param(0, 0, -60.0);
+    e.instrument_fx_set_param(0, 0, f32::NAN);
+    e.instrument_fx_set_param(0, 9, 1.0);
+    assert_eq!(e.song.instruments[0].fx[0].params[0], -60.0);
+    e.do_action(Action::PlaySong);
+    let silenced = render_peak(&mut engine, &mut e, 20_000);
+    assert!(silenced < 0.05, "the -60 dB gainer silences instrument 0: {silenced}");
+    e.instrument_fx_toggle_bypass(0);
+    e.instrument_fx_toggle_bypass(1);
+    let heard = render_peak(&mut engine, &mut e, 20_000);
+    assert!(heard > silenced * 5.0 && heard > 0.05, "bypassed chain lets the sound through: {heard}");
+    e.instrument_fx_move(0, 1);
+    assert_eq!(e.song.instruments[0].fx[1].id, "native.gainer");
+    e.instrument_fx_remove(0);
+    assert_eq!(e.song.instruments[0].fx.len(), 1);
+    e.undo();
+    assert_eq!(e.song.instruments[0].fx.len(), 2);
+    assert!(e.song.instruments[0].fx.len() <= 16);
+    for _ in 0..30 {
+        e.instrument_fx_add("native.gainer");
+    }
+    assert_eq!(e.song.instruments[0].fx.len(), 16);
+    let json = serde_json::to_string(&*e.song).unwrap();
+    let back: Song = serde_json::from_str(&json).unwrap();
+    assert_eq!(back.instruments[0].fx.len(), 16, "FX chains are saved with the song");
 }

@@ -292,6 +292,8 @@ pub struct Editor {
     sent_chains: Vec<Vec<String>>,
     /// Per instrument: what its plugin looked like when last sent to the engine.
     sent_inst_plugins: Vec<String>,
+    /// Per instrument: the FX chain last sent to the engine, as a key.
+    sent_inst_fx: Vec<String>,
     /// An event hook script is running (hooks do not trigger hooks).
     in_hook: bool,
     /// Automation points copied with `automation_copy`, positions relative to the copied range.
@@ -401,6 +403,7 @@ impl Editor {
             last_key: None,
             sent_chains: Vec::new(),
             sent_inst_plugins: Vec::new(),
+            sent_inst_fx: Vec::new(),
             in_hook: false,
             auto_clip: Vec::new(),
             plugin_guis: Default::default(),
@@ -535,7 +538,7 @@ impl Editor {
             self.needs_sync = false;
             return;
         }
-        let synced = self.sync_chains() && self.sync_instrument_plugins();
+        let synced = self.sync_chains() && self.sync_instrument_plugins() && self.sync_instrument_fx();
         if let Some(err) = self.plugin_errors.drain(..).next() {
             self.status = err;
         }
@@ -605,6 +608,48 @@ impl Editor {
                 self.plugin_guis.insert(PluginKey::Instrument(i), g);
             }
             self.sent_inst_plugins[i] = key.clone();
+        }
+        true
+    }
+
+    /// Send changed instrument FX chains to the engine. Returns false if the command queue was full.
+    fn sync_instrument_fx(&mut self) -> bool {
+        let Some(e) = &mut self.engine else { return true };
+        let rate = e.sample_rate;
+        let n = self.song.instruments.len().min(255);
+        let want: Vec<String> = (0..n.max(self.sent_inst_fx.len()))
+            .map(|i| match self.song.instruments.get(i) {
+                Some(inst) if i < 255 => inst
+                    .fx
+                    .iter()
+                    .map(|d| chain_key(d, &self.song.instruments))
+                    .collect::<Vec<_>>()
+                    .join("\u{2}"),
+                _ => String::new(),
+            })
+            .collect();
+        self.sent_inst_fx.resize(want.len(), String::new());
+        for (i, key) in want.iter().enumerate() {
+            if self.sent_inst_fx[i] == *key {
+                continue;
+            }
+            let specs = self.song.instruments.get(i).map(|inst| inst.fx.clone()).unwrap_or_default();
+            let chain = specs
+                .iter()
+                .map(|d| {
+                    make_device(
+                        &mut self.plugin_host,
+                        d,
+                        &self.song.instruments,
+                        rate,
+                        &mut self.plugin_errors,
+                    )
+                })
+                .collect();
+            if !e.send(Command::SetInstrumentChain { instrument: i, chain }) {
+                return false;
+            }
+            self.sent_inst_fx[i] = key.clone();
         }
         true
     }

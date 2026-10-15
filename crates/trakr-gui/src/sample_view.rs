@@ -60,6 +60,12 @@ impl GuiApp {
                     let nl = self.editor.current_instrument().map_or(0, |i| i.lfos.len());
                     let label = if nl > 0 { format!("LFOs ({nl})") } else { "LFOs".to_string() };
                     ui.selectable_value(&mut self.sample_tab, SampleTab::Modulation, label);
+                    let nfx = self.editor.current_instrument().map_or(0, |i| i.fx.len());
+                    ui.selectable_value(
+                        &mut self.sample_tab,
+                        SampleTab::Fx,
+                        if nfx > 0 { format!("FX ({nfx})") } else { "FX".to_string() },
+                    );
                     let has_plugin = self.editor.current_instrument().is_some_and(|i| i.plugin.is_some());
                     ui.selectable_value(
                         &mut self.sample_tab,
@@ -79,6 +85,10 @@ impl GuiApp {
                 });
                 if self.sample_tab == SampleTab::Filter {
                     self.filter_ui(ui);
+                    return;
+                }
+                if self.sample_tab == SampleTab::Fx {
+                    self.instrument_fx_ui(ui);
                     return;
                 }
                 if self.sample_tab == SampleTab::Plugin {
@@ -479,6 +489,15 @@ impl GuiApp {
             {
                 let st = self.pitch_st;
                 self.editor.edit_sample(idx, |s| s.pitch_shift_keep_length(st));
+                self.sample_sel = None;
+            }
+            if ui
+                .button("Pitch (keep formants)")
+                .on_hover_text("Like keep length, then restores the original spectral envelope so voices keep their vowel colour")
+                .clicked()
+            {
+                let st = self.pitch_st;
+                self.editor.edit_sample(idx, |s| s.pitch_shift_formant(st));
                 self.sample_sel = None;
             }
             ui.add(
