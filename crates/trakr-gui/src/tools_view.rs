@@ -39,6 +39,9 @@ impl GuiApp {
             self.show_palette = true;
             self.palette_query.clear();
         }
+        if std::mem::take(&mut self.editor.prefs_requested) {
+            self.show_prefs = true;
+        }
         if std::mem::take(&mut self.editor.find_requested) {
             self.show_find = true;
         }

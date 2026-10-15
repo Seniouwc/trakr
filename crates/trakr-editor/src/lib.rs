@@ -195,6 +195,7 @@ pub struct Editor {
     /// Set by commands that open a frontend window; the frontend clears them.
     pub palette_requested: bool,
     pub find_requested: bool,
+    pub prefs_requested: bool,
     rng: u64,
     config_dir: Option<PathBuf>,
     pub prefs: Prefs,
@@ -291,6 +292,7 @@ impl Editor {
             script_error: None,
             palette_requested: false,
             find_requested: false,
+            prefs_requested: false,
             rng: 0x9E37_79B9_7F4A_7C15,
             config_dir: None,
             prefs: Prefs::default(),

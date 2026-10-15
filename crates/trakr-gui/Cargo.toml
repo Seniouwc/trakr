@@ -11,3 +11,4 @@ eframe = "0.31.1"
 trakr-core = { workspace = true }
 trakr-editor = { workspace = true }
 trakr-engine = { workspace = true }
+serde_json = "1.0.154"

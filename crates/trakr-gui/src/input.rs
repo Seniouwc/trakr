@@ -59,7 +59,10 @@ pub fn collect_keys(ctx: &egui::Context) -> Vec<KeyEvent> {
                         alt: modifiers.alt,
                         shift: modifiers.shift,
                     };
-                    if let Some(c) = letter_key(*key).filter(|_| modifiers.command) {
+                    if *key == Key::Comma && modifiers.command {
+                        k.code = KeyCode::Char(',');
+                        out.push(k);
+                    } else if let Some(c) = letter_key(*key).filter(|_| modifiers.command) {
                         k.code = KeyCode::Char(c);
                         out.push(k);
                     } else if let Some(code) = nav_key(*key) {

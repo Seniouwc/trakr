@@ -93,6 +93,8 @@ pub(crate) struct GuiApp {
     pub grid_info: GridInfo,
     checked_recovery: bool,
     pub palette: theme::Palette,
+    /// Themes from `<config>/themes/*.json`: (id, name, scheme).
+    pub user_themes: Vec<(String, String, theme::Scheme)>,
     applied_theme: String,
     applied_scale: f32,
     pub show_prefs: bool,
@@ -158,6 +160,7 @@ impl GuiApp {
             script_text: String::new(),
             script_name: String::new(),
             palette: theme::Palette::named("dark"),
+            user_themes: Vec::new(),
             applied_theme: "dark".into(),
             applied_scale: 1.0,
             show_prefs: false,

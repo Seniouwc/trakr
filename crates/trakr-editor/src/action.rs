@@ -76,6 +76,7 @@ pub enum Action {
     RepeatBlock,
     OpenPalette,
     OpenFind,
+    OpenPreferences,
 }
 
 impl Action {
@@ -145,6 +146,7 @@ impl Action {
         Action::RepeatBlock,
         Action::OpenPalette,
         Action::OpenFind,
+        Action::OpenPreferences,
     ];
 
     pub fn label(self) -> &'static str {
@@ -214,6 +216,7 @@ impl Action {
             RepeatBlock => "Repeat block to pattern end",
             OpenPalette => "Command palette",
             OpenFind => "Find and replace",
+            OpenPreferences => "Preferences",
         }
     }
 
@@ -255,6 +258,7 @@ impl Action {
             RecordToggle => "Ctrl-R",
             OpenPalette => "Ctrl-P",
             OpenFind => "Ctrl-F",
+            OpenPreferences => "Ctrl-,",
             _ => "",
         }
     }
@@ -277,6 +281,7 @@ impl Action {
                 KeyCode::Char('r') => RecordToggle,
                 KeyCode::Char('p') => OpenPalette,
                 KeyCode::Char('f') => OpenFind,
+                KeyCode::Char(',') => OpenPreferences,
                 KeyCode::Up => SeqPrev,
                 KeyCode::Down => SeqNext,
                 _ => return None,

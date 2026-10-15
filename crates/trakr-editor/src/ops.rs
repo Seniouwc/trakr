@@ -855,6 +855,7 @@ impl Editor {
             RepeatBlock => self.repeat_block(),
             OpenPalette => self.palette_requested = true,
             OpenFind => self.find_requested = true,
+            OpenPreferences => self.prefs_requested = true,
             RecordToggle => self.record_toggle(),
             RenderToSample => self.render_to_sample(),
             InstrumentPrev => {

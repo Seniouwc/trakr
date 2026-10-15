@@ -4057,6 +4057,7 @@ version = "0.0.1"
 dependencies = [
  "anyhow",
  "eframe",
+ "serde_json",
  "trakr-core",
  "trakr-editor",
  "trakr-engine",

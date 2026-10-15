@@ -103,10 +103,7 @@ impl GuiApp {
                         self.item(ui, a);
                     }
                     ui.separator();
-                    if ui.button("Preferences...").clicked() {
-                        self.show_prefs = true;
-                        ui.close_menu();
-                    }
+                    self.item(ui, OpenPreferences);
                 });
                 ui.menu_button("Block", |ui| {
                     for a in [TransposeUp, TransposeDown, TransposeOctaveUp, TransposeOctaveDown] {

@@ -87,6 +87,11 @@ impl Editor {
         self.config_dir = dir;
     }
 
+    /// The preferences folder (`~/.config/trakr`), if one is set.
+    pub fn config_dir(&self) -> Option<&std::path::Path> {
+        self.config_dir.as_deref()
+    }
+
     /// Load saved preferences (missing or unreadable files are ignored) and apply them.
     pub fn load_prefs(&mut self) {
         let Some(dir) = &self.config_dir else { return };

@@ -707,12 +707,13 @@ fn action_all_is_complete() {
             RepeatBlock => 61,
             OpenPalette => 62,
             OpenFind => 63,
+            OpenPreferences => 64,
         }
     }
     for (i, a) in Action::ALL.iter().enumerate() {
         assert_eq!(index(*a), i, "{a:?} is out of order in Action::ALL");
     }
-    assert_eq!(Action::ALL.len(), 64);
+    assert_eq!(Action::ALL.len(), 65);
     for a in Action::ALL {
         assert!(!a.label().is_empty());
     }

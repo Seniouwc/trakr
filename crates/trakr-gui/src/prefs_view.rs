@@ -83,16 +83,57 @@ pub fn egui_to_keycode(k: Key) -> Option<KeyCode> {
     })
 }
 
+/// One theme in the picker: a row of colour swatches and the name.
+fn theme_row(ui: &mut egui::Ui, current: &mut String, id: &str, label: &str, s: &crate::theme::Scheme) {
+    ui.horizontal(|ui| {
+        let (rect, _) = ui.allocate_exact_size(egui::vec2(66.0, 14.0), egui::Sense::hover());
+        let colors = [s.base, s.surface2, s.red, s.green, s.blue];
+        for (i, c) in colors.iter().enumerate() {
+            let r = egui::Rect::from_min_size(
+                rect.min + egui::vec2(i as f32 * 13.0, 0.0),
+                egui::vec2(13.0, 14.0),
+            );
+            ui.painter().rect_filled(r, 0.0, *c);
+        }
+        ui.selectable_value(current, id.to_string(), label);
+    });
+}
+
 impl GuiApp {
+    /// The colour scheme behind a theme id (built-in scheme or user theme file), if it is one.
+    pub fn scheme_for(&self, id: &str) -> Option<crate::theme::Scheme> {
+        crate::theme::scheme_named(id).or_else(|| self.user_themes.iter().find(|t| t.0 == id).map(|t| t.2))
+    }
+
+    /// Read theme files from the config folder again.
+    pub fn reload_user_themes(&mut self) {
+        self.user_themes = self
+            .editor
+            .config_dir()
+            .map(|d| crate::theme::load_user_themes(&d.join("themes")))
+            .unwrap_or_default();
+    }
+
     /// Apply the saved theme and scale when they change.
     pub fn apply_appearance(&mut self, ctx: &egui::Context) {
-        let p = &self.editor.prefs;
-        if self.applied_theme != p.theme {
-            ctx.set_visuals(crate::theme::visuals(&p.theme));
-            self.palette = Palette::named(&p.theme);
-            self.applied_theme = p.theme.clone();
+        if self.applied_theme != self.editor.prefs.theme {
+            let id = self.editor.prefs.theme.clone();
+            if self.applied_theme.is_empty() {
+                self.reload_user_themes();
+            }
+            match self.scheme_for(&id) {
+                Some(s) => {
+                    ctx.set_visuals(s.visuals());
+                    self.palette = s.palette();
+                }
+                None => {
+                    ctx.set_visuals(crate::theme::visuals(&id));
+                    self.palette = Palette::named(&id);
+                }
+            }
+            self.applied_theme = id;
         }
-        let scale = p.ui_scale.clamp(0.6, 3.0);
+        let scale = self.editor.prefs.ui_scale.clamp(0.6, 3.0);
         if (self.applied_scale - scale).abs() > f32::EPSILON {
             ctx.set_zoom_factor(scale);
             self.applied_scale = scale;
@@ -191,12 +232,50 @@ impl GuiApp {
 
     fn appearance_tab(&mut self, ui: &mut egui::Ui) {
         let mut theme = self.editor.prefs.theme.clone();
+        let current_label = THEMES
+            .iter()
+            .map(|t| (t.0, t.1.to_string()))
+            .chain(crate::theme::SCHEMES.iter().map(|t| (t.0, t.1.to_string())))
+            .chain(self.user_themes.iter().map(|t| (t.0.as_str(), format!("{} (yours)", t.1))))
+            .find(|t| t.0 == theme)
+            .map_or(theme.clone(), |t| t.1);
         ui.horizontal(|ui| {
             ui.label("Theme");
-            for (id, label) in THEMES {
-                ui.selectable_value(&mut theme, id.to_string(), label);
+            egui::ComboBox::from_id_salt("theme_combo").width(260.0).selected_text(current_label).show_ui(
+                ui,
+                |ui| {
+                    for (id, label) in THEMES {
+                        ui.selectable_value(&mut theme, id.to_string(), label);
+                    }
+                    ui.separator();
+                    for (id, label, s) in crate::theme::SCHEMES {
+                        theme_row(ui, &mut theme, id, label, s);
+                    }
+                    if !self.user_themes.is_empty() {
+                        ui.separator();
+                        for (id, label, s) in &self.user_themes {
+                            theme_row(ui, &mut theme, id, &format!("{label} (yours)"), s);
+                        }
+                    }
+                },
+            );
+        });
+        ui.horizontal(|ui| {
+            if ui.button("Reload theme files").clicked() {
+                self.reload_user_themes();
+                self.applied_theme.clear(); // re-apply the current theme from the fresh files
+            }
+            if ui.button("Save current theme as a file").clicked() {
+                self.save_theme_template();
             }
         });
+        match self.editor.config_dir() {
+            Some(d) => ui.weak(format!(
+                "Your own themes: JSON files in {}/themes (only \"base\" and \"text\" are required).",
+                d.display()
+            )),
+            None => ui.weak("No config folder available, so theme files cannot be used."),
+        };
         let mut scale = self.editor.prefs.ui_scale;
         let mut font = self.editor.prefs.font_size;
         ui.horizontal(|ui| {
@@ -210,6 +289,31 @@ impl GuiApp {
         self.editor.prefs.theme = theme;
         self.editor.prefs.ui_scale = scale;
         self.editor.prefs.font_size = font;
+    }
+
+    #[cfg(test)]
+    pub fn save_theme_template_for_test(&mut self) {
+        self.save_theme_template();
+    }
+
+    /// Write the active theme's colours to `<config>/themes/my-theme.json` as a starting point.
+    fn save_theme_template(&mut self) {
+        let Some(dir) = self.editor.config_dir().map(|d| d.join("themes")) else {
+            self.editor.status = "no config folder available".into();
+            return;
+        };
+        let id = self.editor.prefs.theme.clone();
+        let scheme = self.scheme_for(&id).unwrap_or_else(|| {
+            crate::theme::scheme_named(if id == "light" { "catppuccin-latte" } else { "catppuccin-mocha" })
+                .expect("built in")
+        });
+        let path = dir.join("my-theme.json");
+        let result =
+            std::fs::create_dir_all(&dir).and_then(|_| std::fs::write(&path, scheme.to_json("My theme")));
+        self.editor.status = match result {
+            Ok(()) => format!("wrote {}: edit it, then Reload theme files", path.display()),
+            Err(e) => format!("cannot write theme file: {e}"),
+        };
     }
 
     fn general_tab(&mut self, ui: &mut egui::Ui) {

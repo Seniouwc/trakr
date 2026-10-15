@@ -314,7 +314,10 @@ fn random_input_never_panics_or_freezes() {
 #[test]
 fn themes_and_scale_apply_and_draw() {
     let mut h = Harness::new();
-    for theme in ["light", "contrast", "dark", "nonsense"] {
+    let mut ids: Vec<String> = ["light", "contrast", "dark", "nonsense"].map(String::from).to_vec();
+    ids.extend(theme::SCHEMES.iter().map(|t| t.0.to_string()));
+    for theme in ids {
+        let theme = theme.as_str();
         h.app.editor.prefs.theme = theme.into();
         h.app.editor.prefs.ui_scale = 1.3;
         h.app.editor.prefs.font_size = 18.0;
@@ -463,4 +466,37 @@ fn tool_windows_all_draw_together() {
     h.app.show_midi_map = false;
     h.frame(vec![]);
     assert!(h.app.editor.midi_learn.is_none(), "closing the window cancels learning");
+}
+
+#[test]
+fn user_theme_files_appear_in_the_picker_and_apply() {
+    let dir = std::env::temp_dir().join(format!("trakr-gui-themes-{}", std::process::id()));
+    std::fs::create_dir_all(dir.join("themes")).unwrap();
+    std::fs::write(dir.join("themes/mine.json"), r##"{"name":"Mine","base":"#202020","text":"#f0f0f0"}"##)
+        .unwrap();
+    let mut h = Harness::new();
+    h.app.editor.set_config_dir(Some(dir.clone()));
+    h.app.show_prefs = true;
+    h.app.prefs_tab = prefs_view::PrefsTab::Appearance;
+    h.app.reload_user_themes();
+    assert_eq!(h.app.user_themes.len(), 1);
+    h.app.editor.prefs.theme = "user:mine".into();
+    for _ in 0..3 {
+        h.frame(vec![]);
+    }
+    assert_eq!(h.app.applied_theme, "user:mine");
+    assert_eq!(h.app.palette.bg, eframe::egui::Color32::from_rgb(0x20, 0x20, 0x20));
+    // "Save current theme as a file" writes a template that loads back
+    h.app.editor.prefs.theme = "dracula".into();
+    h.frame(vec![]);
+    h.app.save_theme_template_for_test();
+    h.app.reload_user_themes();
+    assert!(h.app.user_themes.iter().any(|t| t.0 == "user:my-theme"));
+    // a theme file that disappears leaves a working (fallback) look
+    std::fs::remove_dir_all(dir.join("themes")).unwrap();
+    h.app.reload_user_themes();
+    h.app.editor.prefs.theme = "user:mine".into();
+    h.app.applied_theme.clear();
+    h.frame(vec![]);
+    let _ = std::fs::remove_dir_all(&dir);
 }

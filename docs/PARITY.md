@@ -88,7 +88,7 @@ Compiled from memory of Renoise 3.x behavior. Verify each item against the offic
 - [~] Native `.trkr` project save/load
 - [~] `.xrns` import: metadata, tracks, patterns, notes, effects, sequence, and instruments with decoded sample audio (volume, pan, transpose/finetune, loops, key mapping; warnings for anything skipped). Element names and the `SampleData/` layout are from memory and tested only against synthetic fixtures. Missing: instrument envelopes, filters, devices, automation, phrases, groups, sends
 - [~] `.xrns` export (File > Export as .xrns): metadata, tracks, patterns, sequence, instruments with 24-bit WAV samples; roundtrip-tested through the importer; warnings for envelopes, devices, automation, routing
-- [ ] `.xrni` and `.xrnt` import/export; track DSP presets; theme files
+- [ ] `.xrni` and `.xrnt` import/export; track DSP presets
 - [~] MOD import (4 to 99 channels; instruments, loops, finetune, volumes, Amiga panning, timing, common effects; unsupported effects reported); S3M (PCM channels, samples, common effects) and XM (key-mapped samples, delta decoding, common effects; envelopes not imported) import by content; IT does not
 - [x] Autosave (every 60 s while there is unsaved work, beside the project or in the config dir), crash recovery prompt, recent files menu
 - [x] Backup of the previous file as `<name>.bak` when saving over it (Preferences)
@@ -96,6 +96,6 @@ Compiled from memory of Renoise 3.x behavior. Verify each item against the offic
 ## Application
 - [~] TUI pattern editor (single pattern view, cursor, edit mode)
 - [ ] TUI views: sequencer/matrix, mixer, instrument editor, sample editor, automation editor, plugin browser, disk browser, settings, help
-- [~] Configurable keymap (Preferences > Keys: set, clear, reset per action; conflicts and reserved typing keys refused; saved), themes (dark, light, high contrast), interface scale, pattern font size, mouse support. Command palette (Ctrl-P). No Renoise-compatible preset (the real defaults are not documented here)
+- [~] Configurable keymap (Preferences > Keys: set, clear, reset per action; conflicts and reserved typing keys refused; saved), themes (dark, light, high contrast plus Catppuccin Latte/Frappe/Macchiato/Mocha, Dracula, Gruvbox dark/light, Nord, Solarized dark/light, Tokyo Night, One Dark, Rose Pine, Everforest, Monokai, and your own JSON files in `<config>/themes`), interface scale, pattern font size, mouse support. Command palette (Ctrl-P). No Renoise-compatible preset (the real defaults are not documented here)
 - [~] Preferences storage (octave, edit step, follow, recent files, autosave interval in `~/.config/trakr/prefs.json`); window size, bottom panel and an optional reopen-last-song setting are saved
 - [ ] Optional GUI frontend reusing core/engine
