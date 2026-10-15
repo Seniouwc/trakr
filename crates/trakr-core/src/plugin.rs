@@ -111,3 +111,64 @@ mod tests {
         }
     }
 }
+
+/// Largest plugin state kept in a song (bytes before encoding).
+pub const MAX_PLUGIN_STATE: usize = 4 << 20;
+
+const B64: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+/// Plugin state bytes as text (standard base64), for storing in a song's JSON.
+pub fn encode_state(bytes: &[u8]) -> String {
+    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for c in bytes.chunks(3) {
+        let n = (c[0] as u32) << 16 | (*c.get(1).unwrap_or(&0) as u32) << 8 | *c.get(2).unwrap_or(&0) as u32;
+        for i in 0..4 {
+            if i <= c.len() {
+                out.push(B64[(n >> (18 - 6 * i) & 63) as usize] as char);
+            } else {
+                out.push('=');
+            }
+        }
+    }
+    out
+}
+
+/// Inverse of [`encode_state`]; text that is not valid base64 (or is too long) gives no bytes.
+pub fn decode_state(text: &str) -> Vec<u8> {
+    let mut out = Vec::with_capacity(text.len() / 4 * 3);
+    let (mut acc, mut bits) = (0u32, 0);
+    for ch in text.bytes() {
+        if ch == b'=' || ch.is_ascii_whitespace() {
+            continue;
+        }
+        let Some(v) = B64.iter().position(|&b| b == ch) else { return Vec::new() };
+        acc = acc << 6 | v as u32;
+        bits += 6;
+        if bits >= 8 {
+            bits -= 8;
+            out.push((acc >> bits) as u8);
+            acc &= (1 << bits) - 1;
+        }
+        if out.len() > MAX_PLUGIN_STATE {
+            return Vec::new();
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod state_tests {
+    use super::*;
+
+    #[test]
+    fn state_text_roundtrips() {
+        for n in 0..40usize {
+            let bytes: Vec<u8> = (0..n).map(|i| (i * 37 + 11) as u8).collect();
+            assert_eq!(decode_state(&encode_state(&bytes)), bytes, "length {n}");
+        }
+        assert_eq!(encode_state(b"Man"), "TWFu");
+        assert_eq!(encode_state(b"Ma"), "TWE=");
+        assert!(decode_state("not base64!!").is_empty());
+        assert!(decode_state("").is_empty());
+    }
+}

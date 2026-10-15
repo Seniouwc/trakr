@@ -124,4 +124,94 @@ impl Editor {
         spec.params[param] = value;
         self.sync();
     }
+
+    // ---- plugin windows, state ------------------------------------------------------------
+
+    /// Whether the hosted plugin behind `key` can open a window of its own.
+    pub fn plugin_has_window(&self, key: PluginKey) -> bool {
+        self.plugin_guis.get(&key).is_some_and(|g| g.has_window())
+    }
+
+    pub fn plugin_window_visible(&self, key: PluginKey) -> bool {
+        self.plugin_guis.get(&key).is_some_and(|g| g.is_visible())
+    }
+
+    /// Open the plugin's window, or close it when it is already open.
+    pub fn plugin_window_toggle(&mut self, key: PluginKey) {
+        let Some(g) = self.plugin_guis.get_mut(&key) else {
+            self.status = "this plugin is not loaded".into();
+            return;
+        };
+        if !g.has_window() {
+            self.status = "this plugin has no window of its own: use the sliders".into();
+        } else if g.is_visible() {
+            g.hide();
+        } else if let Err(e) = g.show() {
+            self.status = format!("plugin window: {e}");
+        }
+    }
+
+    /// True while any plugin window is open (the frontend should then call `tick` often).
+    pub fn plugin_windows_active(&self) -> bool {
+        self.plugin_guis.values().any(|g| g.is_visible())
+    }
+
+    fn plugin_spec_mut(&mut self, key: PluginKey) -> Option<&mut DeviceSpec> {
+        let song = Arc::make_mut(&mut self.song);
+        match key {
+            PluginKey::Device(t, d) => song.tracks.get_mut(t)?.devices.get_mut(d),
+            PluginKey::Instrument(i) => song.instruments.get_mut(i)?.plugin.as_mut(),
+        }
+    }
+
+    /// Main-thread plugin work, once per frame: timers and callbacks, then whatever the plugins changed
+    /// themselves (parameters turned in their windows, saved state).
+    pub(crate) fn plugin_poll(&mut self) {
+        if let Some(h) = &mut self.plugin_host {
+            h.poll();
+        }
+        if self.plugin_guis.is_empty() {
+            return;
+        }
+        let mut states: Vec<(PluginKey, Vec<u8>)> = Vec::new();
+        let mut params: Vec<(PluginKey, usize, f32)> = Vec::new();
+        let mut changes = Vec::new();
+        for (key, g) in self.plugin_guis.iter_mut() {
+            if g.take_state_dirty() {
+                if let Some(bytes) = g.save_state() {
+                    states.push((*key, bytes));
+                }
+            }
+            changes.clear();
+            g.take_param_changes(&mut changes);
+            params.extend(changes.iter().map(|(i, v)| (*key, *i, *v)));
+        }
+        if states.is_empty() && params.is_empty() {
+            return;
+        }
+        for (key, bytes) in states {
+            if bytes.len() <= trakr_core::plugin::MAX_PLUGIN_STATE {
+                if let Some(spec) = self.plugin_spec_mut(key) {
+                    spec.text = trakr_core::encode_state(&bytes);
+                }
+            }
+        }
+        for (key, i, v) in params {
+            if let Some(spec) = self.plugin_spec_mut(key) {
+                if let Some(p) = spec.plugin.as_ref().and_then(|p| p.params.get(i)) {
+                    let v = p.clamp(v);
+                    if spec.params.len() <= i {
+                        let defaults: Vec<f32> =
+                            spec.plugin.iter().flat_map(|p| p.params.iter().map(|q| q.default)).collect();
+                        let have = spec.params.len();
+                        spec.params.extend_from_slice(&defaults[have.min(defaults.len())..]);
+                    }
+                    if let Some(slot) = spec.params.get_mut(i) {
+                        *slot = v;
+                    }
+                }
+            }
+        }
+        self.sync();
+    }
 }

@@ -1855,3 +1855,113 @@ fn instrument_plugins_play_notes_save_and_render() {
     e.undo();
     assert!(e.song.instruments[0].plugin.is_some());
 }
+
+#[derive(Default)]
+struct GuiLog {
+    shown: bool,
+    shows: u32,
+    state_dirty: bool,
+    state: Vec<u8>,
+    params: Vec<(usize, f32)>,
+    polls: u32,
+    loaded_state: Vec<Vec<u8>>,
+}
+
+struct FakeGui(std::sync::Arc<std::sync::Mutex<GuiLog>>);
+
+impl trakr_engine::PluginGui for FakeGui {
+    fn has_window(&self) -> bool {
+        true
+    }
+    fn show(&mut self) -> Result<(), String> {
+        let mut l = self.0.lock().unwrap();
+        l.shown = true;
+        l.shows += 1;
+        Ok(())
+    }
+    fn hide(&mut self) {
+        self.0.lock().unwrap().shown = false;
+    }
+    fn is_visible(&self) -> bool {
+        self.0.lock().unwrap().shown
+    }
+    fn take_state_dirty(&mut self) -> bool {
+        std::mem::take(&mut self.0.lock().unwrap().state_dirty)
+    }
+    fn save_state(&mut self) -> Option<Vec<u8>> {
+        Some(self.0.lock().unwrap().state.clone())
+    }
+    fn take_param_changes(&mut self, out: &mut Vec<(usize, f32)>) {
+        out.append(&mut self.0.lock().unwrap().params);
+    }
+}
+
+struct GuiHost(std::sync::Arc<std::sync::Mutex<GuiLog>>);
+
+impl trakr_engine::PluginHost for GuiHost {
+    fn scan(&mut self) -> Vec<trakr_core::PluginInfo> {
+        SynthHost.scan()
+    }
+    fn load(
+        &mut self,
+        path: &str,
+        id: &str,
+        rate: u32,
+    ) -> Result<(Box<dyn trakr_engine::Device>, trakr_core::PluginRef), String> {
+        SynthHost.load(path, id, rate)
+    }
+    fn load_with_gui(
+        &mut self,
+        path: &str,
+        id: &str,
+        rate: u32,
+        state: &[u8],
+    ) -> Result<trakr_engine::LoadedPlugin, String> {
+        self.0.lock().unwrap().loaded_state.push(state.to_vec());
+        let (d, r) = SynthHost.load(path, id, rate)?;
+        Ok((d, r, Some(Box::new(FakeGui(self.0.clone())))))
+    }
+    fn poll(&mut self) {
+        self.0.lock().unwrap().polls += 1;
+    }
+}
+
+#[test]
+fn plugin_windows_state_and_parameter_changes_flow_back_into_the_song() {
+    let log = std::sync::Arc::new(std::sync::Mutex::new(GuiLog::default()));
+    let (_engine, handle) = trakr_engine::create(44_100);
+    let mut e = Editor::new(Song::demo(), None, Some(handle));
+    e.set_plugin_host(Box::new(GuiHost(log.clone())));
+    e.scan_plugins();
+    let info = e.plugins()[0].clone();
+    assert!(e.instrument_set_plugin(&info));
+    let key = PluginKey::Instrument(e.instrument as usize);
+    assert!(e.plugin_has_window(key));
+    assert!(!e.plugin_window_visible(key));
+    assert!(!e.plugin_windows_active());
+    e.plugin_window_toggle(key);
+    assert!(e.plugin_window_visible(key) && e.plugin_windows_active());
+    e.tick();
+    assert!(log.lock().unwrap().polls > 0, "the host is polled every tick");
+    // the user changes the plugin in its window
+    {
+        let mut l = log.lock().unwrap();
+        l.state = vec![1, 2, 3, 4, 5];
+        l.state_dirty = true;
+        l.params = vec![(0, 0.9), (7, 1.0)]; // the second index does not exist
+    }
+    e.tick();
+    let spec = e.song.instruments[e.instrument as usize].plugin.clone().unwrap();
+    assert_eq!(trakr_core::decode_state(&spec.text), vec![1, 2, 3, 4, 5]);
+    assert_eq!(spec.params, vec![0.9]);
+    // the saved state is what a rebuilt plugin gets, and a rebuild keeps one window handle per plugin
+    e.sent_inst_plugins.clear();
+    e.needs_sync = true;
+    e.tick();
+    assert_eq!(log.lock().unwrap().loaded_state.last().unwrap(), &vec![1, 2, 3, 4, 5]);
+    e.plugin_window_toggle(key);
+    assert!(!e.plugin_window_visible(key));
+    // effect plugins have window keys per chain slot; unknown keys say so
+    e.plugin_window_toggle(PluginKey::Device(0, 5));
+    assert!(e.status.contains("not loaded"), "{}", e.status);
+}

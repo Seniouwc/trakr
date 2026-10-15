@@ -11,6 +11,17 @@ impl GuiApp {
                 let name = spec.plugin.as_ref().map_or("plugin", |p| p.name.as_str()).to_string();
                 ui.horizontal(|ui| {
                     ui.strong(name);
+                    let key = trakr_editor::PluginKey::Instrument(self.editor.instrument as usize);
+                    if self.editor.plugin_has_window(key) {
+                        let open = self.editor.plugin_window_visible(key);
+                        if ui
+                            .button(if open { "Close window" } else { "Open window" })
+                            .on_hover_text("The plugin's own window; its settings are saved with the song")
+                            .clicked()
+                        {
+                            self.editor.plugin_window_toggle(key);
+                        }
+                    }
                     if ui
                         .button("Use samples again")
                         .on_hover_text("Remove the plugin; the samples play")

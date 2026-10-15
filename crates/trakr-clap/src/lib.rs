@@ -15,21 +15,30 @@ use clap_sys::events::{
     CLAP_CORE_EVENT_SPACE_ID, CLAP_EVENT_NOTE_OFF, CLAP_EVENT_NOTE_ON, CLAP_EVENT_PARAM_VALUE,
 };
 use clap_sys::ext::audio_ports::{clap_audio_port_info, clap_plugin_audio_ports, CLAP_EXT_AUDIO_PORTS};
+use clap_sys::ext::gui::{clap_plugin_gui, CLAP_EXT_GUI, CLAP_WINDOW_API_WAYLAND, CLAP_WINDOW_API_X11};
 use clap_sys::ext::note_ports::{clap_plugin_note_ports, CLAP_EXT_NOTE_PORTS};
 use clap_sys::ext::params::{
     clap_param_info, clap_plugin_params, CLAP_EXT_PARAMS, CLAP_PARAM_IS_HIDDEN, CLAP_PARAM_IS_READONLY,
     CLAP_PARAM_IS_STEPPED,
 };
+use clap_sys::ext::posix_fd_support::{clap_plugin_posix_fd_support, CLAP_EXT_POSIX_FD_SUPPORT};
+use clap_sys::ext::state::{clap_plugin_state, CLAP_EXT_STATE};
+use clap_sys::ext::timer_support::{clap_plugin_timer_support, CLAP_EXT_TIMER_SUPPORT};
 use clap_sys::factory::plugin_factory::{clap_plugin_factory, CLAP_PLUGIN_FACTORY_ID};
 use clap_sys::host::clap_host;
 use clap_sys::plugin::clap_plugin;
 use clap_sys::process::{clap_process, CLAP_PROCESS_ERROR};
+use clap_sys::stream::{clap_istream, clap_ostream};
 use clap_sys::version::CLAP_VERSION;
 use std::ffi::{c_char, c_void, CStr, CString};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::atomic::Ordering;
+use std::sync::{Arc, Mutex, Weak};
 use trakr_core::{PluginInfo, PluginParam, PluginRef, MAX_PLUGIN_PARAMS};
-use trakr_engine::{Device, PluginHost};
+use trakr_engine::{Device, LoadedPlugin, PluginGui, PluginHost};
+
+mod host;
+use host::Shared;
 
 /// Most frames handed to a plugin in one call.
 const MAX_FRAMES: usize = 4096;
@@ -185,15 +194,16 @@ fn collect(dir: &Path, depth: usize, out: &mut Vec<PathBuf>) {
 /// [`PluginHost`] backed by CLAP libraries on disk.
 pub struct ClapHost {
     dirs: Vec<PathBuf>,
+    live: Vec<Weak<Instance>>,
 }
 
 impl ClapHost {
     pub fn new() -> Self {
-        Self { dirs: default_search_paths() }
+        Self { dirs: default_search_paths(), live: Vec::new() }
     }
 
     pub fn with_paths(dirs: Vec<PathBuf>) -> Self {
-        Self { dirs }
+        Self { dirs, live: Vec::new() }
     }
 }
 
@@ -214,17 +224,306 @@ impl PluginHost for ClapHost {
         plugin_id: &str,
         sample_rate: u32,
     ) -> Result<(Box<dyn Device>, PluginRef), String> {
-        let (dev, r) = ClapDevice::load(Path::new(path), plugin_id, sample_rate)?;
+        let (dev, r, _gui) = ClapDevice::load_full(Path::new(path), plugin_id, sample_rate, &[])?;
         Ok((Box::new(dev), r))
+    }
+
+    fn load_with_gui(
+        &mut self,
+        path: &str,
+        plugin_id: &str,
+        sample_rate: u32,
+        state: &[u8],
+    ) -> Result<LoadedPlugin, String> {
+        let (dev, r, gui) = ClapDevice::load_full(Path::new(path), plugin_id, sample_rate, state)?;
+        self.live.retain(|w| w.strong_count() > 0);
+        self.live.push(Arc::downgrade(&dev.inst));
+        Ok((Box::new(dev), r, Some(Box::new(gui))))
+    }
+
+    fn poll(&mut self) {
+        self.live.retain(|w| w.strong_count() > 0);
+        for w in &self.live {
+            if let Some(inst) = w.upgrade() {
+                inst.pump();
+            }
+        }
     }
 }
 
-// ---- host callbacks ----------------------------------------------------------------------------
+// ---- plugin instance -----------------------------------------------------------------------------
 
-unsafe extern "C" fn host_get_extension(_: *const clap_host, _: *const c_char) -> *const c_void {
-    std::ptr::null()
+/// A plugin instance, shared by its audio device and its UI handle; the last one to go destroys it.
+struct Instance {
+    plugin: *const clap_plugin,
+    // The plugin keeps a pointer to the host; both must outlive it.
+    _host: Box<clap_host>,
+    shared: Arc<Shared>,
+    window: Mutex<bool>,
+    // Keeps the library loaded for as long as the plugin exists; dropped after `destroy`.
+    _lib: Arc<Library>,
 }
-unsafe extern "C" fn host_noop(_: *const clap_host) {}
+
+// The plugin is created on the UI thread, processed on the audio thread and shown from the UI thread, as
+// the CLAP threading rules allow.
+unsafe impl Send for Instance {}
+unsafe impl Sync for Instance {}
+
+impl Instance {
+    fn ext<T>(&self, id: &CStr) -> Option<&T> {
+        unsafe {
+            let get = (*self.plugin).get_extension?;
+            (get(self.plugin, id.as_ptr()) as *const T).as_ref()
+        }
+    }
+
+    fn gui_ext(&self) -> Option<&clap_plugin_gui> {
+        self.ext(CLAP_EXT_GUI)
+    }
+
+    /// The window system to ask the plugin for, if it can open a floating window on one.
+    fn window_api(&self) -> Option<&'static CStr> {
+        let g = self.gui_ext()?;
+        let supported = g.is_api_supported?;
+        let wayland = std::env::var_os("WAYLAND_DISPLAY").is_some();
+        let order = if wayland {
+            [CLAP_WINDOW_API_WAYLAND, CLAP_WINDOW_API_X11]
+        } else {
+            [CLAP_WINDOW_API_X11, CLAP_WINDOW_API_WAYLAND]
+        };
+        order.into_iter().find(|api| unsafe { supported(self.plugin, api.as_ptr(), true) })
+    }
+
+    fn show_window(&self) -> Result<(), String> {
+        let g = self.gui_ext().ok_or("this plugin has no window")?;
+        let api = self.window_api().ok_or("the plugin cannot open a window on this display system")?;
+        let mut created = self.window.lock().map_err(|_| "window state poisoned")?;
+        unsafe {
+            if !*created {
+                if !g.create.ok_or("plugin gui has no create")?(self.plugin, api.as_ptr(), true) {
+                    return Err("the plugin could not create its window".into());
+                }
+                *created = true;
+                if let Some(title) = g.suggest_title {
+                    let name = cstr((*(*self.plugin).desc).name);
+                    if let Ok(c) = CString::new(format!("trakr: {name}")) {
+                        title(self.plugin, c.as_ptr());
+                    }
+                }
+            }
+            self.shared.gui_closed.store(false, Ordering::Release);
+            if !g.show.ok_or("plugin gui has no show")?(self.plugin) {
+                return Err("the plugin refused to show its window".into());
+            }
+        }
+        Ok(())
+    }
+
+    fn hide_window(&self) {
+        let Some(g) = self.gui_ext() else { return };
+        let Ok(created) = self.window.lock() else { return };
+        if *created {
+            if let Some(hide) = g.hide {
+                unsafe { hide(self.plugin) };
+            }
+        }
+        self.shared.gui_closed.store(true, Ordering::Release);
+    }
+
+    fn destroy_window(&self) {
+        let Ok(mut created) = self.window.lock() else { return };
+        if *created {
+            if let Some(d) = self.gui_ext().and_then(|g| g.destroy) {
+                unsafe { d(self.plugin) };
+            }
+            *created = false;
+        }
+    }
+
+    /// Main-thread work: callbacks, timers, file descriptors and window requests.
+    fn pump(&self) {
+        let sh = &self.shared;
+        unsafe {
+            if sh.callback.swap(false, Ordering::AcqRel) {
+                if let Some(f) = (*self.plugin).on_main_thread {
+                    f(self.plugin);
+                }
+            }
+            if sh.show_requested.swap(false, Ordering::AcqRel) {
+                let _ = self.show_window();
+            }
+            if sh.hide_requested.swap(false, Ordering::AcqRel) {
+                self.hide_window();
+            }
+            let due: Vec<u32> = {
+                let now = std::time::Instant::now();
+                match sh.timers.lock() {
+                    Ok(mut t) => t
+                        .iter_mut()
+                        .filter(|t| t.next <= now)
+                        .map(|t| {
+                            t.next = now + t.period;
+                            t.id
+                        })
+                        .collect(),
+                    Err(_) => Vec::new(),
+                }
+            };
+            if !due.is_empty() {
+                if let Some(f) =
+                    self.ext::<clap_plugin_timer_support>(CLAP_EXT_TIMER_SUPPORT).and_then(|e| e.on_timer)
+                {
+                    for id in due {
+                        f(self.plugin, id);
+                    }
+                }
+            }
+            let regs: Vec<(i32, u32)> =
+                sh.fds.lock().map(|f| f.iter().map(|r| (r.fd, r.flags)).collect()).unwrap_or_default();
+            if !regs.is_empty() {
+                if let Some(f) =
+                    self.ext::<clap_plugin_posix_fd_support>(CLAP_EXT_POSIX_FD_SUPPORT).and_then(|e| e.on_fd)
+                {
+                    let mut fds: Vec<libc::pollfd> = regs
+                        .iter()
+                        .map(|(fd, flags)| libc::pollfd {
+                            fd: *fd,
+                            events: (if flags & clap_sys::ext::posix_fd_support::CLAP_POSIX_FD_READ != 0 {
+                                libc::POLLIN
+                            } else {
+                                0
+                            }) | (if flags & clap_sys::ext::posix_fd_support::CLAP_POSIX_FD_WRITE != 0
+                            {
+                                libc::POLLOUT
+                            } else {
+                                0
+                            }),
+                            revents: 0,
+                        })
+                        .collect();
+                    if libc::poll(fds.as_mut_ptr(), fds.len() as libc::nfds_t, 0) > 0 {
+                        for p in &fds {
+                            let mut flags = 0;
+                            if p.revents & libc::POLLIN != 0 {
+                                flags |= clap_sys::ext::posix_fd_support::CLAP_POSIX_FD_READ;
+                            }
+                            if p.revents & libc::POLLOUT != 0 {
+                                flags |= clap_sys::ext::posix_fd_support::CLAP_POSIX_FD_WRITE;
+                            }
+                            if p.revents & (libc::POLLERR | libc::POLLHUP | libc::POLLNVAL) != 0 {
+                                flags |= clap_sys::ext::posix_fd_support::CLAP_POSIX_FD_ERROR;
+                            }
+                            if flags != 0 {
+                                f(self.plugin, p.fd, flags);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    fn save_state(&self) -> Option<Vec<u8>> {
+        let ext = self.ext::<clap_plugin_state>(CLAP_EXT_STATE)?;
+        let save = ext.save?;
+        let mut bytes: Vec<u8> = Vec::new();
+        unsafe extern "C" fn write(s: *const clap_ostream, buf: *const c_void, size: u64) -> i64 {
+            let out = &mut *((*s).ctx as *mut Vec<u8>);
+            if out.len() as u64 + size > trakr_core::plugin::MAX_PLUGIN_STATE as u64 {
+                return -1;
+            }
+            out.extend_from_slice(std::slice::from_raw_parts(buf as *const u8, size as usize));
+            size as i64
+        }
+        let stream = clap_ostream { ctx: &mut bytes as *mut Vec<u8> as *mut c_void, write: Some(write) };
+        let ok = unsafe { save(self.plugin, &stream) };
+        (ok && !bytes.is_empty()).then_some(bytes)
+    }
+
+    fn load_state(&self, bytes: &[u8]) -> bool {
+        let Some(load) = self.ext::<clap_plugin_state>(CLAP_EXT_STATE).and_then(|e| e.load) else {
+            return false;
+        };
+        struct Cursor<'a> {
+            data: &'a [u8],
+            at: usize,
+        }
+        unsafe extern "C" fn read(s: *const clap_istream, buf: *mut c_void, size: u64) -> i64 {
+            let c = &mut *((*s).ctx as *mut Cursor);
+            let n = (size as usize).min(c.data.len() - c.at);
+            std::ptr::copy_nonoverlapping(c.data.as_ptr().add(c.at), buf as *mut u8, n);
+            c.at += n;
+            n as i64
+        }
+        let mut cur = Cursor { data: bytes, at: 0 };
+        let stream = clap_istream { ctx: &mut cur as *mut Cursor as *mut c_void, read: Some(read) };
+        unsafe { load(self.plugin, &stream) }
+    }
+}
+
+impl Drop for Instance {
+    fn drop(&mut self) {
+        self.destroy_window();
+        unsafe {
+            let p = &*self.plugin;
+            if let Some(stop) = p.stop_processing {
+                stop(self.plugin);
+            }
+            if let Some(d) = p.deactivate {
+                d(self.plugin);
+            }
+            if let Some(d) = p.destroy {
+                d(self.plugin);
+            }
+        }
+    }
+}
+
+/// Main-thread handle of a plugin: window, state, parameter changes.
+pub struct ClapGui {
+    inst: Arc<Instance>,
+    window: bool,
+}
+
+impl PluginGui for ClapGui {
+    fn has_window(&self) -> bool {
+        self.window
+    }
+
+    fn show(&mut self) -> Result<(), String> {
+        self.inst.show_window()
+    }
+
+    fn hide(&mut self) {
+        self.inst.hide_window();
+    }
+
+    fn is_visible(&self) -> bool {
+        self.window
+            && self.inst.window.lock().map(|c| *c).unwrap_or(false)
+            && !self.inst.shared.gui_closed.load(Ordering::Acquire)
+    }
+
+    fn take_state_dirty(&mut self) -> bool {
+        self.inst.shared.state_dirty.swap(false, Ordering::AcqRel)
+    }
+
+    fn save_state(&mut self) -> Option<Vec<u8>> {
+        self.inst.save_state()
+    }
+
+    fn take_param_changes(&mut self, out: &mut Vec<(usize, f32)>) {
+        for (i, slot) in self.inst.shared.param_out.iter().enumerate() {
+            let bits = slot.swap(f32::NAN.to_bits(), Ordering::AcqRel);
+            let v = f32::from_bits(bits);
+            if v.is_finite() {
+                out.push((i, v));
+            }
+        }
+    }
+}
+
+// ---- audio device ----------------------------------------------------------------------------------
 
 /// One event handed to the plugin.
 #[derive(Clone, Copy)]
@@ -252,17 +551,21 @@ unsafe extern "C" fn events_get(list: *const clap_input_events, index: u32) -> *
     }
 }
 
-unsafe extern "C" fn out_events_push(_: *const clap_output_events, _: *const clap_event_header) -> bool {
+/// Events the plugin sends back: parameter changes made in its own window reach the UI.
+unsafe extern "C" fn out_events_push(list: *const clap_output_events, ev: *const clap_event_header) -> bool {
+    let h = &*ev;
+    if h.space_id == CLAP_CORE_EVENT_SPACE_ID && h.type_ == CLAP_EVENT_PARAM_VALUE {
+        let e = &*(ev as *const clap_event_param_value);
+        if let Some(sh) = ((*list).ctx as *const Shared).as_ref() {
+            sh.param_changed(e.param_id, e.value);
+        }
+    }
     true
 }
 
-/// A plugin instance running as a track effect.
+/// A plugin instance running on a track (effect) or an instrument slot.
 pub struct ClapDevice {
-    plugin: *const clap_plugin,
-    // Keeps the library loaded for as long as the plugin exists; dropped after `destroy`.
-    _lib: Arc<Library>,
-    // The plugin keeps a pointer to this; it must not move.
-    _host: Box<clap_host>,
+    inst: Arc<Instance>,
     ids: Vec<u32>,
     last: Vec<f32>,
     primed: bool,
@@ -277,7 +580,7 @@ pub struct ClapDevice {
     next_note_id: i32,
 }
 
-// The plugin is created on the UI thread and then used from the audio thread only; the engine never
+// The device is created on the UI thread and then used from the audio thread only; the engine never
 // shares it. Plugins must tolerate that (CLAP: process() runs on the audio thread).
 unsafe impl Send for ClapDevice {}
 
@@ -298,20 +601,32 @@ fn port_channels(p: &clap_plugin, ports: &clap_plugin_audio_ports, input: bool) 
 impl ClapDevice {
     /// Load plugin `plugin_id` from `path`, activate it and describe its parameters.
     pub fn load(path: &Path, plugin_id: &str, sample_rate: u32) -> Result<(ClapDevice, PluginRef), String> {
+        let (d, r, _) = Self::load_full(path, plugin_id, sample_rate, &[])?;
+        Ok((d, r))
+    }
+
+    /// Like `load`, restoring `state` (empty = fresh) and returning the main-thread handle too.
+    pub fn load_full(
+        path: &Path,
+        plugin_id: &str,
+        sample_rate: u32,
+        state: &[u8],
+    ) -> Result<(ClapDevice, PluginRef, ClapGui), String> {
         let lib = Library::open(path)?;
         let factory = lib.factory()?;
         let id = CString::new(plugin_id).map_err(|_| "bad plugin id".to_string())?;
+        let shared = Arc::new(Shared::new());
         let host = Box::new(clap_host {
             clap_version: CLAP_VERSION,
-            host_data: std::ptr::null_mut(),
+            host_data: Arc::as_ptr(&shared) as *mut c_void,
             name: c"trakr".as_ptr(),
             vendor: c"trakr".as_ptr(),
             url: c"".as_ptr(),
             version: c"0.0.1".as_ptr(),
-            get_extension: Some(host_get_extension),
-            request_restart: Some(host_noop),
-            request_process: Some(host_noop),
-            request_callback: Some(host_noop),
+            get_extension: Some(host::get_extension),
+            request_restart: Some(host::request_restart),
+            request_process: Some(host::request_process),
+            request_callback: Some(host::request_callback_fn),
         });
         unsafe {
             let create = factory.create_plugin.ok_or("no create_plugin")?;
@@ -321,7 +636,7 @@ impl ClapDevice {
                 (p.destroy.ok_or("no destroy")?)(plugin);
                 return Err("plugin failed to initialise".into());
             }
-            let fail = |msg: &str| -> Result<(ClapDevice, PluginRef), String> {
+            let fail = |msg: &str| -> Result<(ClapDevice, PluginRef, ClapGui), String> {
                 (p.destroy.unwrap())(plugin);
                 Err(msg.to_string())
             };
@@ -377,23 +692,35 @@ impl ClapDevice {
                     ids.push(info.id);
                 }
             }
+            let _ = shared.param_ids.set(ids.clone());
 
             let activate = p.activate.ok_or("no activate")?;
             if !activate(plugin, sample_rate as f64, 1, MAX_FRAMES as u32) {
                 return fail("plugin could not be activated");
             }
+            let window = (get_ext(plugin, CLAP_EXT_GUI.as_ptr()) as *const clap_plugin_gui)
+                .as_ref()
+                .is_some_and(|g| {
+                    g.is_api_supported.is_some_and(|f| {
+                        f(plugin, CLAP_WINDOW_API_X11.as_ptr(), true)
+                            || f(plugin, CLAP_WINDOW_API_WAYLAND.as_ptr(), true)
+                    })
+                });
+            let inst =
+                Arc::new(Instance { plugin, _host: host, shared, window: Mutex::new(false), _lib: lib });
+            if !state.is_empty() {
+                inst.load_state(state);
+            }
             if let Some(start) = p.start_processing {
                 if !start(plugin) {
-                    (p.deactivate.unwrap())(plugin);
-                    return fail("plugin refused to start processing");
+                    // Dropping the instance deactivates and destroys the plugin.
+                    return Err("plugin refused to start processing".into());
                 }
             }
             let name = cstr(p.desc.as_ref().map_or(std::ptr::null(), |d| d.name));
             let n = ids.len();
             let device = ClapDevice {
-                plugin,
-                _lib: lib,
-                _host: host,
+                inst: inst.clone(),
                 ids,
                 last: vec![f32::NAN; n],
                 primed: false,
@@ -412,7 +739,7 @@ impl ClapDevice {
                 name,
                 params,
             };
-            Ok((device, reference))
+            Ok((device, reference, ClapGui { inst, window }))
         }
     }
 }
@@ -439,6 +766,7 @@ impl Device for ClapDevice {
     }
 
     fn process(&mut self, params: &[f32], buf: &mut [f32]) {
+        let _ = self.inst.shared.audio_thread.get_or_init(|| std::thread::current().id());
         let total = buf.len() / 2;
         let mut done = 0;
         while done < total {
@@ -522,8 +850,10 @@ impl Device for ClapDevice {
                 size: Some(events_size),
                 get: Some(events_get),
             };
-            let out_events =
-                clap_output_events { ctx: std::ptr::null_mut(), try_push: Some(out_events_push) };
+            let out_events = clap_output_events {
+                ctx: Arc::as_ptr(&self.inst.shared) as *mut c_void,
+                try_push: Some(out_events_push),
+            };
             let process = clap_process {
                 steady_time: self.steady,
                 frames_count: n as u32,
@@ -537,8 +867,8 @@ impl Device for ClapDevice {
             };
             self.steady += n as i64;
             let status = unsafe {
-                match (*self.plugin).process {
-                    Some(f) => f(self.plugin, &process),
+                match (*self.inst.plugin).process {
+                    Some(f) => f(self.inst.plugin, &process),
                     None => CLAP_PROCESS_ERROR,
                 }
             };
@@ -553,23 +883,6 @@ impl Device for ClapDevice {
                 }
             }
             done += n;
-        }
-    }
-}
-
-impl Drop for ClapDevice {
-    fn drop(&mut self) {
-        unsafe {
-            let p = &*self.plugin;
-            if let Some(stop) = p.stop_processing {
-                stop(self.plugin);
-            }
-            if let Some(d) = p.deactivate {
-                d(self.plugin);
-            }
-            if let Some(d) = p.destroy {
-                d(self.plugin);
-            }
         }
     }
 }
@@ -917,5 +1230,77 @@ mod tests {
         engine.render(&mut buf);
         engine.render(&mut buf);
         assert!(peak(&buf) < 1e-6);
+    }
+
+    /// Read one of the test plugin's call counters (the library is already loaded, so this is the same copy).
+    fn counter(i: u32) -> u32 {
+        // Keep one handle open so the library (and its counters) is never unloaded between calls.
+        static LIB: OnceLock<libloading::Library> = OnceLock::new();
+        let lib = LIB.get_or_init(|| unsafe { libloading::Library::new(gain_path()).unwrap() });
+        unsafe {
+            let f: libloading::Symbol<unsafe extern "C" fn(u32) -> u32> =
+                lib.get(b"trakr_test_counter").unwrap();
+            f(i)
+        }
+    }
+
+    #[test]
+    fn a_plugin_window_opens_runs_timers_and_reports_changes() {
+        let mut host = ClapHost::with_paths(vec![]);
+        let (dev, _, gui) = host.load_with_gui(&synth_path(), SYNTH, 44_100, &[]).unwrap();
+        let mut gui = gui.expect("the host hands out a UI handle");
+        let mut dev = dev;
+        assert!(gui.has_window());
+        assert!(!gui.is_visible());
+        let before = (counter(0), counter(1), counter(2), counter(3), counter(4));
+        gui.show().unwrap();
+        assert_eq!((counter(0), counter(1)), (before.0 + 1, before.1 + 1), "created and shown once");
+        assert!(gui.is_visible());
+        gui.show().unwrap(); // showing again raises, it does not create a second window
+        assert_eq!(counter(0), before.0 + 1);
+        // the plugin said its state changed and moved a parameter itself
+        assert!(gui.take_state_dirty());
+        assert!(!gui.take_state_dirty());
+        let mut buf = vec![0.0f32; 512];
+        dev.process(&[], &mut buf);
+        let mut changes = Vec::new();
+        gui.take_param_changes(&mut changes);
+        assert_eq!(changes.len(), 1, "{changes:?}");
+        assert_eq!(changes[0].0, 0);
+        assert!((changes[0].1 - 0.33).abs() < 1e-6);
+        gui.take_param_changes(&mut changes);
+        assert_eq!(changes.len(), 1, "changes are reported once");
+        // main-thread timers run from poll()
+        std::thread::sleep(std::time::Duration::from_millis(60));
+        host.poll();
+        assert!(counter(4) > before.4, "the 20 ms timer fired");
+        gui.hide();
+        assert_eq!(counter(2), before.2 + 1);
+        assert!(!gui.is_visible());
+        drop(gui);
+        drop(dev);
+        assert_eq!(counter(3), before.3 + 1, "the window is destroyed with the plugin");
+    }
+
+    #[test]
+    fn plugin_state_is_saved_and_restored() {
+        let mut host = ClapHost::with_paths(vec![]);
+        let (mut fresh, _, gui) = host.load_with_gui(&synth_path(), SYNTH, 44_100, &[]).unwrap();
+        let mut gui = gui.unwrap();
+        let saved = gui.save_state().expect("the plugin saves its state");
+        assert_eq!(f64::from_le_bytes(saved[..8].try_into().unwrap()), 0.8);
+        let level = |dev: &mut Box<dyn Device>| {
+            dev.note_on(57, 1.0);
+            let mut b = vec![0.0f32; 4000];
+            dev.process(&[], &mut b); // no parameter events, so the plugin's own state decides
+            rms(&b)
+        };
+        let base = level(&mut fresh);
+        let custom = 0.2f64.to_le_bytes();
+        let (mut restored, _, _) = host.load_with_gui(&synth_path(), SYNTH, 44_100, &custom).unwrap();
+        let low = level(&mut restored);
+        assert!((low / base - 0.25).abs() < 0.02, "restored level 0.2 vs 0.8: {low} / {base}");
+        // garbage state is refused by the plugin without harming the load
+        assert!(host.load_with_gui(&synth_path(), SYNTH, 44_100, &[1, 2, 3]).is_ok());
     }
 }

@@ -26,6 +26,8 @@ pub use instrument::{
 pub use note::{EffectCmd, NoteColumn, EMPTY, NOTE_EMPTY, NOTE_OFF};
 pub use pattern::{Line, Pattern, PatternTrack, MAX_EFFECT_COLUMNS, MAX_LINES, MAX_NOTE_COLUMNS};
 pub use phrase::{Phrase, PhraseMode};
-pub use plugin::{PluginInfo, PluginParam, PluginRef, MAX_PLUGIN_PARAMS, PLUGIN_ID_PREFIX};
+pub use plugin::{
+    decode_state, encode_state, PluginInfo, PluginParam, PluginRef, MAX_PLUGIN_PARAMS, PLUGIN_ID_PREFIX,
+};
 pub use song::{SlotMeta, Song};
 pub use track::{DeviceSpec, MuteState, SendLevel, Track, TrackKind};

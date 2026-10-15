@@ -29,6 +29,7 @@ pub use ops::{Cell, Clipboard};
 pub use prefs::{default_config_dir, Prefs};
 pub use trakr_encode::{Codec, ExportFormat, MAX_QUALITY};
 pub use trakr_engine::InputRecorder;
+pub use trakr_engine::PluginGui;
 pub use trakr_midi::{ClockTempo, MidiBackend, MidiEvent, MidiInput, MidiOutMsg, MidiSink};
 pub use trakr_script::{API as SCRIPT_API, EXAMPLES as SCRIPT_EXAMPLES};
 
@@ -116,32 +117,52 @@ fn make_device(
     rate: u32,
     errors: &mut Vec<String>,
 ) -> Box<dyn trakr_engine::Device> {
+    make_device_gui(host, spec, instruments, rate, errors).0
+}
+
+/// Like `make_device`, also returning the main-thread handle of a hosted plugin (window, state).
+fn make_device_gui(
+    host: &mut Option<Box<dyn trakr_engine::PluginHost>>,
+    spec: &trakr_core::DeviceSpec,
+    instruments: &[trakr_core::Instrument],
+    rate: u32,
+    errors: &mut Vec<String>,
+) -> (Box<dyn trakr_engine::Device>, Option<Box<dyn trakr_engine::PluginGui>>) {
     if spec.id == "native.formula" {
         let (dev, err) = trakr_engine::create_formula(&spec.text, rate as f32);
         if let Some(e) = err {
             errors.push(format!("formula: {e}"));
         }
-        return dev;
+        return (dev, None);
     }
     if spec.id == "native.convolver" {
         if let Some(s) = convolver_sample(spec, instruments) {
-            return trakr_engine::create_convolver(&s.data, s.channels as usize, s.sample_rate, rate);
+            return (trakr_engine::create_convolver(&s.data, s.channels as usize, s.sample_rate, rate), None);
         }
     }
     if let Some(p) = &spec.plugin {
         let loaded = match host {
-            Some(h) => h.load(&p.path, &p.plugin_id, rate),
+            Some(h) => h.load_with_gui(&p.path, &p.plugin_id, rate, &trakr_core::decode_state(&spec.text)),
             None => Err("this build cannot host plugins".to_string()),
         };
         return match loaded {
-            Ok((dev, _)) => dev,
+            Ok((dev, _, gui)) => (dev, gui),
             Err(e) => {
                 errors.push(format!("plugin {} not loaded: {e}", p.name));
-                trakr_engine::devices::create_or_passthrough("", rate)
+                (trakr_engine::devices::create_or_passthrough("", rate), None)
             }
         };
     }
-    trakr_engine::devices::create_or_passthrough(&spec.id, rate)
+    (trakr_engine::devices::create_or_passthrough(&spec.id, rate), None)
+}
+
+/// Which hosted plugin a window belongs to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum PluginKey {
+    /// An effect: track and chain slot.
+    Device(usize, usize),
+    /// An instrument plugin.
+    Instrument(usize),
 }
 
 /// Cursor inside the phrase editor. `col` counts note columns first, then effect columns.
@@ -225,6 +246,7 @@ pub struct Editor {
     sent_chains: Vec<Vec<String>>,
     /// Per instrument: what its plugin looked like when last sent to the engine.
     sent_inst_plugins: Vec<String>,
+    plugin_guis: std::collections::HashMap<PluginKey, Box<dyn trakr_engine::PluginGui>>,
     plugin_host: Option<Box<dyn trakr_engine::PluginHost>>,
     plugin_list: Vec<trakr_core::PluginInfo>,
     plugin_errors: Vec<String>,
@@ -328,6 +350,7 @@ impl Editor {
             last_key: None,
             sent_chains: Vec::new(),
             sent_inst_plugins: Vec::new(),
+            plugin_guis: Default::default(),
             midi_backend: None,
             midi_in: None,
             midi_buf: Vec::new(),
@@ -425,6 +448,7 @@ impl Editor {
 
     /// Call regularly (every frame): retries a failed sync, frees engine garbage, follows the playhead.
     pub fn tick(&mut self) {
+        self.plugin_poll();
         self.flush_sync();
         self.record_poll();
         self.midi_poll();
@@ -456,8 +480,8 @@ impl Editor {
             if self.sent_inst_plugins[i] == *key {
                 continue;
             }
-            let device = self.song.instruments.get(i).and_then(|inst| inst.plugin.as_ref()).map(|spec| {
-                make_device(
+            let built = self.song.instruments.get(i).and_then(|inst| inst.plugin.as_ref()).map(|spec| {
+                make_device_gui(
                     &mut self.plugin_host,
                     spec,
                     &self.song.instruments,
@@ -465,8 +489,16 @@ impl Editor {
                     &mut self.plugin_errors,
                 )
             });
+            let (device, gui) = match built {
+                Some((d, g)) => (Some(d), g),
+                None => (None, None),
+            };
             if !e.send(Command::SetInstrumentPlugin { instrument: i, device }) {
                 return false;
+            }
+            self.plugin_guis.remove(&PluginKey::Instrument(i));
+            if let Some(g) = gui {
+                self.plugin_guis.insert(PluginKey::Instrument(i), g);
             }
             self.sent_inst_plugins[i] = key.clone();
         }
@@ -486,21 +518,27 @@ impl Editor {
             if self.sent_chains[t] == ids {
                 continue;
             }
-            let chain = self.song.tracks[t]
-                .devices
-                .iter()
-                .map(|d| {
-                    make_device(
-                        &mut self.plugin_host,
-                        d,
-                        &self.song.instruments,
-                        rate,
-                        &mut self.plugin_errors,
-                    )
-                })
-                .collect();
+            let mut chain = Vec::new();
+            let mut guis = Vec::new();
+            for (slot, d) in self.song.tracks[t].devices.iter().enumerate() {
+                let (dev, gui) = make_device_gui(
+                    &mut self.plugin_host,
+                    d,
+                    &self.song.instruments,
+                    rate,
+                    &mut self.plugin_errors,
+                );
+                chain.push(dev);
+                if let Some(g) = gui {
+                    guis.push((slot, g));
+                }
+            }
             if !e.send(Command::SetChain { track: t, chain }) {
                 return false;
+            }
+            self.plugin_guis.retain(|k, _| !matches!(k, PluginKey::Device(tr, _) if *tr == t));
+            for (slot, g) in guis {
+                self.plugin_guis.insert(PluginKey::Device(t, slot), g);
             }
             self.sent_chains[t] = ids;
         }

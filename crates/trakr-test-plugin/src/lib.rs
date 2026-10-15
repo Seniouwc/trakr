@@ -3,6 +3,7 @@
 
 use clap_sys::audio_buffer::clap_audio_buffer;
 use clap_sys::entry::clap_plugin_entry;
+use clap_sys::events::{clap_event_header, clap_output_events};
 use clap_sys::events::{
     clap_event_note, clap_event_param_value, CLAP_CORE_EVENT_SPACE_ID, CLAP_EVENT_NOTE_OFF,
     CLAP_EVENT_NOTE_ON, CLAP_EVENT_PARAM_VALUE,
@@ -11,20 +12,40 @@ use clap_sys::ext::audio_ports::{
     clap_audio_port_info, clap_plugin_audio_ports, CLAP_AUDIO_PORT_IS_MAIN, CLAP_EXT_AUDIO_PORTS,
     CLAP_PORT_STEREO,
 };
+use clap_sys::ext::gui::{clap_plugin_gui, CLAP_EXT_GUI, CLAP_WINDOW_API_X11};
 use clap_sys::ext::note_ports::{
     clap_note_port_info, clap_plugin_note_ports, CLAP_EXT_NOTE_PORTS, CLAP_NOTE_DIALECT_CLAP,
 };
 use clap_sys::ext::params::{
     clap_param_info, clap_plugin_params, CLAP_EXT_PARAMS, CLAP_PARAM_IS_AUTOMATABLE, CLAP_PARAM_IS_STEPPED,
 };
+use clap_sys::ext::state::{clap_host_state, clap_plugin_state, CLAP_EXT_STATE};
+use clap_sys::ext::timer_support::{
+    clap_host_timer_support, clap_plugin_timer_support, CLAP_EXT_TIMER_SUPPORT,
+};
 use clap_sys::factory::plugin_factory::{clap_plugin_factory, CLAP_PLUGIN_FACTORY_ID};
 use clap_sys::host::clap_host;
 use clap_sys::id::clap_id;
 use clap_sys::plugin::{clap_plugin, clap_plugin_descriptor};
 use clap_sys::process::{clap_process, CLAP_PROCESS_CONTINUE, CLAP_PROCESS_ERROR};
+use clap_sys::stream::{clap_istream, clap_ostream};
 use clap_sys::version::CLAP_VERSION;
 use std::ffi::{c_char, c_void, CStr};
 use std::ptr;
+use std::sync::atomic::{AtomicU32, Ordering};
+
+/// Call counters the host tests read through `trakr_test_counter`:
+/// 0 gui create, 1 gui show, 2 gui hide, 3 gui destroy, 4 timer ticks, 5 state saves, 6 state loads.
+static COUNTERS: [AtomicU32; 8] = [const { AtomicU32::new(0) }; 8];
+
+fn count(i: usize) {
+    COUNTERS[i].fetch_add(1, Ordering::SeqCst);
+}
+
+#[no_mangle]
+pub extern "C" fn trakr_test_counter(i: u32) -> u32 {
+    COUNTERS.get(i as usize).map_or(0, |c| c.load(Ordering::SeqCst))
+}
 
 const PLUGIN_ID: &CStr = c"org.trakr.test-gain";
 const SYNTH_ID: &CStr = c"org.trakr.test-synth";
@@ -89,6 +110,10 @@ struct State {
     gain: f64,
     mute: f64,
     synth: Option<Synth>,
+    host: *const clap_host,
+    timer: Option<u32>,
+    /// A parameter change the "window" made, to be reported from the next process call.
+    pending_out: Option<(clap_id, f64)>,
 }
 
 unsafe extern "C" fn init(_: *const clap_plugin) -> bool {
@@ -178,6 +203,30 @@ unsafe extern "C" fn process_synth(st: &mut State, p: &clap_process) -> i32 {
 unsafe extern "C" fn process(plugin: *const clap_plugin, p: *const clap_process) -> i32 {
     let st = &mut *((*plugin).plugin_data as *mut State);
     let p = &*p;
+    if let (Some((id, value)), false) = (st.pending_out.take(), p.out_events.is_null()) {
+        let out = &*p.out_events;
+        let ev = clap_event_param_value {
+            header: clap_event_header {
+                size: std::mem::size_of::<clap_event_param_value>() as u32,
+                time: 0,
+                space_id: CLAP_CORE_EVENT_SPACE_ID,
+                type_: CLAP_EVENT_PARAM_VALUE,
+                flags: 0,
+            },
+            param_id: id,
+            cookie: ptr::null_mut(),
+            note_id: -1,
+            port_index: -1,
+            channel: -1,
+            key: -1,
+            value,
+        };
+        (out.try_push.unwrap())(out as *const clap_output_events, &ev.header);
+        let st2 = &mut *((*plugin).plugin_data as *mut State);
+        if let Some(s) = st2.synth.as_mut() {
+            s.level = value;
+        }
+    }
     if st.synth.is_some() {
         return process_synth(st, p);
     }
@@ -270,6 +319,102 @@ unsafe extern "C" fn ports_get(
     true
 }
 
+// ---- window, timer, state ----
+
+unsafe extern "C" fn gui_is_api_supported(_: *const clap_plugin, api: *const c_char, floating: bool) -> bool {
+    floating && CStr::from_ptr(api) == CLAP_WINDOW_API_X11
+}
+
+unsafe extern "C" fn gui_create(_: *const clap_plugin, _: *const c_char, _: bool) -> bool {
+    count(0);
+    true
+}
+
+unsafe extern "C" fn gui_destroy(_: *const clap_plugin) {
+    count(3);
+}
+
+unsafe extern "C" fn gui_show(plugin: *const clap_plugin) -> bool {
+    count(1);
+    let st = &mut *((*plugin).plugin_data as *mut State);
+    let host = &*st.host;
+    // ask for a 20 ms timer, as a plugin with an animated display would
+    if let Some(get) = host.get_extension {
+        let timer = get(st.host, CLAP_EXT_TIMER_SUPPORT.as_ptr()) as *const clap_host_timer_support;
+        if let (Some(t), None) = (timer.as_ref(), st.timer) {
+            let mut id = 0;
+            if (t.register_timer.unwrap())(st.host, 20, &mut id) {
+                st.timer = Some(id);
+            }
+        }
+        // "the user moved the level knob in the window": report it and say the state changed
+        let hs = get(st.host, CLAP_EXT_STATE.as_ptr()) as *const clap_host_state;
+        if let Some(h) = hs.as_ref() {
+            (h.mark_dirty.unwrap())(st.host);
+        }
+    }
+    st.pending_out = Some((LEVEL, 0.33));
+    true
+}
+
+unsafe extern "C" fn gui_hide(_: *const clap_plugin) -> bool {
+    count(2);
+    true
+}
+
+unsafe extern "C" fn gui_noop_bool(_: *const clap_plugin) -> bool {
+    true
+}
+
+static GUI: clap_plugin_gui = clap_plugin_gui {
+    is_api_supported: Some(gui_is_api_supported),
+    get_preferred_api: None,
+    create: Some(gui_create),
+    destroy: Some(gui_destroy),
+    set_scale: None,
+    get_size: None,
+    can_resize: Some(gui_noop_bool),
+    get_resize_hints: None,
+    adjust_size: None,
+    set_size: None,
+    set_parent: None,
+    set_transient: None,
+    suggest_title: None,
+    show: Some(gui_show),
+    hide: Some(gui_hide),
+};
+
+unsafe extern "C" fn on_timer(_: *const clap_plugin, _: clap_id) {
+    count(4);
+}
+
+static TIMER: clap_plugin_timer_support = clap_plugin_timer_support { on_timer: Some(on_timer) };
+
+unsafe extern "C" fn state_save(plugin: *const clap_plugin, stream: *const clap_ostream) -> bool {
+    count(5);
+    let st = &*((*plugin).plugin_data as *const State);
+    let level = st.synth.as_ref().map_or(st.gain, |s| s.level);
+    let bytes = level.to_le_bytes();
+    ((*stream).write.unwrap())(stream, bytes.as_ptr() as *const c_void, 8) == 8
+}
+
+unsafe extern "C" fn state_load(plugin: *const clap_plugin, stream: *const clap_istream) -> bool {
+    count(6);
+    let st = &mut *((*plugin).plugin_data as *mut State);
+    let mut bytes = [0u8; 8];
+    if ((*stream).read.unwrap())(stream, bytes.as_mut_ptr() as *mut c_void, 8) != 8 {
+        return false;
+    }
+    let v = f64::from_le_bytes(bytes);
+    match st.synth.as_mut() {
+        Some(s) => s.level = v,
+        None => st.gain = v,
+    }
+    true
+}
+
+static STATE: clap_plugin_state = clap_plugin_state { save: Some(state_save), load: Some(state_load) };
+
 static AUDIO_PORTS: clap_plugin_audio_ports =
     clap_plugin_audio_ports { count: Some(ports_count), get: Some(ports_get) };
 
@@ -337,6 +482,12 @@ unsafe extern "C" fn get_extension(plugin: *const clap_plugin, id: *const c_char
         &AUDIO_PORTS as *const _ as *const c_void
     } else if id == CLAP_EXT_NOTE_PORTS && (*((*plugin).plugin_data as *const State)).synth.is_some() {
         &NOTE_PORTS as *const _ as *const c_void
+    } else if id == CLAP_EXT_GUI {
+        &GUI as *const _ as *const c_void
+    } else if id == CLAP_EXT_TIMER_SUPPORT {
+        &TIMER as *const _ as *const c_void
+    } else if id == CLAP_EXT_STATE {
+        &STATE as *const _ as *const c_void
     } else if id == CLAP_EXT_PARAMS {
         &PARAMS as *const _ as *const c_void
     } else {
@@ -361,7 +512,7 @@ unsafe extern "C" fn factory_descriptor(
 
 unsafe extern "C" fn factory_create(
     _: *const clap_plugin_factory,
-    _host: *const clap_host,
+    host: *const clap_host,
     id: *const c_char,
 ) -> *const clap_plugin {
     let id = CStr::from_ptr(id);
@@ -373,7 +524,8 @@ unsafe extern "C" fn factory_create(
         return ptr::null();
     };
     let desc = if synth.is_some() { &SYNTH_DESCRIPTOR.0 } else { &DESCRIPTOR.0 };
-    let state = Box::into_raw(Box::new(State { gain: 1.0, mute: 0.0, synth }));
+    let state =
+        Box::into_raw(Box::new(State { gain: 1.0, mute: 0.0, synth, host, timer: None, pending_out: None }));
     Box::into_raw(Box::new(clap_plugin {
         desc,
         plugin_data: state as *mut c_void,

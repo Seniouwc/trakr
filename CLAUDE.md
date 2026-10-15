@@ -34,7 +34,7 @@ New commands go into `trakr-editor::Action` (label + shortcut) so menus, keys an
 | `trakr-mod` | ProTracker `.mod`, Scream Tracker `.s3m` and FastTracker `.xm` importers (`import_any` sniffs the format). |
 | `trakr-xrns` | Best-effort `.xrns` importer. Element names are from memory, unverified against real files. |
 | `trakr-script` | Lua scripting (mlua, vendored Lua 5.4): `run(song, ctx, source)` edits a song copy, sandboxed with limits. Depends on core only. |
-| `trakr-clap` | Hosts local CLAP effect plugins (clap-sys + libloading); implements `trakr_engine::PluginHost`. `trakr-test-plugin` is a tiny CLAP effect used by its tests. |
+| `trakr-clap` | Hosts local CLAP effect and instrument plugins (clap-sys + libloading): note input, floating windows, timers/fds, state; implements `trakr_engine::PluginHost`/`PluginGui`. `trakr-test-plugin` holds a tiny CLAP effect and a sine synth (with a fake window, timer and state) used by its tests. |
 | `trakr-osc` | UDP OSC receiver (no deps): `parse`, `OscServer`. The editor maps addresses to commands (`osc_ops.rs`). |
 | `trakr-editor` | Frontend-neutral `Editor`: cursor, cell entry, transport keys, save. Own `KeyEvent` type; no UI deps. All editing behavior lives here. |
 | `trakr-gui` | egui/eframe frontend: key translation + painter-based grid. |

@@ -29,6 +29,40 @@ pub trait PluginHost {
         plugin_id: &str,
         sample_rate: u32,
     ) -> Result<(Box<dyn Device>, trakr_core::PluginRef), String>;
+
+    /// Like `load`, restoring saved `state` (empty = none) and also returning the main-thread handle
+    /// for the plugin's window, state and parameter changes. Hosts without those keep the default.
+    fn load_with_gui(
+        &mut self,
+        path: &str,
+        plugin_id: &str,
+        sample_rate: u32,
+        _state: &[u8],
+    ) -> Result<LoadedPlugin, String> {
+        self.load(path, plugin_id, sample_rate).map(|(device, reference)| (device, reference, None))
+    }
+
+    /// Run the plugins' main-thread work (timers, file descriptors, callbacks). Call every UI frame.
+    fn poll(&mut self) {}
+}
+
+/// A freshly loaded plugin: its audio device, its description and, when it has one, its UI handle.
+pub type LoadedPlugin = (Box<dyn Device>, trakr_core::PluginRef, Option<Box<dyn PluginGui>>);
+
+/// Main-thread handle to a hosted plugin: its window, saved state and parameter changes made inside it.
+pub trait PluginGui {
+    /// Whether the plugin can open a window of its own.
+    fn has_window(&self) -> bool;
+    /// Open (or raise) the plugin's window.
+    fn show(&mut self) -> Result<(), String>;
+    fn hide(&mut self);
+    fn is_visible(&self) -> bool;
+    /// True once after the plugin says its state changed (a knob turned in its window, a preset loaded).
+    fn take_state_dirty(&mut self) -> bool;
+    /// The plugin's state as opaque bytes (None when it has none or cannot save).
+    fn save_state(&mut self) -> Option<Vec<u8>>;
+    /// Parameter values the plugin changed itself since the last call, as (parameter index, value).
+    fn take_param_changes(&mut self, out: &mut Vec<(usize, f32)>);
 }
 
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};

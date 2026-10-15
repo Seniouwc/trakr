@@ -98,7 +98,21 @@ impl GuiApp {
                     return;
                 }
                 if spec.plugin.is_some() {
-                    ui.weak("Plugin (runs inside trakr; no plugin window)");
+                    let key = trakr_editor::PluginKey::Device(track, index);
+                    ui.horizontal(|ui| {
+                        if self.editor.plugin_has_window(key) {
+                            let open = self.editor.plugin_window_visible(key);
+                            if ui
+                                .button(if open { "Close window" } else { "Open window" })
+                                .on_hover_text("The plugin's own window; its settings are saved with the song")
+                                .clicked()
+                            {
+                                self.editor.plugin_window_toggle(key);
+                            }
+                        } else {
+                            ui.weak("Plugin (no window of its own)");
+                        }
+                    });
                 }
                 for pi in 0..spec.param_count() {
                     let Some((pname, pmin, pmax, _, plog, pstepped, punit)) = spec.param_meta(pi) else {

@@ -4017,6 +4017,7 @@ name = "trakr-clap"
 version = "0.0.1"
 dependencies = [
  "clap-sys",
+ "libc",
  "libloading 0.9.0",
  "trakr-core",
  "trakr-engine",
