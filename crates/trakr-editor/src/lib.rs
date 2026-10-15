@@ -448,6 +448,10 @@ impl Editor {
         let t = &self.song.tracks[track];
         let n = (t.visible_note_columns as usize).min(trakr_core::MAX_NOTE_COLUMNS);
         let mut f = (t.visible_effect_columns as usize).min(trakr_core::MAX_EFFECT_COLUMNS);
+        if t.collapsed {
+            let n = n.min(1);
+            return (n, if n == 0 { 1 } else { 0 });
+        }
         if n == 0 && f == 0 {
             f = 1;
         }
@@ -456,7 +460,10 @@ impl Editor {
 
     /// Which of [volume, panning, delay] are hidden for a track.
     pub fn note_hidden(&self, track: usize) -> [bool; 3] {
-        self.song.tracks.get(track).map_or([false; 3], |t| [t.hide_volume, t.hide_panning, t.hide_delay])
+        self.song.tracks.get(track).map_or([false; 3], |t| {
+            let c = t.collapsed;
+            [t.hide_volume || c, t.hide_panning || c, t.hide_delay || c]
+        })
     }
 
     fn sub_hidden(&self, track: usize, col: usize, sub: usize) -> bool {
@@ -471,6 +478,29 @@ impl Editor {
             7 | 8 => h[2],
             _ => false,
         }
+    }
+
+    /// Collapse a track to its first column (or expand it again).
+    pub fn track_toggle_collapse(&mut self, track: usize) {
+        if track >= self.song.tracks.len() {
+            return;
+        }
+        self.checkpoint();
+        let t = &mut self.song_mut().tracks[track];
+        t.collapsed = !t.collapsed;
+        let now = t.collapsed;
+        if self.cursor.track == track {
+            let (n, f) = self.cols(track);
+            self.cursor.col = self.cursor.col.min((n + f).saturating_sub(1));
+            if self.sub_hidden(track, self.cursor.col, self.cursor.sub) {
+                self.cursor.sub = 2;
+            }
+            let subs = self.subs(track, self.cursor.col);
+            self.cursor.sub = self.cursor.sub.min(subs - 1);
+        }
+        self.anchor = None;
+        self.status = if now { "track collapsed".into() } else { "track expanded".into() };
+        self.sync();
     }
 
     /// Set (or clear, with `None`) the color of a track's header.

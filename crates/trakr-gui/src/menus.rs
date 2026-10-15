@@ -103,7 +103,7 @@ impl GuiApp {
                         self.item(ui, a);
                     }
                     ui.separator();
-                    for a in [SelectAll, SelectNone, ToggleEdit] {
+                    for a in [SelectAll, SelectTrack, SelectLine, SelectNone, ToggleEdit] {
                         self.item(ui, a);
                     }
                     ui.separator();
@@ -122,7 +122,7 @@ impl GuiApp {
                         self.item(ui, a);
                     }
                     ui.separator();
-                    for a in [InsertLine, DeleteLine, OpenFind, OpenPalette] {
+                    for a in [InsertLine, DeleteLine, InsertCell, DeleteCell, OpenFind, OpenPalette] {
                         self.item(ui, a);
                     }
                 });
@@ -152,9 +152,17 @@ impl GuiApp {
                             }
                         }
                     });
+                    ui.menu_button("Scale to length", |ui| {
+                        for n in [16u16, 32, 48, 64, 96, 128, 192, 256, 512] {
+                            if ui.button(format!("{n} lines")).clicked() {
+                                self.editor.resize_pattern_scaled(n);
+                                ui.close_menu();
+                            }
+                        }
+                    });
                 });
                 ui.menu_button("Track", |ui| {
-                    for a in [TrackAdd, TrackAddGroup, TrackAddSend, TrackRemove, TrackMute, TrackSolo] {
+                    for a in [TrackAdd, TrackAddGroup, TrackAddSend, TrackRemove, TrackMoveLeft, TrackMoveRight, TrackCollapse, TrackMute, TrackSolo] {
                         self.item(ui, a);
                     }
                     ui.separator();

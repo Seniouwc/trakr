@@ -65,6 +65,9 @@ pub struct Track {
     pub hide_panning: bool,
     #[serde(default)]
     pub hide_delay: bool,
+    /// Show only the first column, without sub-columns, in the pattern editor.
+    #[serde(default)]
+    pub collapsed: bool,
     pub devices: Vec<DeviceSpec>,
     /// Index of the owning group track, if any.
     pub group: Option<usize>,
@@ -88,6 +91,7 @@ impl Track {
             hide_volume: false,
             hide_panning: false,
             hide_delay: false,
+            collapsed: false,
             devices: Vec::new(),
             group: None,
             sends: Vec::new(),

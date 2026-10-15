@@ -7,7 +7,7 @@ Compiled from memory of Renoise 3.x behavior. Verify each item against the offic
 - [x] BPM, LPB, TPL stored per song
 - [~] Pattern sequence (play order) with song loop; no loop range
 - [x] Sequence editor: insert, clone, delete, reorder, pick pattern per slot; named sections (Loop section plays one; a section repeat count plays it N times before the song moves on); pattern matrix dock (tracks x slots, click to mute a track in one slot, drag a slot number to move the slot); per-slot track mutes follow slot edits and undo
-- [~] Pattern length 1..512 editing and pattern names work; resize with content scaling does not
+- [~] Pattern length 1..512 editing and pattern names work; resize with content scaling works (Pattern > Scale to length)
 - [~] Sub-line delay column works (1/256 line); tick-quantized timing exists only for the effects `0Q`, `0C`, `0R`; per-tick voice processing (slides, vibrato) does not
 - [x] Song loop range (slot range), pattern loop and block loop (Play > Loop selected block) work
 - [~] Follow playback, play from cursor, play pattern, stop work; play block, panic do not
@@ -19,12 +19,12 @@ Compiled from memory of Renoise 3.x behavior. Verify each item against the offic
 - [x] Note, instrument, volume, panning, delay, per-column sample effect fields
 - [~] Cell entry: piano keys, hex digits, effect id and amount, clear
 - [x] Add/remove note and effect columns; per-track show/hide of the volume, panning and delay sub-columns (context menu in the pattern view; the cursor skips hidden fields)
-- [~] Block selection (multi-track, Shift+arrows or mouse), cut/copy/paste, mix paste (Ctrl-Shift-V keeps what is already there) and flood paste (Ctrl-Alt-V repeats the clipboard to the end of the selection or pattern); no track/line quick-select
+- [~] Block selection (multi-track, Shift+arrows or mouse), cut/copy/paste, mix paste (Ctrl-Shift-V keeps what is already there) and flood paste (Ctrl-Alt-V repeats the clipboard to the end of the selection or pattern); Ctrl-T selects the track (again: the pattern), Ctrl-L the line
 - [x] Undo/redo (500 steps, snapshot based)
 - [~] Block ops: transpose, interpolate (volume, pan, effect amounts), reverse, clear, randomize volumes, expand (double), shrink (half) and repeat-to-end work (Block menu); duplicate-pattern-range does not
-- [~] Insert/delete line in a track works; note-column row insert/delete and column shifting do not
+- [~] Insert/delete line in a track works; Shift-Ins / Shift-Backspace insert and delete a cell in one column only
 - [x] Pattern/track/line highlight settings, beat/bar markers, hex or decimal line numbers (Preferences)
-- [~] Track operations: add, remove, rename, mute, solo, group and track colors (context menu) work; collapse and move do not
+- [~] Track operations: add, remove, rename, mute, solo, group and track colors (context menu) work; collapse (Alt-C) and move (Alt-Left/Right, within the same kind of track) work
 - [~] Find / replace (Ctrl-F) by note, instrument or effect id in the selection, pattern or song; command palette (Ctrl-P). "Pattern properties" and sub-pattern transposition do not exist
 - [~] Phrases: per-instrument phrases (own LPB, note/effect columns, loop region, base note, key range) played by key-mapped trigger notes with transposition, editable in the Phrases dock; undo, `.trkr` roundtrip. Program mode (notes C-0..B-0 pick a phrase, other notes play it transposed) and per-phrase shuffle (swing) exist. Missing: phrase-local `Z` commands, phrase `.xrns`/`.xrni` I/O, phrase recording
 
@@ -42,7 +42,7 @@ Compiled from memory of Renoise 3.x behavior. Verify each item against the offic
 - [~] Interpolation modes: none (nearest), linear, cubic (Hermite, default) and 8-point sinc per instrument (sinc is band-limited when pitching up, so high content does not alias); no oversampling
 - [~] Sample editor (GUI): draw mode (drag on the waveform to draw samples), pitch shift keeping length or formants, zoomable waveform, selection, cut/copy/paste/delete/crop, silence, fades, gain, normalize, invert, DC removal, reverse, mono/stereo, tape pitch shift, resample, export to every format above. Also loop crossfade, time-stretch (WSOLA, pitch kept), slice at detected transients, bit-depth reduction with shaped dither, a spectrum view and beat sync (the sample is played so it lasts N lines at the song tempo; pitch follows speed). Missing: formant-preserving time stretch (pitch shift can keep formants)
 - [x] Slice markers (manual, shift-click, even split, transient detection) and split-to-keys work
-- [~] Key zones and velocity zones (layers), per-sample volume/pan/tune, and per-instrument NNA (cut, note-off, continue) work; mute-groups do not
+- [~] Key zones and velocity zones (layers), per-sample volume/pan/tune, and per-instrument NNA (cut, note-off, continue) work; instrument mute groups (starting a note cuts the other instruments of the group) work
 - [~] Instrument volume, pan, pitch and cutoff envelopes (points, sustain hold, GUI editor) work. Per-note LFOs (up to four; volume, pan, pitch, cutoff; five shapes, fade-in), key tracking and velocity-to-cutoff work (LFOs tab). Stepper and smooth-random LFOs, resonance modulation, key / velocity / macro routings (four macro knobs, moved live by `M1`-`M4`), envelope loops while held, and note fade-out work. Drive modulation does not
 - [~] Instrument filter (LP/HP/BP/Notch, cutoff, resonance, cutoff envelope) works; instrument drive (saturation, also an LFO/macro target) and a per-instrument FX chain (any native effect, FX tab) exist; more filter types do not. The FX chain of an instrument shared by several tracks mixes into the track of its latest voice
 - [~] Instrument macros (four knobs routed to any target, pattern commands `M1`-`M4`); MIDI input properties do not exist

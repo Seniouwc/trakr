@@ -83,6 +83,13 @@ pub enum Action {
     SlotMuteToggle,
     PasteMix,
     PasteFlood,
+    TrackMoveLeft,
+    TrackMoveRight,
+    TrackCollapse,
+    SelectTrack,
+    SelectLine,
+    InsertCell,
+    DeleteCell,
 }
 
 impl Action {
@@ -159,6 +166,13 @@ impl Action {
         Action::SlotMuteToggle,
         Action::PasteMix,
         Action::PasteFlood,
+        Action::TrackMoveLeft,
+        Action::TrackMoveRight,
+        Action::TrackCollapse,
+        Action::SelectTrack,
+        Action::SelectLine,
+        Action::InsertCell,
+        Action::DeleteCell,
     ];
 
     pub fn label(self) -> &'static str {
@@ -235,6 +249,13 @@ impl Action {
             SlotMuteToggle => "Mute track in this slot",
             PasteMix => "Paste and mix (keep what is already there)",
             PasteFlood => "Paste repeatedly to the end of the pattern",
+            TrackMoveLeft => "Move track left",
+            TrackMoveRight => "Move track right",
+            TrackCollapse => "Collapse or expand track",
+            SelectTrack => "Select track (again: whole pattern)",
+            SelectLine => "Select line",
+            InsertCell => "Insert cell in column",
+            DeleteCell => "Delete cell in column",
         }
     }
 
@@ -279,6 +300,13 @@ impl Action {
             OpenPreferences => "Ctrl-,",
             PasteMix => "Ctrl-Shift-V",
             PasteFlood => "Ctrl-Alt-V",
+            TrackMoveLeft => "Alt-Left",
+            TrackMoveRight => "Alt-Right",
+            TrackCollapse => "Alt-C",
+            SelectTrack => "Ctrl-T",
+            SelectLine => "Ctrl-L",
+            InsertCell => "Shift-Ins",
+            DeleteCell => "Shift-Backspace",
             _ => "",
         }
     }
@@ -300,6 +328,8 @@ impl Action {
                 KeyCode::Char('v') if k.alt => PasteFlood,
                 KeyCode::Char('v') => Paste,
                 KeyCode::Char('a') => SelectAll,
+                KeyCode::Char('t') => SelectTrack,
+                KeyCode::Char('l') => SelectLine,
                 KeyCode::Char('r') => RecordToggle,
                 KeyCode::Char('p') => OpenPalette,
                 KeyCode::Char('f') => OpenFind,
@@ -315,8 +345,18 @@ impl Action {
                 KeyCode::Down => TransposeDown,
                 KeyCode::PageUp => TransposeOctaveUp,
                 KeyCode::PageDown => TransposeOctaveDown,
+                KeyCode::Left => TrackMoveLeft,
+                KeyCode::Right => TrackMoveRight,
+                KeyCode::Char('c') => TrackCollapse,
                 _ => return None,
             });
+        }
+        if k.shift {
+            match k.code {
+                KeyCode::Insert => return Some(InsertCell),
+                KeyCode::Backspace => return Some(DeleteCell),
+                _ => {}
+            }
         }
         Some(match k.code {
             KeyCode::F(1) => OctaveDown,

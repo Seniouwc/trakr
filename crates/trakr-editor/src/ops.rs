@@ -1,6 +1,7 @@
 //! Song operations: blocks and clipboard, lines, sequence, patterns, tracks, transport.
 
 use super::*;
+use std::collections::BTreeMap;
 use trakr_core::{
     EffectCmd, MuteState, NoteColumn, PatternTrack, TrackKind, MAX_EFFECT_COLUMNS, MAX_LINES,
     MAX_NOTE_COLUMNS, NOTE_EMPTY,
@@ -158,6 +159,33 @@ impl Editor {
         self.cursor.track = t;
         self.cursor.col = c;
         self.cursor.line = self.lines_in_pattern() - 1;
+    }
+
+    /// Select every line of the cursor's track; again (when already selected) selects the whole pattern.
+    pub fn select_track(&mut self) {
+        let t = self.cursor.track;
+        let first = self.flat_index(t, 0);
+        let last_col = self.cols(t).0 + self.cols(t).1 - 1;
+        let last = self.lines_in_pattern() - 1;
+        if self.selection().is_some_and(|b| {
+            b.col0 == first && b.col1 == self.flat_index(t, last_col) && b.line0 == 0 && b.line1 == last
+        }) {
+            return self.select_all();
+        }
+        self.anchor = Some((first, 0));
+        self.cursor.col = last_col;
+        self.cursor.line = last;
+        self.clamp_cursor();
+    }
+
+    /// Select the cursor's line across all tracks.
+    pub fn select_line(&mut self) {
+        let line = self.cursor.line;
+        self.anchor = Some((0, line));
+        let (t, c) = self.unflat(self.total_cols() - 1);
+        self.cursor.track = t;
+        self.cursor.col = c;
+        self.cursor.line = line;
     }
 
     /// The selection, or the single cell under the cursor.
@@ -456,6 +484,82 @@ impl Editor {
         self.shift_lines(-1);
     }
 
+    /// Insert an empty cell at the cursor in the current column only, pushing the column's cells down.
+    pub fn insert_cell(&mut self) {
+        self.shift_column(1);
+    }
+
+    /// Delete the cell at the cursor in the current column only, pulling the column's cells up.
+    pub fn delete_cell(&mut self) {
+        self.shift_column(-1);
+    }
+
+    fn shift_column(&mut self, dir: i32) {
+        if !self.need_edit() {
+            return;
+        }
+        let Some(pi) = self.pattern_index() else { return };
+        self.checkpoint();
+        let (t, col, at) = (self.cursor.track, self.cursor.col, self.cursor.line);
+        let is_note = col < self.cols(t).0;
+        let fx = col - self.cols(t).0.min(col);
+        let song = Arc::make_mut(&mut self.song);
+        let p = Arc::make_mut(&mut song.patterns[pi]);
+        let n = p.number_of_lines;
+        if p.tracks.len() <= t {
+            p.tracks.resize(t + 1, PatternTrack::default());
+        }
+        let lines = &mut p.tracks[t].lines;
+        let old: Vec<(u16, Line)> = lines.iter().map(|(&l, v)| (l, v.clone())).collect();
+        let cell_empty = |l: &Line| if is_note { l.notes[col].is_empty() } else { l.effects[fx].is_empty() };
+        let mut out: BTreeMap<u16, Line> = BTreeMap::new();
+        for (l, line) in old {
+            // the cell of `line` for this column moves; everything else in the line stays
+            let moved = if dir > 0 && l >= at {
+                Some(l + 1)
+            } else if dir < 0 && l > at {
+                Some(l - 1)
+            } else if dir < 0 && l == at {
+                None
+            } else {
+                Some(l)
+            };
+            let dest = out.entry(l).or_default();
+            let mut keep = line.clone();
+            if is_note {
+                keep.notes[col] = Default::default();
+            } else {
+                keep.effects[fx] = Default::default();
+            }
+            // other columns stay on their line
+            for i in 0..keep.notes.len() {
+                if is_note && i == col {
+                    continue;
+                }
+                dest.notes[i] = keep.notes[i];
+            }
+            for i in 0..keep.effects.len() {
+                if !is_note && i == fx {
+                    continue;
+                }
+                dest.effects[i] = keep.effects[i];
+            }
+            if !cell_empty(&line) {
+                if let Some(m) = moved.filter(|&m| m < n) {
+                    let target = out.entry(m).or_default();
+                    if is_note {
+                        target.notes[col] = line.notes[col];
+                    } else {
+                        target.effects[fx] = line.effects[fx];
+                    }
+                }
+            }
+        }
+        out.retain(|_, l| !l.is_empty());
+        *lines = out;
+        self.sync();
+    }
+
     fn shift_lines(&mut self, dir: i32) {
         if !self.need_edit() {
             return;
@@ -588,6 +692,19 @@ impl Editor {
         self.after_structure_change();
     }
 
+    /// Like `set_pattern_lines`, but the content is stretched or squeezed to fit the new length.
+    pub fn resize_pattern_scaled(&mut self, lines: u16) {
+        let Some(pi) = self.pattern_index() else { return };
+        let lines = lines.clamp(1, MAX_LINES);
+        if self.song.patterns[pi].number_of_lines == lines {
+            return;
+        }
+        self.checkpoint();
+        Arc::make_mut(&mut self.song_mut().patterns[pi]).resize_scaled(lines);
+        self.status = format!("pattern scaled to {lines} lines");
+        self.after_structure_change();
+    }
+
     pub fn set_pattern_name(&mut self, name: String) {
         let Some(pi) = self.pattern_index() else { return };
         self.checkpoint();
@@ -664,6 +781,69 @@ impl Editor {
                 Arc::make_mut(p).tracks.remove(t);
             }
         }
+        self.anchor = None;
+        self.after_structure_change();
+    }
+
+    /// Move the cursor track one place left (`dir` < 0) or right, within its own kind (sequencer tracks
+    /// swap with sequencer tracks, groups with groups, sends with sends). Pattern content, slot mutes,
+    /// groups, sends, automation and sidechain sources follow the tracks.
+    pub fn track_move(&mut self, dir: i32) {
+        let a = self.cursor.track;
+        let b = if dir < 0 { a.checked_sub(1) } else { Some(a + 1) };
+        let Some(b) = b.filter(|&b| b < self.song.tracks.len()) else {
+            self.status = "already at the edge".into();
+            return;
+        };
+        let (ka, kb) = (self.song.tracks[a].kind, self.song.tracks[b].kind);
+        if ka == TrackKind::Master || ka != kb {
+            self.status = "tracks only move among tracks of the same kind".into();
+            return;
+        }
+        self.checkpoint();
+        let song = self.song_mut();
+        let swap = |i: usize| {
+            if i == a {
+                b
+            } else if i == b {
+                a
+            } else {
+                i
+            }
+        };
+        song.tracks.swap(a, b);
+        for tr in &mut song.tracks {
+            tr.group = tr.group.map(swap);
+            for s in &mut tr.sends {
+                s.target = swap(s.target);
+            }
+            for d in &mut tr.devices {
+                if d.id == "native.sidechain" {
+                    if let Some(v) = d.params.first_mut() {
+                        let src = v.round() as usize;
+                        if src >= 1 {
+                            *v = (swap(src - 1) + 1) as f32;
+                        }
+                    }
+                }
+            }
+        }
+        for p in &mut song.patterns {
+            let p = Arc::make_mut(p);
+            if p.tracks.len() > a.max(b) {
+                p.tracks.swap(a, b);
+            }
+            for l in &mut p.automation {
+                l.track = swap(l.track);
+            }
+        }
+        if a < 64 && b < 64 {
+            for m in &mut song.slot_meta {
+                let (ba, bb) = (m.mutes >> a & 1, m.mutes >> b & 1);
+                m.mutes = m.mutes & !(1 << a | 1 << b) | bb << a | ba << b;
+            }
+        }
+        self.cursor.track = b;
         self.anchor = None;
         self.after_structure_change();
     }
@@ -946,6 +1126,13 @@ impl Editor {
             Randomize => self.randomize_volume(32),
             PasteMix => self.paste_mix(),
             PasteFlood => self.paste_flood(),
+            InsertCell => self.insert_cell(),
+            DeleteCell => self.delete_cell(),
+            SelectTrack => self.select_track(),
+            SelectLine => self.select_line(),
+            TrackMoveLeft => self.track_move(-1),
+            TrackMoveRight => self.track_move(1),
+            TrackCollapse => self.track_toggle_collapse(self.cursor.track),
             ExpandBlock => self.expand_block(),
             ShrinkBlock => self.shrink_block(),
             RepeatBlock => self.repeat_block(),

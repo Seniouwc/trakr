@@ -187,6 +187,17 @@ impl GuiApp {
             if nna != before {
                 self.editor.edit_instrument("nna", |i| i.nna = nna);
             }
+            let group = self.editor.current_instrument().map_or(0, |i| i.mute_group);
+            let mut g = group as u32;
+            let changed = ui
+                .add(egui::DragValue::new(&mut g).range(0..=255).prefix("mute group "))
+                .on_hover_text(
+                    "Starting a note cuts sounding notes of other instruments in the same group (0 = none)",
+                )
+                .changed();
+            if changed {
+                self.editor.edit_instrument("mute_group", |i| i.mute_group = g as u8);
+            }
             let midi = self.editor.current_instrument().and_then(|i| i.midi_out);
             let mut on = midi.is_some();
             if ui

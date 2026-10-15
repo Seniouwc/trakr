@@ -1412,6 +1412,18 @@ impl Engine {
         if song.tracks.get(track).is_some_and(|t| t.mute == MuteState::Off) {
             return;
         }
+        if instrument.mute_group != 0 {
+            for v in self.voices.iter_mut() {
+                let same = v.inst != inst
+                    && song
+                        .instruments
+                        .get(v.inst as usize)
+                        .is_some_and(|o| o.mute_group == instrument.mute_group);
+                if same {
+                    v.cut();
+                }
+            }
+        }
         // The previous note in this column ends according to its instrument's NNA setting.
         for v in self.voices.iter_mut().filter(|v| v.track == track && v.column == column) {
             match v.nna() {
@@ -3929,6 +3941,21 @@ mod device_tests {
         assert!(off[b].abs() < 0.01, "release over: {}", off[b]);
         let cont = render(nna_song(trakr_core::Nna::Continue), b + 100);
         assert!(cont[a] > 0.9 && cont[b] > 0.9, "continue keeps sounding: {} {}", cont[a], cont[b]);
+    }
+
+    #[test]
+    fn mute_groups_cut_other_instruments_only() {
+        let probe = 44_100 + 4410;
+        let mut song = nna_song(trakr_core::Nna::Continue);
+        let plain = render(song.clone(), probe + 100);
+        assert!(plain[probe] > 0.9, "continues without a group");
+        song.instruments[0].mute_group = 3;
+        song.instruments[1].mute_group = 3;
+        let grouped = render(song.clone(), probe + 100);
+        assert!(grouped[probe].abs() < 0.01, "cut by the same group: {}", grouped[probe]);
+        song.instruments[1].mute_group = 4;
+        let other = render(song, probe + 100);
+        assert!(other[probe] > 0.9, "different group does not cut");
     }
 
     #[test]

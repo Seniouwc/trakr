@@ -775,12 +775,19 @@ fn action_all_is_complete() {
             SlotMuteToggle => 68,
             PasteMix => 69,
             PasteFlood => 70,
+            TrackMoveLeft => 71,
+            TrackMoveRight => 72,
+            TrackCollapse => 73,
+            SelectTrack => 74,
+            SelectLine => 75,
+            InsertCell => 76,
+            DeleteCell => 77,
         }
     }
     for (i, a) in Action::ALL.iter().enumerate() {
         assert_eq!(index(*a), i, "{a:?} is out of order in Action::ALL");
     }
-    assert_eq!(Action::ALL.len(), 71);
+    assert_eq!(Action::ALL.len(), 78);
     for a in Action::ALL {
         assert!(!a.label().is_empty());
     }
@@ -2539,4 +2546,106 @@ fn track_presets_save_load_and_reject_bad_files() {
     assert_eq!(ids(&e, 1).len(), want.len() * 2);
     assert!(!e.track_preset_load(99, &list[0].1, true));
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn track_move_swaps_content_and_references() {
+    let mut e = ed();
+    e.track_add_kind(trakr_core::TrackKind::Group);
+    e.set_cursor(0, 0, 0, 0);
+    std::sync::Arc::make_mut(&mut e.song_mut().patterns[0]).line_mut(0, 0).notes[0].note = 50;
+    e.song_mut().tracks[1].name = "B".into();
+    e.song_mut().tracks[0].name = "A".into();
+    let g = e.song.tracks.len() - 2;
+    e.set_track_group(0, Some(g));
+    e.do_action(Action::TrackMoveRight);
+    assert_eq!(e.cursor.track, 1);
+    assert_eq!(e.song.tracks[1].name, "A");
+    assert_eq!(e.song.tracks[0].name, "B");
+    assert_eq!(e.song.patterns[0].line(1, 0).unwrap().notes[0].note, 50);
+    assert!(e.song.patterns[0].line(0, 0).is_none_or(|l| l.notes[0].note != 50));
+    assert!(e.song.tracks[1].group.is_some() && e.song.tracks[0].group.is_none());
+    e.do_action(Action::TrackMoveLeft);
+    assert_eq!(e.song.tracks[0].name, "A");
+    e.do_action(Action::TrackMoveLeft);
+    assert_eq!(e.cursor.track, 0, "edge");
+    // never across kinds, never the master
+    let last = e.song.tracks.len() - 1;
+    e.set_cursor(last, 0, 0, 0);
+    e.do_action(Action::TrackMoveLeft);
+    assert_eq!(e.song.tracks.last().unwrap().kind, trakr_core::TrackKind::Master);
+    e.undo();
+}
+
+#[test]
+fn scaled_pattern_resize_is_one_undo_step() {
+    let mut e = ed();
+    std::sync::Arc::make_mut(&mut e.song_mut().patterns[0]).line_mut(0, 8).notes[0].note = 40;
+    let n = e.lines_in_pattern();
+    e.resize_pattern_scaled(n * 2);
+    assert_eq!(e.lines_in_pattern(), n * 2);
+    let at = e.song.patterns[0].tracks[0].lines.keys().copied().collect::<Vec<_>>();
+    assert!(at.contains(&16), "{at:?}");
+    e.undo();
+    assert_eq!(e.lines_in_pattern(), n);
+}
+
+#[test]
+fn collapsed_tracks_show_one_plain_column() {
+    let mut e = ed();
+    e.song_mut().tracks[0].visible_note_columns = 3;
+    assert_eq!(e.cols(0), (3, 1));
+    e.set_cursor(0, 2, 5, 0);
+    e.do_action(Action::TrackCollapse);
+    assert_eq!(e.cols(0), (1, 0));
+    assert_eq!(e.note_hidden(0), [true; 3]);
+    assert!(e.cursor.col == 0 && e.cursor.sub <= 2);
+    e.do_action(Action::TrackCollapse);
+    assert_eq!(e.cols(0), (3, 1));
+    assert_eq!(e.note_hidden(0), [false; 3]);
+}
+
+#[test]
+fn quick_select_track_and_line() {
+    let mut e = ed();
+    e.set_cursor(1, 0, 0, 5);
+    let n = e.lines_in_pattern();
+    e.do_action(Action::SelectTrack);
+    let b = e.selection().unwrap();
+    assert_eq!((b.line0, b.line1), (0, n - 1));
+    assert_eq!(b.col0, e.flat_index(1, 0));
+    e.do_action(Action::SelectTrack);
+    let b = e.selection().unwrap();
+    assert_eq!(b.col0, 0);
+    assert_eq!(b.col1, e.total_cols() - 1);
+    e.set_cursor(2, 0, 0, 7);
+    e.do_action(Action::SelectLine);
+    let b = e.selection().unwrap();
+    assert_eq!((b.line0, b.line1, b.col0), (7, 7, 0));
+    assert_eq!(b.col1, e.total_cols() - 1);
+}
+
+#[test]
+fn cell_insert_and_delete_move_one_column_only() {
+    let mut e = ed();
+    e.song_mut().tracks[0].visible_note_columns = 2;
+    {
+        let p = std::sync::Arc::make_mut(&mut e.song_mut().patterns[0]);
+        p.line_mut(0, 1).notes[0].note = 40;
+        p.line_mut(0, 1).notes[1].note = 50;
+        p.line_mut(0, 2).notes[0].note = 41;
+    }
+    e.edit_mode = true;
+    e.set_cursor(0, 0, 0, 1);
+    e.do_action(Action::InsertCell);
+    let p = &e.song.patterns[0];
+    assert_eq!(p.line(0, 2).unwrap().notes[0].note, 40);
+    assert_eq!(p.line(0, 3).unwrap().notes[0].note, 41);
+    assert_eq!(p.line(0, 1).unwrap().notes[1].note, 50, "other column stays");
+    assert!(p.line(0, 1).unwrap().notes[0].is_empty());
+    e.do_action(Action::DeleteCell);
+    let p = &e.song.patterns[0];
+    assert_eq!(p.line(0, 1).unwrap().notes[0].note, 40);
+    assert_eq!(p.line(0, 2).unwrap().notes[0].note, 41);
+    assert_eq!(p.line(0, 1).unwrap().notes[1].note, 50);
 }

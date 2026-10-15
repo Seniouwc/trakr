@@ -563,6 +563,10 @@ pub struct Instrument {
     /// How much a low velocity darkens the note: octaves of cutoff lost at velocity 0 (0..5).
     #[serde(default)]
     pub vel_cutoff: f32,
+    /// Mute group 1..=255: starting a note cuts sounding notes of every other instrument in the same group
+    /// (hi-hat open/closed). 0 = none.
+    #[serde(default)]
+    pub mute_group: u8,
     /// Key / velocity / macro routings (at most `MAX_INST_MODS` are used).
     #[serde(default)]
     pub mods: Vec<InstMod>,
@@ -602,6 +606,7 @@ impl Instrument {
             lfos: Vec::new(),
             key_track: 0.0,
             vel_cutoff: 0.0,
+            mute_group: 0,
             mods: Vec::new(),
             macros: default_macros(),
             fade_out: 0.0,
