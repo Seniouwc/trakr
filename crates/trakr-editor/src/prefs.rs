@@ -40,6 +40,8 @@ pub struct Prefs {
     pub osc_port: Option<u16>,
     /// Listen on every network interface instead of this machine only.
     pub osc_any_interface: bool,
+    /// `host:port` to send state changes to (`None` = off).
+    pub osc_feedback: Option<String>,
     /// Bottom panel to restore ("instrument", "mixer", ...).
     pub dock: String,
     /// Open the most recent song at start-up when none is named.
@@ -74,6 +76,7 @@ impl Default for Prefs {
             window_size: None,
             osc_port: None,
             osc_any_interface: false,
+            osc_feedback: None,
             dock: "instrument".into(),
             reopen_last: false,
             backups: true,

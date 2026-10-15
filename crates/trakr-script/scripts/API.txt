@@ -48,9 +48,17 @@ Devices (0-based device and parameter numbers)
   trakr.set_device_param(t, d, p, value) value in the parameter's own range
   trakr.set_device_bypass(t, d, true)
 
+Samples (0-based instrument and sample numbers; values are -1..1, channels interleaved)
+  trakr.sample(i, s)                { name, frames, channels, rate, base_note, loop_start, loop_end, peak }
+  trakr.sample_get(i, s, from, count)   list of values for `count` frames starting at frame `from`
+  trakr.sample_set(i, s, from, list)    overwrite values starting at frame `from` (stops at the end)
+  trakr.sample_create(i, name, rate, channels, list)   adds a sample to instrument i, returns its number
+
 Automation and order
-  trakr.automate(p, t, "volume" | "pan" | "device:D:P", { {line, value}, ... })
-                                    replaces that lane in pattern p; value 0..1; empty list removes it
+  trakr.automate(p, t, "volume" | "pan" | "tempo" | "lpb" | "device:D:P", { {line, value}, ... }, [curve])
+                                    replaces that lane in pattern p; value 0..1; empty list removes it;
+                                    curve: "linear" (default), "step", "smooth", "ease_in", "ease_out";
+                                    tempo maps 0..1 to 32..255 BPM, lpb to 1..16
   trakr.set_sequence{ 0, 1, 1, 2 }  replace the play order
 
 Helpers
@@ -58,3 +66,8 @@ Helpers
   trakr.status("text")              message in the status bar
   trakr.play()  trakr.stop()        requested after the script ends
   print(...)                        goes to the console output
+
+Event hooks
+  A file named load.lua, save.lua, play.lua or stop.lua in the scripts/hooks folder runs on that event
+  (after a song opens or is created, before it is saved, when playback starts or stops).
+  trakr.ctx.event holds the event name. A failing hook shows its error and never blocks the action.

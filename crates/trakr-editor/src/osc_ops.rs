@@ -6,6 +6,11 @@
 //! - `/trakr/track/<n>/volume <0..1>`, `/trakr/track/<n>/pan <0..1>`, `/trakr/track/<n>/mute <0|1>`, `/trakr/track/<n>/solo <0|1>`
 //! - `/trakr/device/<track>/<device>/<param> <0..1>`: a device parameter by its normalised position
 //! - `/trakr/note/on <note> [velocity 0-127] [instrument]` and `/trakr/note/off` on the cursor track
+//!
+//! Feedback (`osc_feedback_start`) sends to a control surface, only when a value changes:
+//! `/trakr/playing <0|1>`, `/trakr/position <slot> <line>`, `/trakr/bpm <f>`,
+//! `/trakr/track/<n>/volume|pan <0..1>`, `/trakr/track/<n>/mute|solo <0|1>` and
+//! `/trakr/track/<n>/meter <0..1>`.
 
 use super::*;
 use std::net::SocketAddr;
@@ -24,6 +29,74 @@ impl Editor {
             Err(e) => {
                 self.osc = None;
                 self.status = format!("OSC: cannot listen on port {port}: {e}");
+            }
+        }
+    }
+
+    /// Send state changes to `target` (`host:port`) so a control surface can follow the app.
+    pub fn osc_feedback_start(&mut self, target: &str) -> bool {
+        use std::net::ToSocketAddrs;
+        let Some(addr) = target.to_socket_addrs().ok().and_then(|mut a| a.next()) else {
+            self.status = format!("OSC feedback: cannot resolve {target:?} (use host:port)");
+            return false;
+        };
+        match trakr_osc::OscClient::new(addr) {
+            Ok(c) => {
+                self.osc_out = Some((c, std::collections::HashMap::new()));
+                self.status = format!("OSC feedback to {addr}");
+                true
+            }
+            Err(e) => {
+                self.status = format!("OSC feedback: {e}");
+                false
+            }
+        }
+    }
+
+    pub fn osc_feedback_stop(&mut self) {
+        if self.osc_out.take().is_some() {
+            self.status = "OSC feedback stopped".into();
+        }
+    }
+
+    pub fn osc_feedback_target(&self) -> Option<SocketAddr> {
+        self.osc_out.as_ref().map(|(c, _)| c.target())
+    }
+
+    /// Send whatever changed since the last call. Called from `tick`.
+    pub(crate) fn osc_feedback_poll(&mut self) {
+        let Some((client, last)) = &mut self.osc_out else { return };
+        let mut send = |addr: String, args: Vec<Arg>, key: Vec<i64>| {
+            if last.get(&addr) != Some(&key) {
+                client.send(&addr, &args);
+                last.insert(addr, key);
+            }
+        };
+        let (playing, seq, line) = self.engine.as_ref().map_or((false, 0, 0), |e| e.pos.get());
+        send("/trakr/playing".into(), vec![Arg::Int(playing as i64)], vec![playing as i64]);
+        send(
+            "/trakr/position".into(),
+            vec![Arg::Int(seq as i64), Arg::Int(line as i64)],
+            vec![seq as i64, line as i64],
+        );
+        let s = &self.song;
+        send("/trakr/bpm".into(), vec![Arg::Float(s.bpm as f64)], vec![(s.bpm * 100.0) as i64]);
+        for (i, t) in s.tracks.iter().enumerate().take(trakr_engine::MAX_METER_TRACKS) {
+            let n = i + 1;
+            let pos = (t.panning + 1.0) * 0.5;
+            send(
+                format!("/trakr/track/{n}/volume"),
+                vec![Arg::Float(t.volume as f64)],
+                vec![(t.volume * 1000.0) as i64],
+            );
+            send(format!("/trakr/track/{n}/pan"), vec![Arg::Float(pos as f64)], vec![(pos * 1000.0) as i64]);
+            let muted = t.mute != trakr_core::MuteState::Active;
+            send(format!("/trakr/track/{n}/mute"), vec![Arg::Int(muted as i64)], vec![muted as i64]);
+            send(format!("/trakr/track/{n}/solo"), vec![Arg::Int(t.solo as i64)], vec![t.solo as i64]);
+            if let Some(e) = &self.engine {
+                let m = e.pos.track_peak(i).clamp(0.0, 1.0);
+                // meters move constantly: send in steps of 2%
+                send(format!("/trakr/track/{n}/meter"), vec![Arg::Float(m as f64)], vec![(m * 50.0) as i64]);
             }
         }
     }

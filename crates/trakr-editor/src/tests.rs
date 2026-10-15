@@ -2191,3 +2191,84 @@ fn column_commands_are_typed_with_letters_and_shown_as_letters() {
     e.on_key(key('g'));
     assert!(e.song.patterns[0].line(0, 4).is_none_or(|l| l.notes[0].volume == EMPTY));
 }
+
+#[test]
+fn event_hook_scripts_run_on_load_save_play_and_stop() {
+    let dir = std::env::temp_dir().join(format!("trakr-hooks-{}", std::process::id()));
+    std::fs::create_dir_all(dir.join("scripts/hooks")).unwrap();
+    let mut e = ed();
+    e.set_config_dir(Some(dir.clone()));
+    // every hook records its event in the song title; the load hook also edits the song
+    for ev in ["load", "save", "play", "stop"] {
+        std::fs::write(
+            dir.join(format!("scripts/hooks/{ev}.lua")),
+            format!("trakr.set_song{{ name = trakr.song().name .. '[' .. trakr.ctx.event .. ']' }}\ntrakr.status('hook {ev}')"),
+        )
+        .unwrap();
+    }
+    e.new_song();
+    assert_eq!(e.song.name, "Untitled[load]");
+    assert_eq!(e.status, "hook load");
+    e.do_action(Action::PlaySong);
+    e.do_action(Action::Stop);
+    assert_eq!(e.song.name, "Untitled[load][play][stop]");
+    let out = dir.join("t.trkr");
+    e.save_as(out.clone());
+    assert!(e.song.name.ends_with("[save]"), "the hook runs before the file is written");
+    let (saved, _) = crate::load_song(&out).unwrap();
+    assert!(saved.name.ends_with("[save]"), "and its edit is in the file");
+    // a failing hook reports but does not block the action
+    std::fs::write(dir.join("scripts/hooks/save.lua"), "error('boom')").unwrap();
+    e.save_as(out.clone());
+    assert!(e.status.contains("saved") || e.status.contains("hook failed"), "{}", e.status);
+    assert!(out.is_file());
+    // hooks do not recurse, and missing hook files are fine
+    std::fs::remove_file(dir.join("scripts/hooks/play.lua")).unwrap();
+    let before = e.song.name.clone();
+    e.do_action(Action::PlaySong);
+    assert_eq!(e.song.name, before);
+    let mut plain = ed();
+    plain.do_action(Action::PlaySong); // no config dir at all
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn osc_feedback_sends_state_and_only_changes() {
+    let mut server = trakr_osc::OscServer::bind("127.0.0.1:0".parse().unwrap()).unwrap();
+    let target = server.local_addr().unwrap().to_string();
+    let mut e = ed();
+    assert!(!e.osc_feedback_start("not an address"));
+    assert!(e.osc_feedback_start(&target));
+    assert_eq!(e.osc_feedback_target(), Some(server.local_addr().unwrap()));
+    let drain = |server: &mut trakr_osc::OscServer| {
+        let mut got = Vec::new();
+        for _ in 0..20 {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            server.poll(&mut got);
+        }
+        got
+    };
+    e.tick();
+    let first = drain(&mut server);
+    let addrs: Vec<&str> = first.iter().map(|m| m.address.as_str()).collect();
+    for want in
+        ["/trakr/playing", "/trakr/position", "/trakr/bpm", "/trakr/track/1/volume", "/trakr/track/1/mute"]
+    {
+        assert!(addrs.contains(&want), "{want} in {addrs:?}");
+    }
+    e.tick();
+    assert!(drain(&mut server).is_empty(), "nothing changed, nothing sent");
+    e.song_mut().bpm = 150.0;
+    e.song_mut().tracks[0].volume = 0.5;
+    e.tick();
+    let changed = drain(&mut server);
+    assert_eq!(changed.len(), 2, "{changed:?}");
+    let bpm = changed.iter().find(|m| m.address == "/trakr/bpm").unwrap();
+    assert_eq!(bpm.args[0].as_f32(), Some(150.0));
+    let vol = changed.iter().find(|m| m.address == "/trakr/track/1/volume").unwrap();
+    assert_eq!(vol.args[0].as_f32(), Some(0.5));
+    e.osc_feedback_stop();
+    e.song_mut().bpm = 90.0;
+    e.tick();
+    assert!(drain(&mut server).is_empty());
+}

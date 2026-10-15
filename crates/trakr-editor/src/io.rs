@@ -59,6 +59,7 @@ impl Editor {
         self.clear_autosave(); // the discarded document's autosave
         self.replace_song(Song::default(), None);
         self.status = "new song".into();
+        self.fire_hook("load");
     }
 
     pub fn open(&mut self, path: &Path) {
@@ -78,6 +79,7 @@ impl Editor {
                         warnings[0]
                     )
                 };
+                self.fire_hook("load");
             }
             Err(e) => self.status = format!("open failed: {e:#}"),
         }
@@ -100,6 +102,7 @@ impl Editor {
     }
 
     pub fn save_as(&mut self, path: PathBuf) {
+        self.fire_hook("save");
         let mut song = (*self.song).clone();
         for p in &mut song.patterns {
             Arc::make_mut(p).compact();

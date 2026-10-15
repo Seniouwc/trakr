@@ -876,7 +876,10 @@ impl Editor {
             Interpolate => self.interpolate(),
             InsertLine => self.insert_line(),
             DeleteLine => self.delete_line(),
-            PlaySong => self.send(Command::Play { seq_pos: 0, line: 0, loop_pattern: false }),
+            PlaySong => {
+                self.fire_hook("play");
+                self.send(Command::Play { seq_pos: 0, line: 0, loop_pattern: false })
+            }
             PlayPattern => {
                 let seq_pos = self.seq_pos;
                 self.send(Command::Play { seq_pos, line: 0, loop_pattern: true });
@@ -885,7 +888,10 @@ impl Editor {
                 let (seq_pos, line) = (self.seq_pos, self.cursor.line);
                 self.send(Command::Play { seq_pos, line, loop_pattern: false });
             }
-            Stop => self.send(Command::Stop),
+            Stop => {
+                self.send(Command::Stop);
+                self.fire_hook("stop");
+            }
             ToggleFollow => {
                 self.follow = !self.follow;
                 self.status =

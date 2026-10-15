@@ -520,5 +520,20 @@ impl GuiApp {
         if let Some(a) = self.editor.osc_addr() {
             ui.weak(format!("Listening on {a}"));
         }
+        let mut target = self.editor.prefs.osc_feedback.clone().unwrap_or_default();
+        ui.horizontal(|ui| {
+            ui.label("OSC feedback to");
+            let edit = ui
+                .add(egui::TextEdit::singleline(&mut target).hint_text("host:port, e.g. 192.168.1.20:9001"));
+            if edit.lost_focus() {
+                if target.trim().is_empty() {
+                    self.editor.prefs.osc_feedback = None;
+                    self.editor.osc_feedback_stop();
+                } else if self.editor.osc_feedback_start(target.trim()) {
+                    self.editor.prefs.osc_feedback = Some(target.trim().to_string());
+                }
+            }
+        });
+        ui.weak("Sends play state, position, tempo and each track's volume, pan, mute, solo and level whenever they change (for faders and lights on a control surface).");
     }
 }

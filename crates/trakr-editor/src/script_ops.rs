@@ -20,6 +20,7 @@ impl Editor {
             instrument: self.instrument,
             octave: self.octave,
             selection,
+            event: None,
         }
     }
 
@@ -59,6 +60,44 @@ impl Editor {
                 false
             }
         }
+    }
+
+    /// Run `<config dir>/scripts/hooks/<event>.lua` if it exists. Events: `load` (after a song is opened or
+    /// created), `save` (before it is written), `play` and `stop`. The script sees the event name as
+    /// `trakr.ctx.event`. Errors are shown but never stop the action that triggered the hook.
+    pub fn fire_hook(&mut self, event: &str) {
+        if self.in_hook {
+            return;
+        }
+        let Some(dir) = self.scripts_dir() else { return };
+        let path = dir.join("hooks").join(format!("{event}.lua"));
+        let Ok(source) = std::fs::read_to_string(&path) else { return };
+        self.in_hook = true;
+        let mut ctx = self.script_ctx();
+        ctx.event = Some(event.to_string());
+        self.script_output.clear();
+        self.script_error = None;
+        match trakr_script::run(&self.song, &ctx, &source) {
+            Ok(out) => {
+                self.script_output = out.output;
+                if out.changed {
+                    self.checkpoint();
+                    self.song = Arc::new(out.song);
+                    self.song_mut().normalize_slot_meta();
+                    self.clamp_cursor();
+                    self.sync();
+                }
+                if let Some(s) = out.status {
+                    self.status = s;
+                }
+                // a hook may not start or stop playback: that would loop back into itself
+            }
+            Err(e) => {
+                self.status = format!("{event} hook failed: {e}");
+                self.script_error = Some(e.to_string());
+            }
+        }
+        self.in_hook = false;
     }
 
     /// Run a script file.

@@ -68,6 +68,8 @@ pub struct ScriptCtx {
     pub octave: u8,
     /// Selected tracks and lines (inclusive), if there is a selection.
     pub selection: Option<Selection>,
+    /// Set when the script runs as an event hook: "load", "save", "play" or "stop".
+    pub event: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -245,6 +247,9 @@ fn install_api(lua: &Lua, state: &Shared, ctx: &ScriptCtx) -> mlua::Result<()> {
         sel.set("line0", s.line0)?;
         sel.set("line1", s.line1)?;
         c.set("selection", sel)?;
+    }
+    if let Some(ev) = &ctx.event {
+        c.set("event", ev.as_str())?;
     }
     t.set("ctx", c)?;
 
@@ -578,6 +583,7 @@ fn install_api(lua: &Lua, state: &Shared, ctx: &ScriptCtx) -> mlua::Result<()> {
         )?;
     }
     install_mixer_api(lua, state, &t)?;
+    install_sample_api(lua, state, &t)?;
     lua.globals().set("trakr", t)?;
     Ok(())
 }
@@ -614,6 +620,124 @@ fn track_of(st: &State, t: i64) -> mlua::Result<usize> {
         return Err(err(format!("track {t} does not exist (the song has {})", st.song.tracks.len())));
     }
     Ok(t)
+}
+
+/// Most values one `sample_get`/`sample_set`/`sample_create` call moves.
+const MAX_SAMPLE_VALUES: usize = 2_000_000;
+
+fn sample_ref(st: &State, i: i64, s: i64) -> mlua::Result<(usize, usize)> {
+    let (i, s) = (index(i, "instrument")?, index(s, "sample")?);
+    let inst = st.song.instruments.get(i).ok_or_else(|| err(format!("instrument {i} does not exist")))?;
+    if s >= inst.samples.len() {
+        return Err(err(format!("instrument {i} has no sample {s} (it has {})", inst.samples.len())));
+    }
+    Ok((i, s))
+}
+
+/// Read and write sample audio.
+fn install_sample_api(lua: &Lua, state: &Shared, t: &Table) -> mlua::Result<()> {
+    let st = state.clone();
+    t.set(
+        "sample",
+        lua.create_function(move |lua, (i, s): (i64, i64)| {
+            let st = st.borrow();
+            let (i, s) = sample_ref(&st, i, s)?;
+            let smp = &st.song.instruments[i].samples[s];
+            let out = lua.create_table()?;
+            out.set("name", smp.name.as_str())?;
+            out.set("frames", smp.frames())?;
+            out.set("channels", smp.channels)?;
+            out.set("rate", smp.sample_rate)?;
+            out.set("base_note", smp.base_note)?;
+            out.set("loop_start", smp.loop_start)?;
+            out.set("loop_end", smp.loop_end)?;
+            out.set("peak", smp.peak(0, smp.frames()))?;
+            Ok(out)
+        })?,
+    )?;
+    let st = state.clone();
+    t.set(
+        "sample_get",
+        lua.create_function(move |lua, (i, s, from, count): (i64, i64, i64, i64)| {
+            let st = st.borrow();
+            let (i, s) = sample_ref(&st, i, s)?;
+            let smp = &st.song.instruments[i].samples[s];
+            let (from, count) = (index(from, "from frame")?, index(count, "frame count")?);
+            let ch = smp.channels.max(1) as usize;
+            let end = from.saturating_add(count).min(smp.frames());
+            let from = from.min(end);
+            if (end - from) * ch > MAX_SAMPLE_VALUES {
+                return Err(err(format!("read at most {} values at a time", MAX_SAMPLE_VALUES)));
+            }
+            lua.create_sequence_from(smp.data[from * ch..end * ch].iter().copied())
+        })?,
+    )?;
+    let st = state.clone();
+    t.set(
+        "sample_set",
+        lua.create_function(move |_, (i, s, from, values): (i64, i64, i64, Table)| {
+            let mut st = st.borrow_mut();
+            let (i, s) = sample_ref(&st, i, s)?;
+            let from = index(from, "from frame")?;
+            let vals = values.sequence_values::<f32>().collect::<mlua::Result<Vec<f32>>>()?;
+            if vals.len() > MAX_SAMPLE_VALUES {
+                return Err(err(format!("write at most {} values at a time", MAX_SAMPLE_VALUES)));
+            }
+            if vals.iter().any(|v| !v.is_finite()) {
+                return Err(err("sample values must be finite numbers"));
+            }
+            let smp = &mut st.song.instruments[i].samples[s];
+            let ch = smp.channels.max(1) as usize;
+            let frames = smp.frames();
+            if from > frames {
+                return Err(err(format!("frame {from} is past the end of the sample ({frames} frames)")));
+            }
+            let data = Arc::make_mut(&mut smp.data);
+            let room = (frames - from) * ch;
+            for (d, v) in data[from * ch..].iter_mut().zip(vals.iter().take(room)) {
+                *d = v.clamp(-1.0, 1.0);
+            }
+            st.changed = true;
+            Ok(())
+        })?,
+    )?;
+    let st = state.clone();
+    t.set(
+        "sample_create",
+        lua.create_function(move |_, (i, name, rate, channels, values): (i64, String, i64, i64, Table)| {
+            let mut st = st.borrow_mut();
+            let i = index(i, "instrument")?;
+            if i >= st.song.instruments.len() {
+                return Err(err(format!("instrument {i} does not exist")));
+            }
+            if !(1..=2).contains(&channels) {
+                return Err(err("channels must be 1 or 2"));
+            }
+            if !(4000..=384_000).contains(&rate) {
+                return Err(err("rate must be 4000..384000"));
+            }
+            if st.song.instruments[i].samples.len() >= 120 {
+                return Err(err("an instrument holds at most 120 samples"));
+            }
+            let mut vals = values.sequence_values::<f32>().collect::<mlua::Result<Vec<f32>>>()?;
+            if vals.len() > MAX_SAMPLE_VALUES {
+                return Err(err(format!("create at most {} values at a time", MAX_SAMPLE_VALUES)));
+            }
+            if vals.iter().any(|v| !v.is_finite()) {
+                return Err(err("sample values must be finite numbers"));
+            }
+            vals.iter_mut().for_each(|v| *v = v.clamp(-1.0, 1.0));
+            vals.truncate(vals.len() / channels as usize * channels as usize);
+            if vals.is_empty() {
+                return Err(err("a sample needs at least one frame"));
+            }
+            let smp = trakr_core::Sample::new(name, rate as u32, channels as u8, vals);
+            st.song.instruments[i].samples.push(smp);
+            st.changed = true;
+            Ok(st.song.instruments[i].samples.len() - 1)
+        })?,
+    )?;
+    Ok(())
 }
 
 /// Instruments, tracks, devices and automation.
@@ -1154,5 +1278,81 @@ mod tests {
     fn touched_patterns_are_compacted() {
         let out = go("trakr.set_note(0, 0, 3, 0, { note = 48 }); trakr.clear_note(0, 0, 3, 0)").unwrap();
         assert!(out.song.patterns[0].line(0, 3).is_none());
+    }
+}
+
+#[cfg(test)]
+mod sample_tests {
+    use super::*;
+    use trakr_core::{Instrument, Sample};
+
+    fn song() -> Song {
+        let mut s = Song::default();
+        let mut inst = Instrument::new("i");
+        inst.samples.push(Sample::new("s", 8000, 2, vec![0.25; 20])); // 10 stereo frames
+        s.instruments.push(inst);
+        s
+    }
+
+    fn run_ok(s: &Song, src: &str) -> ScriptOutput {
+        run(s, &ScriptCtx::default(), src).unwrap_or_else(|e| panic!("{e}"))
+    }
+
+    #[test]
+    fn scripts_read_write_and_create_samples() {
+        let out = run_ok(
+            &song(),
+            r#"
+            local info = trakr.sample(0, 0)
+            assert(info.frames == 10 and info.channels == 2 and info.rate == 8000)
+            assert(math.abs(info.peak - 0.25) < 1e-6)
+            local v = trakr.sample_get(0, 0, 2, 3)
+            assert(#v == 6 and v[1] == 0.25)
+            -- overwrite frame 1 with a ramp, ignoring what does not fit
+            trakr.sample_set(0, 0, 1, { 1, -1, 5, -5 })
+            local w = trakr.sample_get(0, 0, 1, 2)
+            assert(w[1] == 1 and w[2] == -1 and w[3] == 1 and w[4] == -1, "values clamp to -1..1")
+            local n = trakr.sample_create(0, "gen", 22050, 1, { 0, 0.5, -0.5, 1 })
+            assert(n == 1)
+            assert(trakr.sample(0, n).frames == 4 and trakr.instrument(0).samples == 2)
+            assert(#trakr.sample_get(0, 0, 8, 100) == 4, "reads stop at the end")
+            "#,
+        );
+        assert!(out.changed);
+        let smp = &out.song.instruments[0].samples[0];
+        assert_eq!(smp.data[2], 1.0);
+        assert_eq!(out.song.instruments[0].samples[1].sample_rate, 22050);
+        // the caller's song is untouched
+        assert_eq!(song().instruments[0].samples[0].data[2], 0.25);
+    }
+
+    #[test]
+    fn sample_api_validates_arguments() {
+        let s = song();
+        for bad in [
+            "trakr.sample(5, 0)",
+            "trakr.sample(0, 3)",
+            "trakr.sample_get(0, 0, -1, 2)",
+            "trakr.sample_set(0, 0, 99, {1})",
+            "trakr.sample_set(0, 0, 0, {0/0})",
+            "trakr.sample_set(0, 0, 0, {math.huge})",
+            "trakr.sample_create(0, 'x', 100, 1, {1})",
+            "trakr.sample_create(0, 'x', 8000, 3, {1})",
+            "trakr.sample_create(0, 'x', 8000, 1, {})",
+            "trakr.sample_create(9, 'x', 8000, 1, {1})",
+        ] {
+            assert!(run(&s, &ScriptCtx::default(), bad).is_err(), "{bad} must fail");
+        }
+        // reading only does not mark the song changed
+        assert!(!run_ok(&s, "trakr.sample_get(0, 0, 0, 5)").changed);
+    }
+
+    #[test]
+    fn the_event_name_is_visible_to_hook_scripts() {
+        let ctx = ScriptCtx { event: Some("load".into()), ..Default::default() };
+        let out = run(&song(), &ctx, "trakr.status(trakr.ctx.event)").unwrap();
+        assert_eq!(out.status.as_deref(), Some("load"));
+        let none = run_ok(&song(), "trakr.status(tostring(trakr.ctx.event))");
+        assert_eq!(none.status.as_deref(), Some("nil"));
     }
 }

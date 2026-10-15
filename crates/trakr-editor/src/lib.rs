@@ -292,6 +292,8 @@ pub struct Editor {
     sent_chains: Vec<Vec<String>>,
     /// Per instrument: what its plugin looked like when last sent to the engine.
     sent_inst_plugins: Vec<String>,
+    /// An event hook script is running (hooks do not trigger hooks).
+    in_hook: bool,
     /// Automation points copied with `automation_copy`, positions relative to the copied range.
     auto_clip: Vec<(f32, f32)>,
     plugin_guis: std::collections::HashMap<PluginKey, Box<dyn trakr_engine::PluginGui>>,
@@ -307,6 +309,7 @@ pub struct Editor {
     pub midi_learn: Option<midi_map::MapTarget>,
     osc: Option<trakr_osc::OscServer>,
     osc_buf: Vec<trakr_osc::Message>,
+    osc_out: Option<(trakr_osc::OscClient, std::collections::HashMap<String, Vec<i64>>)>,
     /// What the last script printed, and its error if it failed.
     pub script_output: Vec<String>,
     pub script_error: Option<String>,
@@ -398,6 +401,7 @@ impl Editor {
             last_key: None,
             sent_chains: Vec::new(),
             sent_inst_plugins: Vec::new(),
+            in_hook: false,
             auto_clip: Vec::new(),
             plugin_guis: Default::default(),
             midi_backend: None,
@@ -408,6 +412,7 @@ impl Editor {
             midi_learn: None,
             osc: None,
             osc_buf: Vec::new(),
+            osc_out: None,
             plugin_host: None,
             plugin_list: Vec::new(),
             plugin_errors: Vec::new(),
@@ -551,6 +556,7 @@ impl Editor {
         self.record_poll();
         self.midi_poll();
         self.osc_poll();
+        self.osc_feedback_poll();
         self.autosave_poll();
         if let Some(e) = &mut self.engine {
             e.collect_garbage();

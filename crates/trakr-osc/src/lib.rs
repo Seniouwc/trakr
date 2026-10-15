@@ -194,6 +194,35 @@ impl OscServer {
     }
 }
 
+/// Sends OSC messages to a control surface (UDP, fire and forget).
+pub struct OscClient {
+    socket: UdpSocket,
+    target: SocketAddr,
+}
+
+impl OscClient {
+    /// A client that sends to `target` from any free local port.
+    pub fn new(target: SocketAddr) -> std::io::Result<Self> {
+        let bind: SocketAddr = if target.is_ipv4() {
+            ([0, 0, 0, 0], 0).into()
+        } else {
+            (std::net::Ipv6Addr::UNSPECIFIED, 0).into()
+        };
+        let socket = UdpSocket::bind(bind)?;
+        socket.set_nonblocking(true)?;
+        Ok(Self { socket, target })
+    }
+
+    pub fn target(&self) -> SocketAddr {
+        self.target
+    }
+
+    /// Send one message; a full or unreachable socket drops it silently (UDP).
+    pub fn send(&self, address: &str, args: &[Arg]) {
+        let _ = self.socket.send_to(&encode(address, args), self.target);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -274,5 +303,25 @@ mod tests {
         }
         assert_eq!(got.len(), 1);
         assert_eq!(got[0].address, "/ping");
+    }
+
+    #[test]
+    fn client_messages_reach_a_server() {
+        let mut server = OscServer::bind("127.0.0.1:0".parse().unwrap()).unwrap();
+        let client = OscClient::new(server.local_addr().unwrap()).unwrap();
+        client.send("/trakr/bpm", &[Arg::Float(140.0)]);
+        client.send("/trakr/playing", &[Arg::Int(1)]);
+        let mut got = Vec::new();
+        for _ in 0..50 {
+            server.poll(&mut got);
+            if got.len() >= 2 {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert_eq!(got.len(), 2);
+        assert_eq!(got[0].address, "/trakr/bpm");
+        assert_eq!(got[0].args[0].as_f32(), Some(140.0));
+        assert_eq!(got[1].args[0].as_i64(), Some(1));
     }
 }

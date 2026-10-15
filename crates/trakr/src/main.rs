@@ -114,6 +114,9 @@ fn main() -> Result<()> {
         let any = editor.prefs.osc_any_interface;
         editor.osc_start(port, any);
     }
+    if let Some(target) = editor.prefs.osc_feedback.clone() {
+        editor.osc_feedback_start(&target);
+    }
     // Open the first MIDI keyboard automatically; the GUI menu can switch or close it.
     if !editor.midi_ports().is_empty() {
         editor.midi_connect(0);
