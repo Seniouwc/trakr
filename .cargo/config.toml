@@ -1,0 +1,4 @@
+# CMake 4 refuses the old `cmake_minimum_required` in the vendored C libraries (Opus, ...); this tells it to
+# accept them. Harmless on older CMake.
+[env]
+CMAKE_POLICY_VERSION_MINIMUM = "3.5"
