@@ -337,7 +337,7 @@ mod tests {
         v.extend_from_slice(&[0, 0]); // instrument parapointer (fixed up below)
         let pat_ptr_at = v.len();
         v.extend_from_slice(&[0, 0]);
-        while v.len() % 16 != 0 {
+        while !v.len().is_multiple_of(16) {
             v.push(0);
         }
         // instrument header
@@ -355,7 +355,7 @@ mod tests {
         v.extend_from_slice(&ins);
         let data_at = v.len();
         v.extend((0..64u32).map(|i| (128.0 + 100.0 * (i as f32 * 0.4).sin()) as u8));
-        while v.len() % 16 != 0 {
+        while !v.len().is_multiple_of(16) {
             v.push(0);
         }
         // pattern
@@ -378,7 +378,7 @@ mod tests {
         let len = (p.len() + 2) as u16;
         v.extend_from_slice(&len.to_le_bytes());
         v.extend_from_slice(&p);
-        while v.len() % 16 != 0 {
+        while !v.len().is_multiple_of(16) {
             v.push(0);
         }
         v[ins_ptr_at..ins_ptr_at + 2].copy_from_slice(&((ins_at / 16) as u16).to_le_bytes());

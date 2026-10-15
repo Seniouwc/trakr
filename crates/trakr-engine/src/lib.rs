@@ -142,6 +142,8 @@ pub enum Command {
         last: u16,
     },
     Stop,
+    /// Pitch wheel: offset in semitones applied to every sounding voice (0 = centred).
+    PitchBend(f32),
     /// When true, playback stops (voices keep ringing out) once the sequence ends instead of looping.
     SetStopAtEnd(bool),
     /// Live/preview note, outside the sequencer.
@@ -334,6 +336,7 @@ pub fn create(sample_rate: u32) -> (Engine, EngineHandle) {
         now_frames: 0,
         pending_break: None,
         stop_at_end: false,
+        bend: 0.0,
         tick: 0,
         frames_to_tick: 0.0,
         chains: (0..MAX_TRACKS).map(|_| Vec::new()).collect(),
@@ -393,6 +396,7 @@ pub struct Engine {
     /// Line to jump to in the next pattern slot (ZB command).
     pending_break: Option<u16>,
     stop_at_end: bool,
+    bend: f32,
     /// Tick index within the current line and frames until the next tick.
     tick: u8,
     frames_to_tick: f64,
@@ -495,6 +499,7 @@ impl Engine {
             let line_frames = Song::frames_per_line(self.bpm, self.lpb, self.sample_rate);
             for v in &mut self.voices {
                 v.set_line_frames(line_frames);
+                v.bend = self.bend;
                 let t = v.track.min(MAX_TRACKS - 1);
                 let base = t * BLOCK * 2;
                 if !self.track_used[t] {
@@ -1030,6 +1035,9 @@ impl Engine {
                     self.pending_break = None;
                 }
                 Command::SetStopAtEnd(v) => self.stop_at_end = v,
+                Command::PitchBend(semis) => {
+                    self.bend = if semis.is_finite() { semis.clamp(-24.0, 24.0) } else { 0.0 };
+                }
                 Command::NoteOn { track, instrument, note, volume } => {
                     let phrase =
                         self.song.instruments.get(instrument as usize).and_then(|i| i.phrase_for(note));
@@ -1104,7 +1112,7 @@ impl Engine {
             *t = (note.min(119), vol.clamp(0.0, 1.0));
         }
         if let Some(m) = instrument.midi_out {
-            if song.tracks.get(track).map_or(true, |t| t.mute == MuteState::Active) {
+            if song.tracks.get(track).is_none_or(|t| t.mute == MuteState::Active) {
                 self.midi_note_on(track, column, m, note, vol);
             }
         }
@@ -3304,5 +3312,65 @@ mod device_tests {
         assert!(cub < lin * 0.5, "cubic {cub} should clearly beat linear {lin}");
         assert!(sinc < cub * 0.2, "sinc {sinc} should be far better than cubic {cub}");
         assert!(sinc < 0.002, "sinc error {sinc}");
+    }
+
+    #[test]
+    fn sinc_playback_does_not_alias_when_pitched_up() {
+        use trakr_core::Interpolation::*;
+        // A 15 kHz tone an octave up lands at 30 kHz, above Nyquist: it must vanish, not fold to 14 kHz.
+        let rms = |mode| {
+            let data: Vec<f32> = (0..30_000)
+                .map(|i| (i as f32 / RATE as f32 * 15_000.0 * std::f32::consts::TAU).sin() * 0.5)
+                .collect();
+            let mut song = song_with(data);
+            song.instruments[0].interpolation = mode;
+            Arc::make_mut(&mut song.patterns[0]).line_mut(0, 0).notes[0].note = 48 + 12;
+            let out = render(song, 6000);
+            (out[1000..5000].iter().map(|v| v * v).sum::<f32>() / 4000.0).sqrt()
+        };
+        let (cubic, sinc) = (rms(Cubic), rms(Sinc));
+        assert!(cubic > 0.05, "the plain interpolators alias audibly ({cubic})");
+        assert!(sinc < cubic * 0.15, "band-limited sinc leaves {sinc} vs {cubic}");
+        // and it leaves an in-band tone alone
+        let tone: Vec<f32> = (0..30_000)
+            .map(|i| (i as f32 / RATE as f32 * 2_000.0 * std::f32::consts::TAU).sin() * 0.5)
+            .collect();
+        let mut song = song_with(tone);
+        song.instruments[0].interpolation = Sinc;
+        Arc::make_mut(&mut song.patterns[0]).line_mut(0, 0).notes[0].note = 48 + 12;
+        let out = render(song, 6000);
+        let level = (out[1000..5000].iter().map(|v| v * v).sum::<f32>() / 4000.0).sqrt();
+        assert!((level - 0.3535).abs() < 0.05, "in-band level {level}");
+    }
+
+    #[test]
+    fn pitch_bend_shifts_sounding_voices() {
+        // A full-cycle sine, looped; one octave up should double the zero-crossing rate.
+        let data: Vec<f32> =
+            (0..2000).map(|i| (i as f32 / 2000.0 * std::f32::consts::TAU * 20.0).sin() * 0.5).collect();
+        let mut song = song_with(data);
+        song.instruments[0].samples[0].loop_mode = trakr_core::LoopMode::Forward;
+        song.instruments[0].samples[0].loop_end = 2000;
+        Arc::make_mut(&mut song.patterns[0]).line_mut(0, 0).notes[0].note = 48;
+        let crossings = |bend: f32| {
+            let (mut e, mut h) = create(RATE);
+            h.send(Command::SetSong(Arc::new(song.clone())));
+            h.send(Command::Play { seq_pos: 0, line: 0, loop_pattern: false });
+            h.send(Command::PitchBend(bend));
+            let mut out = vec![0.0f32; 8000];
+            e.render(&mut out);
+            out.chunks(2)
+                .map(|f| f[0])
+                .collect::<Vec<_>>()
+                .windows(2)
+                .filter(|w| w[0] < 0.0 && w[1] >= 0.0)
+                .count()
+        };
+        let (flat, up) = (crossings(0.0), crossings(12.0));
+        assert!(flat > 10, "baseline crossings {flat}");
+        let ratio = up as f32 / flat as f32;
+        assert!((1.8..2.2).contains(&ratio), "an octave of bend should double the pitch: {flat} -> {up}");
+        let (_, mut h) = create(RATE);
+        h.send(Command::PitchBend(f32::NAN)); // must not poison the engine
     }
 }

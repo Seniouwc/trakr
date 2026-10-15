@@ -167,7 +167,11 @@ impl Editor {
                 let track = self.cursor.track;
                 self.send(Command::NoteOff { track, note: 0 });
             }
-            MidiEvent::Cc { .. } | MidiEvent::PitchBend { .. } => {}
+            MidiEvent::PitchBend { value, .. } => {
+                // The wheel spans +-2 semitones, as on most keyboards.
+                self.send(Command::PitchBend(value.clamp(-1.0, 1.0) * 2.0));
+            }
+            MidiEvent::Cc { .. } => {}
             MidiEvent::Start => self.do_action(Action::PlaySong),
             MidiEvent::Continue => self.do_action(Action::PlayFromCursor),
             MidiEvent::Stop => self.do_action(Action::Stop),

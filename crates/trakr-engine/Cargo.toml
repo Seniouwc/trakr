@@ -16,3 +16,5 @@ anyhow = { version = "1.0.104", optional = true }
 default = ["audio"]
 # Real-time output via cpal (needs ALSA headers on Linux). Disable for headless tests.
 audio = ["dep:cpal", "dep:anyhow"]
+# JACK support (needs libjack headers).
+jack = ["audio", "cpal/jack"]

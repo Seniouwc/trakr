@@ -50,6 +50,8 @@ pub struct Prefs {
     pub midi_map: Vec<crate::midi_map::MidiMapping>,
     /// Last audio export settings (format, quality, bit depth, sample rate).
     pub export: trakr_encode::ExportFormat,
+    /// Audio host, devices, sample rate and buffer size.
+    pub audio: crate::AudioSettings,
 }
 
 impl Default for Prefs {
@@ -77,6 +79,7 @@ impl Default for Prefs {
             backups: true,
             midi_map: Vec::new(),
             export: Default::default(),
+            audio: Default::default(),
         }
     }
 }

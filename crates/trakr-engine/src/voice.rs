@@ -11,10 +11,33 @@ const SMOOTH_SECONDS: f32 = 0.003;
 /// Windowed-sinc taps for 8-point interpolation: `SINC_PHASES` fractional positions of 8 taps each.
 const SINC_PHASES: usize = 256;
 static SINC_TABLE: OnceLock<Vec<[f32; 8]>> = OnceLock::new();
+/// Half-width in input samples of the band-limiting kernel used when sinc playback is pitched up.
+const AA_HALF: f32 = 4.0;
+const AA_RES: usize = 256;
+/// Windowed sinc, `AA_RES` entries per unit over `0..AA_HALF` (plus one for interpolation).
+static AA_KERNEL: OnceLock<Vec<f32>> = OnceLock::new();
 
 /// Build the interpolation tables. Must run before audio starts (`create` does) so the audio thread
 /// never allocates here.
 pub fn init_tables() {
+    AA_KERNEL.get_or_init(|| {
+        (0..=(AA_HALF as usize * AA_RES) + 1)
+            .map(|n| {
+                let x = n as f32 / AA_RES as f32;
+                let sinc = if x < 1e-6 {
+                    1.0
+                } else {
+                    (std::f32::consts::PI * x).sin() / (std::f32::consts::PI * x)
+                };
+                let w = 0.5 + 0.5 * (std::f32::consts::PI * x / AA_HALF).cos();
+                if x >= AA_HALF {
+                    0.0
+                } else {
+                    sinc * w
+                }
+            })
+            .collect()
+    });
     SINC_TABLE.get_or_init(|| {
         (0..=SINC_PHASES) // one extra phase so the last interval can be interpolated
             .map(|p| {
@@ -43,10 +66,11 @@ fn control_block(rate: u32) -> u32 {
     (rate / 1000).clamp(1, 64)
 }
 
-/// One playing sample. Linear interpolation; forward, reverse and ping-pong loops; per-tick effects
+/// One playing sample. Cubic or sinc interpolation; forward, reverse and ping-pong loops; per-tick effects
 /// (slides, glide, vibrato, tremolo, arpeggio, volume slide, fades) and instrument envelopes.
-/// TODO: sinc interpolation, filters, NNA.
 pub struct Voice {
+    /// Live pitch wheel offset in semitones (set by the engine for every voice).
+    pub bend: f32,
     pub track: usize,
     pub column: usize,
     data: Arc<Vec<f32>>,
@@ -241,6 +265,7 @@ impl Voice {
             gm_cur: 0.0,
             gm_target: 0.0,
             step_cur: 0.0,
+            bend: 0.0,
             step_target: 0.0,
             pan_now: 0.0,
             ctr: 0,
@@ -463,7 +488,7 @@ impl Voice {
                 LfoTarget::Resonance => lfo_res += v.clamp(-3.0, 3.0),
             }
         }
-        let mut semis = self.semis + self.arp_offset;
+        let mut semis = self.semis + self.arp_offset + self.bend;
         semis += lfo_semis;
         if self.vib.1 > 0.0 {
             semis += self.vib.1 * (self.vib_phase * std::f32::consts::TAU).sin();
@@ -535,10 +560,36 @@ impl Voice {
         self.frame(i.clamp(0, self.frames as isize - 1) as usize, ch)
     }
 
-    /// Sample value at fractional position `i + frac` on channel `ch`.
+    /// Band-limited read for sinc playback pitched up by `step` (> 1): a windowed sinc whose cutoff is
+    /// the output Nyquist, so content that would fold back below it is removed instead of aliasing.
+    fn sample_aa(&self, i: isize, frac: f32, ch: usize, step: f32) -> Option<f32> {
+        let kernel = AA_KERNEL.get()?;
+        let s = step.min(16.0);
+        let half = (AA_HALF * s).ceil() as isize;
+        let (mut acc, mut wsum) = (0.0f32, 0.0f32);
+        for k in (1 - half)..=half {
+            let x = ((k as f32 - frac) / s).abs();
+            if x >= AA_HALF {
+                continue;
+            }
+            let pos = x * AA_RES as f32;
+            let n = pos as usize;
+            let w = kernel[n] + (kernel[n + 1] - kernel[n]) * (pos - n as f32);
+            acc += self.at(i + k, ch) * w;
+            wsum += w;
+        }
+        (wsum.abs() > 1e-6).then(|| acc / wsum)
+    }
+
+    /// Sample value at fractional position `i + frac` on channel `ch`; `step` is the playback speed.
     #[inline]
-    fn sample_at(&self, i: usize, frac: f32, ch: usize) -> f32 {
+    fn sample_at(&self, i: usize, frac: f32, ch: usize, step: f32) -> f32 {
         let i = i as isize;
+        if self.interp == Interpolation::Sinc && step > 1.02 {
+            if let Some(v) = self.sample_aa(i, frac, ch, step) {
+                return v;
+            }
+        }
         match self.interp {
             Interpolation::Linear => self.at(i, ch) * (1.0 - frac) + self.at(i + 1, ch) * frac,
             Interpolation::Cubic => {
@@ -598,8 +649,9 @@ impl Voice {
             }
             let i = self.pos as usize;
             let frac = (self.pos - i as f64) as f32;
-            let l = self.sample_at(i, frac, 0);
-            let r = if self.channels > 1 { self.sample_at(i, frac, 1) } else { l };
+            let spd = self.step_cur.abs() as f32;
+            let l = self.sample_at(i, frac, 0, spd);
+            let r = if self.channels > 1 { self.sample_at(i, frac, 1, spd) } else { l };
             let (l, r) = if self.filter.mode != FilterMode::Off {
                 (
                     self.filter_state[0].process(&self.filter_coeffs, l),

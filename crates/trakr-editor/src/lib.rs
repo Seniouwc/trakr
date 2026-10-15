@@ -2,6 +2,7 @@
 //! The GUI is a thin renderer over [`Editor`].
 
 mod action;
+mod audio_ops;
 mod edit_tools;
 mod instruments;
 mod io;
@@ -19,6 +20,7 @@ mod script_ops;
 mod structure_ops;
 
 pub use action::Action;
+pub use audio_ops::{AudioControl, AudioInfo, AudioSettings};
 pub use edit_tools::{CellSpec, Scope};
 pub use io::load_song;
 pub use keys::{KeyCode, KeyEvent};
@@ -31,7 +33,7 @@ pub use trakr_midi::{ClockTempo, MidiBackend, MidiEvent, MidiInput, MidiOutMsg, 
 pub use trakr_script::{API as SCRIPT_API, EXAMPLES as SCRIPT_EXAMPLES};
 
 /// Opens the audio input on demand; supplied by the binary.
-pub type RecorderFactory = Box<dyn FnMut() -> anyhow::Result<Box<dyn InputRecorder>>>;
+pub type RecorderFactory = Box<dyn FnMut(&AudioSettings) -> anyhow::Result<Box<dyn InputRecorder>>>;
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -204,6 +206,8 @@ pub struct Editor {
     sample_clip: Option<(Vec<f32>, u8)>,
     recorder: Option<Box<dyn InputRecorder>>,
     recorder_factory: Option<RecorderFactory>,
+    audio_ctl: Option<Box<dyn AudioControl>>,
+    audio_info: Option<AudioInfo>,
     rec_data: Vec<f32>,
     /// Recent input peak (0..1), for a level meter.
     pub rec_peak: f32,
@@ -308,6 +312,8 @@ impl Editor {
             sample_clip: None,
             recorder: None,
             recorder_factory: None,
+            audio_ctl: None,
+            audio_info: None,
             rec_data: Vec::new(),
             rec_peak: 0.0,
             anchor: None,

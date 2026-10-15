@@ -432,7 +432,7 @@ fn flac_block_size(total: usize) -> Option<usize> {
     if total == 0 {
         return None;
     }
-    (16..=total.min(65_535)).filter(|b| total % b == 0).min_by_key(|b| b.abs_diff(4096))
+    (16..=total.min(65_535)).filter(|b| total.is_multiple_of(*b)).min_by_key(|b| b.abs_diff(4096))
 }
 
 #[cfg(test)]

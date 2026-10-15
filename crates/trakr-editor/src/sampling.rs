@@ -166,7 +166,7 @@ impl Editor {
             self.status = "no audio input available".into();
             return;
         };
-        match factory() {
+        match factory(&self.prefs.audio) {
             Ok(r) => {
                 self.recorder = Some(r);
                 self.rec_data.clear();

@@ -241,7 +241,7 @@ impl InputRecorder for FakeInput {
 
 fn recording_editor() -> Editor {
     let mut app = Editor::new(Song::default(), None, None);
-    app.set_recorder_factory(Box::new(|| {
+    app.set_recorder_factory(Box::new(|_| {
         Ok(Box::new(FakeInput { chunks: vec![vec![0.1; 100], vec![-0.5; 100]] }) as Box<dyn InputRecorder>)
     }));
     app
@@ -1670,4 +1670,79 @@ fn songs_export_in_every_format_at_the_chosen_rate() {
     assert_eq!(n, 1);
     assert!(dir.join("s-01-Track_01.flac").is_file());
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+struct FakeAudio {
+    engine: std::rc::Rc<std::cell::RefCell<Option<trakr_engine::Engine>>>,
+    fail: bool,
+    last: std::rc::Rc<std::cell::RefCell<Option<AudioSettings>>>,
+}
+
+impl AudioControl for FakeAudio {
+    fn hosts(&self) -> Vec<String> {
+        vec!["Fake".into()]
+    }
+    fn outputs(&self, _: &str) -> Vec<String> {
+        vec!["Out A".into(), "Out B".into()]
+    }
+    fn inputs(&self, _: &str) -> Vec<String> {
+        vec!["In A".into()]
+    }
+    fn rates(&self, _: &str, _: &str) -> Vec<u32> {
+        vec![44_100, 48_000]
+    }
+    fn restart(&mut self, s: &AudioSettings) -> Result<(trakr_engine::EngineHandle, AudioInfo), String> {
+        *self.last.borrow_mut() = Some(s.clone());
+        if self.fail {
+            return Err("device vanished".into());
+        }
+        let rate = if s.sample_rate == 0 { 44_100 } else { s.sample_rate };
+        let (engine, handle) = trakr_engine::create(rate);
+        *self.engine.borrow_mut() = Some(engine);
+        Ok((
+            handle,
+            AudioInfo {
+                host: "Fake".into(),
+                device: s.output.clone(),
+                sample_rate: rate,
+                buffer_frames: s.buffer_frames,
+                channels: 2,
+            },
+        ))
+    }
+}
+
+#[test]
+fn switching_the_audio_output_moves_the_song_and_chains_to_the_new_engine() {
+    let (_old, mut app) = engine_editor();
+    let engine = std::rc::Rc::new(std::cell::RefCell::new(None));
+    let last = std::rc::Rc::new(std::cell::RefCell::new(None));
+    app.set_audio_control(
+        Box::new(FakeAudio { engine: engine.clone(), fail: false, last: last.clone() }),
+        None,
+    );
+    assert!(app.device_add(0, "native.gainer"));
+    app.device_set_param(0, 0, 0, -60.0);
+    app.prefs.audio = AudioSettings {
+        output: "Out B".into(),
+        sample_rate: 48_000,
+        buffer_frames: 256,
+        ..Default::default()
+    };
+    app.audio_apply();
+    assert_eq!(app.audio_info().unwrap().sample_rate, 48_000);
+    assert!(app.status.contains("48000"), "{}", app.status);
+    assert_eq!(last.borrow().as_ref().unwrap().output, "Out B");
+    let mut e = engine.borrow_mut().take().unwrap();
+    app.do_action(Action::PlaySong);
+    // the new engine got the song and the -60 dB gainer chain
+    assert!(render_peak(&mut e, &mut app, 20_000) < 0.01, "chain should be rebuilt on the new engine");
+    // a failing switch keeps everything as it was
+    app.set_audio_control(
+        Box::new(FakeAudio { engine: engine.clone(), fail: true, last }),
+        app.audio_info().cloned(),
+    );
+    app.audio_apply();
+    assert!(app.status.contains("audio not changed"), "{}", app.status);
+    assert_eq!(app.audio_info().unwrap().sample_rate, 48_000);
 }

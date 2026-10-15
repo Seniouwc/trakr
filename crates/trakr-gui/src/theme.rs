@@ -386,7 +386,7 @@ pub fn load_user_themes(dir: &std::path::Path) -> Vec<(String, String, Scheme)> 
     let mut out = Vec::new();
     for e in rd.flatten() {
         let path = e.path();
-        if path.extension().map_or(true, |x| x != "json") {
+        if path.extension().is_none_or(|x| x != "json") {
             continue;
         }
         let Some(stem) = path.file_stem().map(|s| s.to_string_lossy().into_owned()) else { continue };

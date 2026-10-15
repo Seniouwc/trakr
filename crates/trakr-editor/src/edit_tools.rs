@@ -27,9 +27,9 @@ pub enum Scope {
 }
 
 fn note_matches(n: &trakr_core::NoteColumn, f: &CellSpec) -> bool {
-    let hit_note = f.note.map_or(true, |x| n.note == x);
-    let hit_inst = f.instrument.map_or(true, |x| n.instrument == x);
-    let hit_fx = f.effect.map_or(true, |x| n.effect.id == x);
+    let hit_note = f.note.is_none_or(|x| n.note == x);
+    let hit_inst = f.instrument.is_none_or(|x| n.instrument == x);
+    let hit_fx = f.effect.is_none_or(|x| n.effect.id == x);
     // a spec with only an effect still matches note columns' small effect slot
     hit_note && hit_inst && hit_fx && !(f.note.is_none() && f.instrument.is_none() && n.effect.is_empty())
 }

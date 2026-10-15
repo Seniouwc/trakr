@@ -39,7 +39,7 @@ Compiled from memory of Renoise 3.x behavior. Verify each item against the offic
 - [~] Sample playback with linear interpolation; forward, reverse and ping-pong loops
 - [x] Import WAV, AIFF, FLAC, OGG, MP3 (symphonia); RX2/REX not required initially
 - [~] Reverse and ping-pong loops work; loop release, one-shot, sustain loop do not
-- [~] Interpolation modes: linear, cubic (Hermite, default) and 8-point sinc per instrument; no "none" mode, no oversampling, sinc does not low-pass when pitching up
+- [~] Interpolation modes: linear, cubic (Hermite, default) and 8-point sinc per instrument (sinc is band-limited when pitching up, so high content does not alias); no "none" mode, no oversampling
 - [~] Sample editor (GUI): zoomable waveform, selection, cut/copy/paste/delete/crop, silence, fades, gain, normalize, invert, DC removal, reverse, mono/stereo, tape pitch shift, resample, export to every format above. Also loop crossfade, time-stretch (WSOLA, pitch kept), slice at detected transients, bit-depth reduction with shaped dither, a spectrum view and beat sync (the sample is played so it lasts N lines at the song tempo; pitch follows speed). Missing: draw-in-waveform editing, formant-preserving stretch
 - [x] Slice markers (manual, shift-click, even split, transient detection) and split-to-keys work
 - [~] Key zones and velocity zones (layers), per-sample volume/pan/tune, and per-instrument NNA (cut, note-off, continue) work; mute-groups do not
@@ -76,10 +76,10 @@ Compiled from memory of Renoise 3.x behavior. Verify each item against the offic
 
 ## IO, control, scripting
 - [x] MIDI output and clock master: Play > MIDI output picks a port, sends 24 ppqn timing clock plus start/stop with the transport (optional), latency setting aligns it with the audio device; timing is stamped per frame by the engine and delivered by a helper thread (jitter about a millisecond, not hardware-locked)
-- [~] MIDI input works (midir): notes play and record (velocity to the volume column), CC7/CC10 set cursor-track volume/pan, start/continue/stop control the transport, device picker in Play > MIDI input. Incoming MIDI clock can set the song tempo (Play > MIDI mapping). MIDI learn maps any controller to a track volume/pan, a device parameter or a command. Missing: pitch bend, channel filtering
+- [~] MIDI input works (midir): notes play and record (velocity to the volume column), CC7/CC10 set cursor-track volume/pan, start/continue/stop control the transport, device picker in Play > MIDI input. Incoming MIDI clock can set the song tempo (Play > MIDI mapping). MIDI learn maps any controller to a track volume/pan, a device parameter or a command. Pitch wheel bends all sounding voices by +-2 semitones. Missing: channel filtering
 - [~] OSC server (UDP, this machine only unless enabled otherwise in Preferences): transport, BPM, any command by name, track volume/pan/mute/solo, device parameters, note on/off (see the Preferences hint and `trakr-editor/src/osc_ops.rs`). No OSC client / feedback
 - [~] Lua 5.4 scripting (mlua, vendored): sandboxed (no io/os/load, instruction/time/memory limits), runs on a copy of the song so a run is one undo step and errors change nothing; API covers song settings, patterns, sequence, note and effect cells, cursor/selection context, status, transport requests; Scripts menu with examples and `<config>/scripts/*.lua`, console window with reference. API also covers instruments, tracks, devices and automation lanes. Missing: sample access, adding or removing tracks, callbacks and observers, custom menu entries/keybindings from scripts, GUI toolkit, OSC/websocket
-- [ ] Audio backends: ALSA (cpal, working), JACK, PipeWire native; device selection and buffer size UI
+- [~] Audio backends: ALSA via cpal (also PulseAudio/PipeWire through ALSA); Preferences > Audio picks host, output and input device, sample rate (up to the device's maximum) and buffer size, and restarts the engine without losing the song, chains or MIDI output; JACK builds with `--features trakr-engine/jack` (needs libjack). Missing: PipeWire native, per-channel output routing, latency compensation, input monitoring/live effects
 - [~] Record: live audio input to sample works; recording MIDI into the pattern works in edit mode (no quantize, no chords-to-columns)
 
 ## Render, export, files

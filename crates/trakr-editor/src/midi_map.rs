@@ -73,7 +73,7 @@ impl Editor {
         if let Some(target) = self.midi_learn.take() {
             self.prefs
                 .midi_map
-                .retain(|m| !(m.controller == controller && m.channel.map_or(true, |c| c == channel)));
+                .retain(|m| !(m.controller == controller && m.channel.is_none_or(|c| c == channel)));
             self.status = format!("CC {controller} drives {}", target.describe(&self.song));
             self.prefs.midi_map.push(MidiMapping { channel: Some(channel), controller, target });
             return true;
@@ -82,7 +82,7 @@ impl Editor {
             .prefs
             .midi_map
             .iter()
-            .filter(|m| m.controller == controller && m.channel.map_or(true, |c| c == channel))
+            .filter(|m| m.controller == controller && m.channel.is_none_or(|c| c == channel))
             .map(|m| m.target.clone())
             .collect();
         if hits.is_empty() {

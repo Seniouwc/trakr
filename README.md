@@ -40,7 +40,7 @@ An open source tracker DAW written in Rust, with a native window (egui). The goa
 
 ## Building
 
-Requirements: a recent stable Rust toolchain (1.81+) and ALSA headers on Linux (`libasound2-dev` on Debian/Ubuntu). With Nix, `nix develop` provides everything.
+Requirements: a recent stable Rust toolchain (1.87+) and ALSA headers on Linux (`libasound2-dev` on Debian/Ubuntu). With Nix, `nix develop` provides everything.
 
 ```
 cargo run -p trakr                 # native window, built-in demo song
@@ -90,6 +90,7 @@ cargo test --workspace
 cargo clippy --workspace --all-targets
 cargo fmt --all
 cargo test -p trakr-engine --no-default-features   # headless, no ALSA
+# JACK: cargo run -p trakr --features trakr-engine/jack   (needs libjack-dev)
 ```
 
 Read [ARCHITECTURE.md](docs/ARCHITECTURE.md) and [CLAUDE.md](CLAUDE.md) (contributor guide and hard rules) before contributing. Key rules: the audio thread must never allocate, lock or block; no Renoise code, assets or branding; new behavior needs tests.

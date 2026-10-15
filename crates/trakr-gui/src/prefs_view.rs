@@ -10,6 +10,7 @@ pub enum PrefsTab {
     #[default]
     Keys,
     Appearance,
+    Audio,
     General,
 }
 
@@ -184,12 +185,14 @@ impl GuiApp {
             ui.horizontal(|ui| {
                 ui.selectable_value(&mut self.prefs_tab, PrefsTab::Keys, "Keys");
                 ui.selectable_value(&mut self.prefs_tab, PrefsTab::Appearance, "Appearance");
+                ui.selectable_value(&mut self.prefs_tab, PrefsTab::Audio, "Audio");
                 ui.selectable_value(&mut self.prefs_tab, PrefsTab::General, "General");
             });
             ui.separator();
             match self.prefs_tab {
                 PrefsTab::Keys => self.keys_tab(ui),
                 PrefsTab::Appearance => self.appearance_tab(ui),
+                PrefsTab::Audio => self.audio_tab(ui),
                 PrefsTab::General => self.general_tab(ui),
             }
         });
@@ -391,6 +394,96 @@ impl GuiApp {
             Ok(()) => format!("wrote {}: edit it, then Reload theme files", path.display()),
             Err(e) => format!("cannot write theme file: {e}"),
         };
+    }
+
+    fn audio_tab(&mut self, ui: &mut egui::Ui) {
+        let Some(ctl) = self.editor.audio_control() else {
+            ui.label("Audio selection is not available in this build.");
+            return;
+        };
+        let hosts = ctl.hosts();
+        let mut a = self.editor.prefs.audio.clone();
+        let outputs = ctl.outputs(&a.host);
+        let inputs = ctl.inputs(&a.host);
+        let rates = ctl.rates(&a.host, &a.output);
+        let pick = |ui: &mut egui::Ui, id: &str, label: &str, value: &mut String, options: &[String]| {
+            ui.horizontal(|ui| {
+                ui.add_sized([110.0, 18.0], egui::Label::new(label));
+                let shown = if value.is_empty() { "Default".to_string() } else { value.clone() };
+                egui::ComboBox::from_id_salt(id).selected_text(shown).width(300.0).show_ui(ui, |ui| {
+                    ui.selectable_value(value, String::new(), "Default");
+                    for o in options {
+                        ui.selectable_value(value, o.clone(), o);
+                    }
+                });
+            });
+        };
+        let host_before = a.host.clone();
+        pick(ui, "audio_host", "Audio system", &mut a.host, &hosts);
+        if a.host != host_before {
+            a.output.clear();
+            a.input.clear();
+        }
+        pick(ui, "audio_out", "Output device", &mut a.output, &outputs);
+        pick(ui, "audio_in", "Input device", &mut a.input, &inputs);
+        ui.horizontal(|ui| {
+            ui.add_sized([110.0, 18.0], egui::Label::new("Sample rate"));
+            let shown =
+                if a.sample_rate == 0 { "Default".to_string() } else { format!("{} Hz", a.sample_rate) };
+            egui::ComboBox::from_id_salt("audio_rate").selected_text(shown).show_ui(ui, |ui| {
+                ui.selectable_value(&mut a.sample_rate, 0, "Default");
+                for r in &rates {
+                    ui.selectable_value(&mut a.sample_rate, *r, format!("{r} Hz"));
+                }
+            });
+        });
+        ui.horizontal(|ui| {
+            ui.add_sized([110.0, 18.0], egui::Label::new("Buffer size"));
+            let shown = if a.buffer_frames == 0 {
+                "Default".to_string()
+            } else {
+                format!("{} frames", a.buffer_frames)
+            };
+            egui::ComboBox::from_id_salt("audio_buf").selected_text(shown).show_ui(ui, |ui| {
+                ui.selectable_value(&mut a.buffer_frames, 0, "Default");
+                for b in [64u32, 128, 256, 512, 1024, 2048, 4096] {
+                    ui.selectable_value(&mut a.buffer_frames, b, format!("{b} frames"));
+                }
+            });
+            ui.weak("smaller = lower latency, more risk of dropouts");
+        });
+        let changed = a != self.editor.prefs.audio;
+        self.editor.prefs.audio = a;
+        ui.horizontal(|ui| {
+            if ui
+                .add_enabled(true, egui::Button::new("Apply"))
+                .on_hover_text("Restart the audio output with these settings")
+                .clicked()
+            {
+                self.editor.audio_apply();
+            }
+            if changed {
+                ui.weak("not applied yet");
+            }
+        });
+        if let Some(i) = self.editor.audio_info() {
+            let buffer = if i.buffer_frames > 0 {
+                format!(", buffer {} frames ({:.1} ms)", i.buffer_frames, i.buffer_ms())
+            } else {
+                ", driver-chosen buffer".to_string()
+            };
+            ui.separator();
+            ui.label(format!(
+                "Running: {} / {} at {} Hz, {} channels{}",
+                i.host, i.device, i.sample_rate, i.channels, buffer
+            ));
+        } else {
+            ui.separator();
+            ui.label("No audio output is running.");
+        }
+        if !hosts.iter().any(|h| h.eq_ignore_ascii_case("jack")) {
+            ui.weak("JACK is not part of this build (build with --features trakr-engine/jack and libjack installed).");
+        }
     }
 
     fn general_tab(&mut self, ui: &mut egui::Ui) {
