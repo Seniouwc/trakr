@@ -33,6 +33,12 @@ pub trait Device: Send {
 
     fn note_off(&mut self, _key: u8) {}
 
+    /// Frames of delay this device adds (hosted plugins report theirs); the engine delays the other
+    /// tracks by the difference so all tracks stay aligned.
+    fn latency(&self) -> u32 {
+        0
+    }
+
     /// True for devices that generate sound from notes; `process` then fills the buffer instead of
     /// filtering it.
     fn is_instrument(&self) -> bool {
@@ -64,7 +70,11 @@ pub fn create(id: &str, rate: u32) -> Option<Box<dyn Device>> {
         "native.lfo" => Box::new(Lfo { phase: 0.0, held: 0.0, rng: 0x9E37_79B9, value: 0.0, fs, bpm: 120.0 }),
         "native.follower" => Box::new(Follower { env: 0.0, value: 0.0, fs }),
         "native.exciter" => Box::new(Exciter { hp: [Biquad::default(); 2], fs }),
-        _ => return crate::devices_more::create(id, fs).or_else(|| crate::devices_adv::create(id, fs)),
+        _ => {
+            return crate::devices_more::create(id, fs)
+                .or_else(|| crate::devices_adv::create(id, fs))
+                .or_else(|| crate::devices_extra::create(id, fs))
+        }
     })
 }
 

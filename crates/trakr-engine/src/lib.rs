@@ -8,6 +8,7 @@
 pub mod audio;
 pub mod devices;
 mod devices_adv;
+mod devices_extra;
 mod devices_more;
 mod dsp;
 pub mod formula;
@@ -73,8 +74,12 @@ use trakr_core::{
 use trakr_midi::MidiOutMsg;
 use voice::{TriggerOpts, Voice};
 
-const MAX_VOICES: usize = 256;
+const MAX_VOICES: usize = 512;
 const QUEUE_CAP: usize = 256;
+/// Room for the voices a stop or a dense block can retire at once.
+const GARBAGE_CAP: usize = 2048;
+/// Longest plugin latency that is compensated (frames, about 0.19 s at 44.1 kHz).
+const PDC_FRAMES: usize = 8192;
 const MAX_EVENTS: usize = 512;
 /// Samples of audio processed per mixing block (also the granularity of automation).
 const BLOCK: usize = 512;
@@ -97,12 +102,19 @@ const PHRASE_COL: usize = 1000;
 const LIVE_COL: usize = MAX_NOTE_COLUMNS;
 
 /// Things handed back to the UI thread so they are freed there, not on the audio thread.
+/// (Voices travel by value: boxing one would allocate on the audio thread.)
+#[allow(clippy::large_enum_variant)]
 pub enum Garbage {
     Song(Arc<Song>),
     Chain(Vec<Box<dyn Device>>),
     Device(Box<dyn Device>),
     Phrase(Arc<Phrase>),
+    /// A finished voice: it may hold the last reference to a sample or envelope.
+    Voice(RetiredVoice),
 }
+
+/// A voice on its way to the UI thread for dropping.
+pub struct RetiredVoice(#[allow(dead_code)] Voice);
 
 const MAX_INSTRUMENT_PLUGINS: usize = 255;
 const MAX_PLUGIN_NOTES: usize = 256;
@@ -235,7 +247,7 @@ pub trait InputRecorder {
 }
 
 /// Most tracks the level meters cover.
-pub const MAX_METER_TRACKS: usize = 64;
+pub const MAX_METER_TRACKS: usize = 128;
 
 /// Playback position and level meters published by the audio thread.
 pub struct SharedPos {
@@ -353,7 +365,7 @@ impl EngineHandle {
 pub fn create(sample_rate: u32) -> (Engine, EngineHandle) {
     voice::init_tables();
     let (tx, rx) = rtrb::RingBuffer::new(QUEUE_CAP);
-    let (gtx, grx) = rtrb::RingBuffer::new(QUEUE_CAP);
+    let (gtx, grx) = rtrb::RingBuffer::new(GARBAGE_CAP);
     let (mtx, mrx) = rtrb::RingBuffer::new(MIDI_QUEUE);
     let pos = Arc::new(SharedPos::default());
     let song = Arc::new(Song::default());
@@ -398,6 +410,9 @@ pub fn create(sample_rate: u32) -> (Engine, EngineHandle) {
         tick: 0,
         frames_to_tick: 0.0,
         chains: (0..MAX_TRACKS).map(|_| Vec::new()).collect(),
+        pdc: vec![0.0; MAX_TRACKS * PDC_FRAMES * 2],
+        pdc_pos: [0; MAX_TRACKS],
+        pdc_max: 0,
         track_bufs: vec![0.0; MAX_TRACKS * BLOCK * 2],
         bus: vec![0.0; BLOCK * 2],
         acc: vec![0.0; MAX_TRACKS * BLOCK * 2],
@@ -466,6 +481,11 @@ pub struct Engine {
     tick: u8,
     frames_to_tick: f64,
     chains: Vec<Vec<Box<dyn Device>>>,
+    /// Delay-compensation rings, one per track (`PDC_FRAMES` stereo frames each), write positions and the
+    /// largest chain latency this block.
+    pdc: Vec<f32>,
+    pdc_pos: [usize; MAX_TRACKS],
+    pdc_max: u32,
     /// One stereo bus per track, `BLOCK` frames each, so devices can process a track's whole signal.
     track_bufs: Vec<f32>,
     bus: Vec<f32>,
@@ -580,7 +600,7 @@ impl Engine {
                 );
             }
             self.render_plugins(done, chunk, frames);
-            self.voices.retain(|v| v.alive());
+            self.retire_dead_voices();
             if self.playing {
                 self.frames_to_line -= chunk as f64;
                 self.frames_to_tick -= chunk as f64;
@@ -731,6 +751,23 @@ impl Engine {
 
         // Phase 1: sequencer tracks, then groups (deepest first), then sends. All are "strips".
         // Reuse a preallocated list: nothing on the audio thread may allocate.
+        let mut lat = [0u32; MAX_TRACKS];
+        let mut pdc_max = 0u32;
+        #[allow(clippy::needless_range_loop)]
+        for t in 0..n {
+            if song.tracks[t].kind != trakr_core::TrackKind::Sequencer {
+                continue;
+            }
+            let total: u32 = self.chains[t]
+                .iter()
+                .zip(song.tracks[t].devices.iter())
+                .filter(|(_, spec)| !spec.bypass)
+                .map(|(d, _)| d.latency())
+                .sum();
+            lat[t] = total.min(PDC_FRAMES as u32 - 1);
+            pdc_max = pdc_max.max(lat[t]);
+        }
+        self.pdc_max = pdc_max;
         let mut order = std::mem::take(&mut self.order);
         order.clear();
         order.extend((0..n).filter(|&t| song.tracks[t].kind == trakr_core::TrackKind::Sequencer));
@@ -745,7 +782,7 @@ impl Engine {
             let tr = &song.tracks[t];
             let base = t * BLOCK * 2;
             let is_bus = matches!(tr.kind, trakr_core::TrackKind::Group | trakr_core::TrackKind::Send);
-            if !is_bus && !self.track_used[t] && self.chains[t].is_empty() {
+            if !is_bus && !self.track_used[t] && self.chains[t].is_empty() && pdc_max == 0 {
                 continue;
             }
             if !self.track_used[t] {
@@ -759,6 +796,9 @@ impl Engine {
                 }
             }
             self.run_chain(t, tr, base, frames);
+            if pdc_max > 0 && tr.kind == trakr_core::TrackKind::Sequencer {
+                self.compensate(t, base, frames, (pdc_max - lat[t]) as usize);
+            }
 
             let (prev, target, pl, pr) = self.fader(t, tr, any_solo);
             let audible = target > 0.0 || prev > 0.0;
@@ -1154,7 +1194,7 @@ impl Engine {
                     self.block = None;
                     self.playing = false;
                     self.release_plugin(|_| true);
-                    self.voices.clear();
+                    self.retire_all_voices();
                     self.events.clear();
                     self.clear_phrases();
                     self.pending_break = None;
@@ -1264,9 +1304,48 @@ impl Engine {
             v.detach();
         }
         if self.voices.len() >= MAX_VOICES {
-            self.voices.remove(0);
+            let old = self.voices.remove(0);
+            self.retire_voice(old);
         }
         self.voices.push(Voice::new(track, column, instrument, sample, note, vol, pan, opts));
+    }
+
+    /// Delay track `t`'s block by `delay` frames through its compensation ring.
+    fn compensate(&mut self, t: usize, base: usize, frames: usize, delay: usize) {
+        let ring = &mut self.pdc[t * PDC_FRAMES * 2..(t + 1) * PDC_FRAMES * 2];
+        let mut pos = self.pdc_pos[t];
+        for f in self.track_bufs[base..base + frames * 2].chunks_exact_mut(2) {
+            ring[pos * 2] = f[0];
+            ring[pos * 2 + 1] = f[1];
+            let read = (pos + PDC_FRAMES - delay) % PDC_FRAMES;
+            f[0] = ring[read * 2];
+            f[1] = ring[read * 2 + 1];
+            pos = (pos + 1) % PDC_FRAMES;
+        }
+        self.pdc_pos[t] = pos;
+    }
+
+    /// Hand a finished voice to the UI thread; if the queue is full it drops here (rare).
+    fn retire_voice(&mut self, v: Voice) {
+        let _ = self.garbage.push(Garbage::Voice(RetiredVoice(v)));
+    }
+
+    fn retire_dead_voices(&mut self) {
+        let mut i = 0;
+        while i < self.voices.len() {
+            if self.voices[i].alive() {
+                i += 1;
+            } else {
+                let v = self.voices.remove(i);
+                self.retire_voice(v);
+            }
+        }
+    }
+
+    fn retire_all_voices(&mut self) {
+        while let Some(v) = self.voices.pop() {
+            self.retire_voice(v);
+        }
     }
 
     /// Run every installed instrument plugin for this chunk and add its output to the track it plays on.
@@ -2424,6 +2503,38 @@ mod sequencer_tests {
         let s = line_starts(Some(a));
         assert!((s[1] as i32 - 1000).abs() < 30 && (s[2] as i32 - 2000).abs() < 30, "{s:?}");
         assert!(s[3] - s[2] < 400, "faster after the switch: {s:?}");
+    }
+
+    #[test]
+    fn finished_and_stopped_voices_are_dropped_on_the_ui_thread() {
+        let song = song_with(vec![1.0; 50], LoopMode::Off);
+        let (mut engine, mut h) = create(RATE);
+        h.send(Command::SetSong(Arc::new(song)));
+        for track in 0..8 {
+            h.send(Command::NoteOn { track, instrument: 0, note: 48, volume: 1.0 });
+        }
+        let mut out = vec![0.0; 2 * 400];
+        engine.render(&mut out); // the 50-frame samples end inside this block
+        let mut retired = 0;
+        while let Ok(g) = h.garbage.pop() {
+            retired += matches!(g, Garbage::Voice(_)) as usize;
+        }
+        assert_eq!(retired, 8, "every finished voice went through the garbage queue");
+        let long = song_with(vec![1.0; 5000], LoopMode::Off);
+        h.send(Command::SetSong(Arc::new(long)));
+        for track in 0..8 {
+            h.send(Command::NoteOn { track, instrument: 0, note: 48, volume: 1.0 });
+        }
+        engine.render(&mut out);
+        while h.garbage.pop().is_ok() {}
+        h.send(Command::Stop);
+        engine.render(&mut out);
+        let mut stopped = 0;
+        while let Ok(g) = h.garbage.pop() {
+            stopped += matches!(g, Garbage::Voice(_)) as usize;
+        }
+        assert_eq!(stopped, 8, "stopping retires the sounding voices");
+        assert!(engine.is_idle());
     }
 
     #[test]

@@ -16,6 +16,7 @@ use clap_sys::events::{
 };
 use clap_sys::ext::audio_ports::{clap_audio_port_info, clap_plugin_audio_ports, CLAP_EXT_AUDIO_PORTS};
 use clap_sys::ext::gui::{clap_plugin_gui, CLAP_EXT_GUI, CLAP_WINDOW_API_WAYLAND, CLAP_WINDOW_API_X11};
+use clap_sys::ext::latency::{clap_plugin_latency, CLAP_EXT_LATENCY};
 use clap_sys::ext::note_ports::{clap_plugin_note_ports, CLAP_EXT_NOTE_PORTS};
 use clap_sys::ext::params::{
     clap_param_info, clap_plugin_params, CLAP_EXT_PARAMS, CLAP_PARAM_IS_HIDDEN, CLAP_PARAM_IS_READONLY,
@@ -578,6 +579,8 @@ pub struct ClapDevice {
     notes: Vec<(bool, u8, f32)>,
     instrument: bool,
     next_note_id: i32,
+    /// Frames of delay the plugin reported at load.
+    latency: u32,
 }
 
 // The device is created on the UI thread and then used from the audio thread only; the engine never
@@ -732,6 +735,11 @@ impl ClapDevice {
                 notes: Vec::with_capacity(MAX_NOTES),
                 instrument,
                 next_note_id: 0,
+                latency: inst
+                    .ext::<clap_plugin_latency>(CLAP_EXT_LATENCY)
+                    .and_then(|l| l.get)
+                    .map_or(0, |g| g(plugin))
+                    .min(1 << 20),
             };
             let reference = PluginRef {
                 path: path.to_string_lossy().into_owned(),
@@ -751,6 +759,10 @@ impl Device for ClapDevice {
 
     fn is_instrument(&self) -> bool {
         self.instrument
+    }
+
+    fn latency(&self) -> u32 {
+        self.latency
     }
 
     fn note_on(&mut self, key: u8, velocity: f32) {
@@ -927,7 +939,7 @@ mod tests {
     #[test]
     fn scan_finds_plugins_and_skips_broken_files() {
         let found = scan(&[plugin_dir().to_path_buf(), PathBuf::from("/nonexistent")]);
-        assert_eq!(found.len(), 2, "{found:?}");
+        assert_eq!(found.len(), 3, "{found:?}");
         assert_eq!(found[0].plugin_id, "org.trakr.test-gain");
         assert_eq!(found[0].name, "Trakr Test Gain");
         assert_eq!(found[0].vendor, "trakr");
@@ -1302,5 +1314,43 @@ mod tests {
         assert!((low / base - 0.25).abs() < 0.02, "restored level 0.2 vs 0.8: {low} / {base}");
         // garbage state is refused by the plugin without harming the load
         assert!(host.load_with_gui(&synth_path(), SYNTH, 44_100, &[1, 2, 3]).is_ok());
+    }
+
+    #[test]
+    fn plugin_latency_is_reported_and_compensated_across_tracks() {
+        const DELAY: &str = "org.trakr.test-delay";
+        let (dev, r) = ClapDevice::load(Path::new(&gain_path()), DELAY, 1000).unwrap();
+        assert_eq!((dev.latency(), r.name.as_str()), (64, "Trakr Test Delay"));
+        let (plain, _) = ClapDevice::load(Path::new(&gain_path()), "org.trakr.test-gain", 1000).unwrap();
+        assert_eq!(plain.latency(), 0);
+        // two tracks play the same click on line 0; only track 0 has the delaying plugin
+        let mut song = song_with_plugin(vec![1.0, 0.0]);
+        let (_, reference) = ClapDevice::load(Path::new(&gain_path()), DELAY, 1000).unwrap();
+        song.tracks[0].devices[0] = trakr_core::DeviceSpec::from_plugin(reference);
+        song.instruments[0].samples[0].data = Arc::new(vec![1.0; 20]);
+        let n = &mut Arc::make_mut(&mut song.patterns[0]).line_mut(1, 0).notes[0];
+        n.note = 48;
+        n.instrument = 0;
+        let (mut engine, mut h) = trakr_engine::create(1000);
+        let mut host = ClapHost::with_paths(vec![]);
+        let p = song.tracks[0].devices[0].plugin.clone().unwrap();
+        h.send(Command::SetSong(Arc::new(song)));
+        h.send(Command::SetChain {
+            track: 0,
+            chain: vec![host.load(&p.path, &p.plugin_id, 1000).unwrap().0],
+        });
+        h.send(Command::Play { seq_pos: 0, line: 0, loop_pattern: false });
+        // both tracks mix into one output
+        let mut out = vec![0.0f32; 2 * 600];
+        engine.render(&mut out);
+        let first: Vec<usize> = out
+            .chunks(2)
+            .enumerate()
+            .filter(|(i, f)| f[0] > 0.1 && (*i == 0 || out[(i - 1) * 2] <= 0.1))
+            .map(|(i, _)| i)
+            .collect();
+        // both clicks land together at the plugin's latency, instead of one at 0 and one at 64
+        assert_eq!(first, vec![64], "the plain track waits for the delayed one: {first:?}");
+        assert!(out[2 * 64] > 1.9, "both clicks add at the same frame: {}", out[2 * 64]);
     }
 }

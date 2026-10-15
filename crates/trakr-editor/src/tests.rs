@@ -436,7 +436,7 @@ fn device_ops_and_automation_lanes() {
 #[test]
 fn track_limit_is_enforced() {
     let mut app = ed();
-    for _ in 0..100 {
+    for _ in 0..(trakr_engine::MAX_METER_TRACKS + 20) {
         app.do_action(Action::TrackAdd);
     }
     assert_eq!(app.song.tracks.len(), trakr_engine::MAX_METER_TRACKS);

@@ -13,6 +13,7 @@ use clap_sys::ext::audio_ports::{
     CLAP_PORT_STEREO,
 };
 use clap_sys::ext::gui::{clap_plugin_gui, CLAP_EXT_GUI, CLAP_WINDOW_API_X11};
+use clap_sys::ext::latency::{clap_plugin_latency, CLAP_EXT_LATENCY};
 use clap_sys::ext::note_ports::{
     clap_note_port_info, clap_plugin_note_ports, CLAP_EXT_NOTE_PORTS, CLAP_NOTE_DIALECT_CLAP,
 };
@@ -49,6 +50,9 @@ pub extern "C" fn trakr_test_counter(i: u32) -> u32 {
 
 const PLUGIN_ID: &CStr = c"org.trakr.test-gain";
 const SYNTH_ID: &CStr = c"org.trakr.test-synth";
+const DELAY_ID: &CStr = c"org.trakr.test-delay";
+/// Frames the delay plugin holds back and reports as its latency.
+const DELAY_FRAMES: usize = 64;
 const LEVEL: clap_id = 1;
 const GAIN: clap_id = 7;
 const MUTE: clap_id = 9;
@@ -65,6 +69,19 @@ static SYNTH_FEATURES: [Feature; 3] =
 
 struct Descriptor(clap_plugin_descriptor);
 unsafe impl Sync for Descriptor {}
+
+static DELAY_DESCRIPTOR: Descriptor = Descriptor(clap_plugin_descriptor {
+    clap_version: CLAP_VERSION,
+    id: DELAY_ID.as_ptr(),
+    name: c"Trakr Test Delay".as_ptr(),
+    vendor: c"trakr".as_ptr(),
+    url: c"".as_ptr(),
+    manual_url: c"".as_ptr(),
+    support_url: c"".as_ptr(),
+    version: c"1.0".as_ptr(),
+    description: c"Delays by a fixed 64 frames and reports it".as_ptr(),
+    features: FEATURES.as_ptr() as *const *const c_char,
+});
 
 static SYNTH_DESCRIPTOR: Descriptor = Descriptor(clap_plugin_descriptor {
     clap_version: CLAP_VERSION,
@@ -110,6 +127,8 @@ struct State {
     gain: f64,
     mute: f64,
     synth: Option<Synth>,
+    /// The delay plugin's ring: (buffer for both channels, position).
+    delay: Option<(Vec<f32>, usize)>,
     host: *const clap_host,
     timer: Option<u32>,
     /// A parameter change the "window" made, to be reported from the next process call.
@@ -229,6 +248,19 @@ unsafe extern "C" fn process(plugin: *const clap_plugin, p: *const clap_process)
     }
     if st.synth.is_some() {
         return process_synth(st, p);
+    }
+    if let Some((ring, pos)) = st.delay.as_mut() {
+        let input: &clap_audio_buffer = &*p.audio_inputs;
+        let output: &clap_audio_buffer = &*p.audio_outputs;
+        for i in 0..p.frames_count as usize {
+            for ch in 0..output.channel_count.min(input.channel_count) as usize {
+                let slot = *pos * 2 + ch;
+                *(*output.data32.add(ch)).add(i) = ring[slot];
+                ring[slot] = *(*input.data32.add(ch)).add(i);
+            }
+            *pos = (*pos + 1) % DELAY_FRAMES;
+        }
+        return CLAP_PROCESS_CONTINUE;
     }
     if p.audio_inputs_count == 0 || p.audio_outputs_count == 0 {
         return CLAP_PROCESS_ERROR;
@@ -415,6 +447,16 @@ unsafe extern "C" fn state_load(plugin: *const clap_plugin, stream: *const clap_
 
 static STATE: clap_plugin_state = clap_plugin_state { save: Some(state_save), load: Some(state_load) };
 
+unsafe extern "C" fn latency_get(plugin: *const clap_plugin) -> u32 {
+    if (*((*plugin).plugin_data as *const State)).delay.is_some() {
+        DELAY_FRAMES as u32
+    } else {
+        0
+    }
+}
+
+static LATENCY: clap_plugin_latency = clap_plugin_latency { get: Some(latency_get) };
+
 static AUDIO_PORTS: clap_plugin_audio_ports =
     clap_plugin_audio_ports { count: Some(ports_count), get: Some(ports_get) };
 
@@ -482,6 +524,8 @@ unsafe extern "C" fn get_extension(plugin: *const clap_plugin, id: *const c_char
         &AUDIO_PORTS as *const _ as *const c_void
     } else if id == CLAP_EXT_NOTE_PORTS && (*((*plugin).plugin_data as *const State)).synth.is_some() {
         &NOTE_PORTS as *const _ as *const c_void
+    } else if id == CLAP_EXT_LATENCY {
+        &LATENCY as *const _ as *const c_void
     } else if id == CLAP_EXT_GUI {
         &GUI as *const _ as *const c_void
     } else if id == CLAP_EXT_TIMER_SUPPORT {
@@ -496,7 +540,7 @@ unsafe extern "C" fn get_extension(plugin: *const clap_plugin, id: *const c_char
 }
 
 unsafe extern "C" fn factory_count(_: *const clap_plugin_factory) -> u32 {
-    2
+    3
 }
 
 unsafe extern "C" fn factory_descriptor(
@@ -506,6 +550,7 @@ unsafe extern "C" fn factory_descriptor(
     match index {
         0 => &DESCRIPTOR.0,
         1 => &SYNTH_DESCRIPTOR.0,
+        2 => &DELAY_DESCRIPTOR.0,
         _ => ptr::null(),
     }
 }
@@ -518,14 +563,28 @@ unsafe extern "C" fn factory_create(
     let id = CStr::from_ptr(id);
     let synth = if id == SYNTH_ID {
         Some(Synth { rate: 44_100.0, level: 0.8, voices: [SynthVoice::default(); 8] })
-    } else if id == PLUGIN_ID {
+    } else if id == PLUGIN_ID || id == DELAY_ID {
         None
     } else {
         return ptr::null();
     };
-    let desc = if synth.is_some() { &SYNTH_DESCRIPTOR.0 } else { &DESCRIPTOR.0 };
-    let state =
-        Box::into_raw(Box::new(State { gain: 1.0, mute: 0.0, synth, host, timer: None, pending_out: None }));
+    let delay = (id == DELAY_ID).then(|| (vec![0.0; DELAY_FRAMES * 2], 0));
+    let desc = if synth.is_some() {
+        &SYNTH_DESCRIPTOR.0
+    } else if delay.is_some() {
+        &DELAY_DESCRIPTOR.0
+    } else {
+        &DESCRIPTOR.0
+    };
+    let state = Box::into_raw(Box::new(State {
+        gain: 1.0,
+        mute: 0.0,
+        synth,
+        delay,
+        host,
+        timer: None,
+        pending_out: None,
+    }));
     Box::into_raw(Box::new(clap_plugin {
         desc,
         plugin_data: state as *mut c_void,

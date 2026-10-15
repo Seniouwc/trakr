@@ -458,6 +458,62 @@ pub const DEVICES: &[DeviceInfo] = &[
         name: "Exciter",
         params: &[plog("Frequency", 1000.0, 10_000.0, 3000.0, "Hz"), p("Amount", 0.0, 1.0, 0.3, "")],
     },
+    DeviceInfo {
+        id: "native.comb",
+        name: "Comb filter",
+        params: &[
+            plog("Frequency", 20.0, 8000.0, 440.0, "Hz"),
+            p("Feedback", -0.95, 0.95, 0.7, ""),
+            p("Mix", 0.0, 1.0, 0.5, ""),
+        ],
+    },
+    DeviceInfo {
+        id: "native.flanger",
+        name: "Flanger",
+        params: &[
+            plog("Rate", 0.01, 10.0, 0.3, "Hz"),
+            p("Depth", 0.0, 8.0, 2.0, "ms"),
+            p("Delay", 0.5, 10.0, 3.0, "ms"),
+            p("Feedback", -0.95, 0.95, 0.5, ""),
+            p("Mix", 0.0, 1.0, 0.5, ""),
+        ],
+    },
+    DeviceInfo {
+        id: "native.pitchshift",
+        name: "Pitch shifter",
+        params: &[
+            p("Shift", -24.0, 24.0, 0.0, "st"),
+            p("Window", 10.0, 100.0, 50.0, "ms"),
+            p("Mix", 0.0, 1.0, 1.0, ""),
+        ],
+    },
+    DeviceInfo {
+        id: "native.saturator",
+        name: "Saturator",
+        params: &[
+            p("Drive", 0.0, 36.0, 6.0, "dB"),
+            p("Asymmetry", -1.0, 1.0, 0.0, ""),
+            p("Output", -24.0, 12.0, 0.0, "dB"),
+            p("Mix", 0.0, 1.0, 1.0, ""),
+        ],
+    },
+    DeviceInfo {
+        id: "native.transient",
+        name: "Transient shaper",
+        params: &[p("Attack", -1.0, 1.0, 0.0, ""), p("Sustain", -1.0, 1.0, 0.0, "")],
+    },
+    DeviceInfo { id: "native.trackdelay", name: "Track delay", params: &[p("Delay", 0.0, 500.0, 0.0, "ms")] },
+    DeviceInfo {
+        id: "native.autofilter",
+        name: "Auto filter",
+        params: &[
+            plog("Cutoff", 20.0, 12_000.0, 300.0, "Hz"),
+            p("Range", 0.0, 8.0, 4.0, "oct"),
+            p("Resonance", 0.3, 12.0, 2.0, ""),
+            p("Sensitivity", -12.0, 24.0, 0.0, "dB"),
+            pstep("Mode (0 low, 1 band, 2 high)", 0.0, 2.0, 0.0),
+        ],
+    },
 ];
 
 pub fn device_info(id: &str) -> Option<&'static DeviceInfo> {
