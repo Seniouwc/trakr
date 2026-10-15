@@ -1,8 +1,9 @@
-//! Hosts local CLAP effect plugins (`.clap` shared libraries).
+//! Hosts local CLAP effect and instrument plugins (`.clap` shared libraries).
 //!
-//! Scope: audio effects with a mono or stereo main input and output. Parameters are exposed through the
+//! Scope: audio effects with a mono or stereo main input and output, and instruments (note input, no
+//! audio input, mono or stereo output). Parameters are exposed through the
 //! plugin's `clap.params` extension and set with sample-accurate-enough parameter events at the start of
-//! each block. Not supported yet: instruments/note ports, plugin GUIs, state save/restore, latency
+//! each block. Not supported yet: plugin GUIs, state save/restore, latency
 //! reporting, multiple audio ports, 64-bit buffers, hosting extensions beyond the minimum.
 //!
 //! A plugin is native code running in this process: a crashing plugin takes trakr down with it.
@@ -10,10 +11,11 @@
 use clap_sys::audio_buffer::clap_audio_buffer;
 use clap_sys::entry::clap_plugin_entry;
 use clap_sys::events::{
-    clap_event_header, clap_event_param_value, clap_input_events, clap_output_events,
-    CLAP_CORE_EVENT_SPACE_ID, CLAP_EVENT_PARAM_VALUE,
+    clap_event_header, clap_event_note, clap_event_param_value, clap_input_events, clap_output_events,
+    CLAP_CORE_EVENT_SPACE_ID, CLAP_EVENT_NOTE_OFF, CLAP_EVENT_NOTE_ON, CLAP_EVENT_PARAM_VALUE,
 };
 use clap_sys::ext::audio_ports::{clap_audio_port_info, clap_plugin_audio_ports, CLAP_EXT_AUDIO_PORTS};
+use clap_sys::ext::note_ports::{clap_plugin_note_ports, CLAP_EXT_NOTE_PORTS};
 use clap_sys::ext::params::{
     clap_param_info, clap_plugin_params, CLAP_EXT_PARAMS, CLAP_PARAM_IS_HIDDEN, CLAP_PARAM_IS_READONLY,
     CLAP_PARAM_IS_STEPPED,
@@ -31,6 +33,8 @@ use trakr_engine::{Device, PluginHost};
 
 /// Most frames handed to a plugin in one call.
 const MAX_FRAMES: usize = 4096;
+/// Notes queued between two blocks.
+const MAX_NOTES: usize = 128;
 
 /// A loaded `.clap` library with its entry point initialised.
 struct Library {
@@ -101,6 +105,22 @@ fn array_str(a: &[c_char]) -> String {
     String::from_utf8_lossy(&bytes).into_owned()
 }
 
+/// Whether the null-terminated feature list of a descriptor contains `name`.
+fn has_feature(mut list: *const *const c_char, name: &str) -> bool {
+    if list.is_null() {
+        return false;
+    }
+    unsafe {
+        while !(*list).is_null() {
+            if cstr(*list) == name {
+                return true;
+            }
+            list = list.add(1);
+        }
+    }
+    false
+}
+
 /// Plugins in one file.
 fn describe(path: &Path) -> Result<Vec<PluginInfo>, String> {
     let lib = Library::open(path)?;
@@ -116,6 +136,7 @@ fn describe(path: &Path) -> Result<Vec<PluginInfo>, String> {
         let d = unsafe { desc(factory, i).as_ref() };
         if let Some(d) = d {
             out.push(PluginInfo {
+                instrument: has_feature(d.features, "instrument"),
                 path: path.to_string_lossy().into_owned(),
                 plugin_id: cstr(d.id),
                 name: cstr(d.name),
@@ -205,9 +226,16 @@ unsafe extern "C" fn host_get_extension(_: *const clap_host, _: *const c_char) -
 }
 unsafe extern "C" fn host_noop(_: *const clap_host) {}
 
-/// Parameter events handed to the plugin for one block.
+/// One event handed to the plugin.
+#[derive(Clone, Copy)]
+enum Ev {
+    Param(clap_event_param_value),
+    Note(clap_event_note),
+}
+
+/// Events handed to the plugin for one block: notes first, then changed parameters.
 struct EventList {
-    events: Vec<clap_event_param_value>,
+    events: Vec<Ev>,
 }
 
 unsafe extern "C" fn events_size(list: *const clap_input_events) -> u32 {
@@ -218,7 +246,8 @@ unsafe extern "C" fn events_size(list: *const clap_input_events) -> u32 {
 unsafe extern "C" fn events_get(list: *const clap_input_events, index: u32) -> *const clap_event_header {
     let l = &*((*list).ctx as *const EventList);
     match l.events.get(index as usize) {
-        Some(e) => &e.header,
+        Some(Ev::Param(e)) => &e.header,
+        Some(Ev::Note(e)) => &e.header,
         None => std::ptr::null(),
     }
 }
@@ -242,6 +271,10 @@ pub struct ClapDevice {
     bufs: [Vec<f32>; 4],
     list: Box<EventList>,
     steady: i64,
+    /// Instrument plugins: notes waiting for the next block, as (on, key, velocity).
+    notes: Vec<(bool, u8, f32)>,
+    instrument: bool,
+    next_note_id: i32,
 }
 
 // The plugin is created on the UI thread and then used from the audio thread only; the engine never
@@ -295,15 +328,20 @@ impl ClapDevice {
             let get_ext = p.get_extension.ok_or("no get_extension")?;
             let ports =
                 (get_ext(plugin, CLAP_EXT_AUDIO_PORTS.as_ptr()) as *const clap_plugin_audio_ports).as_ref();
-            let Some(ports) = ports else { return fail("not an audio effect (no audio ports)") };
-            let Some(in_ch) = port_channels(p, ports, true) else {
-                return fail("instrument plugins are not supported yet (effects need an audio input)");
+            let Some(ports) = ports else { return fail("not an audio plugin (no audio ports)") };
+            let note_in = (get_ext(plugin, CLAP_EXT_NOTE_PORTS.as_ptr()) as *const clap_plugin_note_ports)
+                .as_ref()
+                .is_some_and(|n| n.count.is_some_and(|c| c(plugin, true) > 0));
+            let in_ch = port_channels(p, ports, true);
+            let instrument = in_ch.is_none() && note_in;
+            let Some(in_ch) = in_ch.or(instrument.then_some(0)) else {
+                return fail("not usable: an effect needs an audio input, an instrument needs a note input");
             };
             let Some(out_ch) = port_channels(p, ports, false) else {
                 return fail("plugin has no audio output");
             };
-            if !(1..=2).contains(&in_ch) || !(1..=2).contains(&out_ch) {
-                return fail("only mono and stereo effects are supported");
+            if (!instrument && !(1..=2).contains(&in_ch)) || !(1..=2).contains(&out_ch) {
+                return fail("only mono and stereo plugins are supported");
             }
 
             let mut params = Vec::new();
@@ -362,8 +400,11 @@ impl ClapDevice {
                 in_ch,
                 out_ch,
                 bufs: std::array::from_fn(|_| vec![0.0; MAX_FRAMES]),
-                list: Box::new(EventList { events: Vec::with_capacity(MAX_PLUGIN_PARAMS) }),
+                list: Box::new(EventList { events: Vec::with_capacity(MAX_PLUGIN_PARAMS + MAX_NOTES * 2) }),
                 steady: 0,
+                notes: Vec::with_capacity(MAX_NOTES),
+                instrument,
+                next_note_id: 0,
             };
             let reference = PluginRef {
                 path: path.to_string_lossy().into_owned(),
@@ -381,6 +422,22 @@ impl Device for ClapDevice {
         "clap"
     }
 
+    fn is_instrument(&self) -> bool {
+        self.instrument
+    }
+
+    fn note_on(&mut self, key: u8, velocity: f32) {
+        if self.instrument && self.notes.len() < MAX_NOTES {
+            self.notes.push((true, key, velocity));
+        }
+    }
+
+    fn note_off(&mut self, key: u8) {
+        if self.instrument && self.notes.len() < MAX_NOTES {
+            self.notes.push((false, key, 0.0));
+        }
+    }
+
     fn process(&mut self, params: &[f32], buf: &mut [f32]) {
         let total = buf.len() / 2;
         let mut done = 0;
@@ -388,15 +445,37 @@ impl Device for ClapDevice {
             let n = (total - done).min(MAX_FRAMES);
             let frame = &mut buf[done * 2..(done + n) * 2];
 
-            // changed parameters become events at the start of the block
+            // queued notes first, then changed parameters, all at the start of the block
             self.list.events.clear();
+            for (on, key, vel) in self.notes.drain(..) {
+                let id = if on {
+                    self.next_note_id = self.next_note_id.wrapping_add(1).max(0);
+                    self.next_note_id
+                } else {
+                    -1
+                };
+                self.list.events.push(Ev::Note(clap_event_note {
+                    header: clap_event_header {
+                        size: std::mem::size_of::<clap_event_note>() as u32,
+                        time: 0,
+                        space_id: CLAP_CORE_EVENT_SPACE_ID,
+                        type_: if on { CLAP_EVENT_NOTE_ON } else { CLAP_EVENT_NOTE_OFF },
+                        flags: 0,
+                    },
+                    note_id: id,
+                    port_index: 0,
+                    channel: 0,
+                    key: key as i16 + 12,
+                    velocity: vel as f64,
+                }));
+            }
             for (i, id) in self.ids.iter().enumerate().take(params.len()) {
                 let v = params[i];
                 if !v.is_finite() || (self.primed && self.last[i] == v) {
                     continue;
                 }
                 self.last[i] = v;
-                self.list.events.push(clap_event_param_value {
+                self.list.events.push(Ev::Param(clap_event_param_value {
                     header: clap_event_header {
                         size: std::mem::size_of::<clap_event_param_value>() as u32,
                         time: 0,
@@ -411,7 +490,7 @@ impl Device for ClapDevice {
                     channel: -1,
                     key: -1,
                     value: v as f64,
-                });
+                }));
             }
             self.primed = true;
 
@@ -429,6 +508,8 @@ impl Device for ClapDevice {
                 latency: 0,
                 constant_mask: 0,
             };
+            let (in_ptr, in_count) =
+                if self.instrument { (std::ptr::null(), 0) } else { (&input as *const _, 1) };
             let mut output = clap_audio_buffer {
                 data32: out_ptrs.as_mut_ptr(),
                 data64: std::ptr::null_mut(),
@@ -447,9 +528,9 @@ impl Device for ClapDevice {
                 steady_time: self.steady,
                 frames_count: n as u32,
                 transport: std::ptr::null(),
-                audio_inputs: &input,
+                audio_inputs: in_ptr,
                 audio_outputs: &mut output,
-                audio_inputs_count: 1,
+                audio_inputs_count: in_count,
                 audio_outputs_count: 1,
                 in_events: &in_events,
                 out_events: &out_events,
@@ -533,10 +614,13 @@ mod tests {
     #[test]
     fn scan_finds_plugins_and_skips_broken_files() {
         let found = scan(&[plugin_dir().to_path_buf(), PathBuf::from("/nonexistent")]);
-        assert_eq!(found.len(), 1, "{found:?}");
+        assert_eq!(found.len(), 2, "{found:?}");
         assert_eq!(found[0].plugin_id, "org.trakr.test-gain");
         assert_eq!(found[0].name, "Trakr Test Gain");
         assert_eq!(found[0].vendor, "trakr");
+        assert!(!found[0].instrument);
+        assert_eq!(found[1].plugin_id, "org.trakr.test-synth");
+        assert!(found[1].instrument, "the synth announces the instrument feature");
         let mut host = ClapHost::with_paths(vec![plugin_dir().to_path_buf()]);
         assert_eq!(host.scan(), found);
     }
@@ -674,5 +758,164 @@ mod tests {
         let mut out = vec![0.0; 2 * 500];
         engine.render(&mut out);
         assert!(out.iter().any(|s| s.abs() > 0.5), "audio passes through, not silenced");
+    }
+
+    fn synth_path() -> String {
+        gain_path() // both plugins live in the same library
+    }
+
+    const SYNTH: &str = "org.trakr.test-synth";
+
+    #[test]
+    fn instruments_load_and_report_themselves() {
+        let (dev, r) = ClapDevice::load(Path::new(&synth_path()), SYNTH, 44_100).unwrap();
+        assert!(dev.is_instrument());
+        assert_eq!(
+            (r.name.as_str(), r.params.len(), r.params[0].name.as_str()),
+            ("Trakr Test Synth", 1, "Level")
+        );
+        let (fx, _) = ClapDevice::load(Path::new(&gain_path()), "org.trakr.test-gain", 44_100).unwrap();
+        assert!(!fx.is_instrument());
+    }
+
+    fn rms(v: &[f32]) -> f32 {
+        (v.iter().map(|x| x * x).sum::<f32>() / v.len().max(1) as f32).sqrt()
+    }
+
+    #[test]
+    fn an_instrument_plays_notes_and_stops_on_note_off() {
+        let (mut dev, _) = ClapDevice::load(Path::new(&synth_path()), SYNTH, 44_100).unwrap();
+        let mut silent = vec![0.0f32; 2048];
+        dev.process(&[0.8], &mut silent);
+        assert!(silent.iter().all(|s| *s == 0.0), "no note, no sound");
+        dev.note_on(57, 1.0); // internal 57 = A-4 = MIDI 69 = 440 Hz
+        let mut a = vec![0.0f32; 8820]; // 0.1 s stereo
+        dev.process(&[0.8], &mut a);
+        let left: Vec<f32> = a.chunks(2).map(|f| f[0]).collect();
+        let crossings = left.windows(2).filter(|w| w[0] < 0.0 && w[1] >= 0.0).count();
+        assert!(
+            (43..=45).contains(&crossings),
+            "a 440 Hz tone has about 44 cycles in 0.1 s, got {crossings}"
+        );
+        assert!(rms(&left) > 0.1);
+        assert!(a.chunks(2).all(|f| f[0] == f[1]), "stereo output");
+        dev.note_off(57);
+        let mut b = vec![0.0f32; 1000];
+        dev.process(&[0.8], &mut b);
+        assert!(b.iter().all(|s| *s == 0.0), "the note ended");
+        // a stuck-down queue is bounded and the level parameter scales the output
+        for _ in 0..1000 {
+            dev.note_on(60, 0.5);
+        }
+        dev.process(&[0.8], &mut b);
+        let (mut quiet, _) = ClapDevice::load(Path::new(&synth_path()), SYNTH, 44_100).unwrap();
+        let (mut loud, _) = ClapDevice::load(Path::new(&synth_path()), SYNTH, 44_100).unwrap();
+        quiet.note_on(57, 1.0);
+        loud.note_on(57, 1.0);
+        let (mut q, mut l) = (vec![0.0f32; 4000], vec![0.0f32; 4000]);
+        quiet.process(&[0.2], &mut q);
+        loud.process(&[0.8], &mut l);
+        assert!((rms(&q) / rms(&l) - 0.25).abs() < 0.02, "{} {}", rms(&q), rms(&l));
+    }
+
+    #[test]
+    fn effects_ignore_notes() {
+        let (mut dev, _) = ClapDevice::load(Path::new(&gain_path()), "org.trakr.test-gain", 44_100).unwrap();
+        dev.note_on(60, 1.0);
+        let mut buf = vec![0.5f32; 400];
+        dev.process(&[1.0, 0.0], &mut buf);
+        assert!(buf.iter().all(|s| (s - 0.5).abs() < 1e-6));
+    }
+
+    fn instrument_song(vol_param: f32) -> Song {
+        let (_, r) = ClapDevice::load(Path::new(&synth_path()), SYNTH, 1000).unwrap();
+        let mut song = Song { bpm: 60.0, lpb: 1, tpl: 4, ..Song::default() };
+        let mut inst = Instrument::new("synth");
+        let mut spec = DeviceSpec::from_plugin(r);
+        spec.params = vec![vol_param];
+        inst.plugin = Some(spec);
+        song.instruments.push(inst);
+        let pat = Arc::make_mut(&mut song.patterns[0]);
+        let n = &mut pat.line_mut(0, 0).notes[0];
+        n.note = 57;
+        n.instrument = 0;
+        pat.line_mut(0, 2).notes[0].note = trakr_core::NOTE_OFF;
+        song
+    }
+
+    fn render_instrument(song: Song, frames: usize) -> Vec<f32> {
+        let mut host = ClapHost::with_paths(vec![]);
+        let (mut engine, mut h) = trakr_engine::create(1000);
+        let p = song.instruments[0].plugin.as_ref().unwrap().plugin.clone().unwrap();
+        let dev = host.load(&p.path, &p.plugin_id, 1000).unwrap().0;
+        h.send(Command::SetSong(Arc::new(song)));
+        h.send(Command::SetInstrumentPlugin { instrument: 0, device: Some(dev) });
+        h.send(Command::Play { seq_pos: 0, line: 0, loop_pattern: false });
+        let mut out = vec![0.0; frames * 2];
+        for c in out.chunks_mut(2 * 100) {
+            engine.render(c);
+            h.collect_garbage();
+        }
+        out.chunks_exact(2).map(|f| f[0]).collect()
+    }
+
+    #[test]
+    fn the_sequencer_plays_an_instrument_plugin_and_releases_it() {
+        let out = render_instrument(instrument_song(0.8), 4000);
+        assert!(peak(&out[100..1900]) > 0.05, "the note sounds: {}", peak(&out[100..1900]));
+        assert!(
+            peak(&out[2100..4000]) < 1e-6,
+            "the note-off at line 2 silences it: {}",
+            peak(&out[2100..4000])
+        );
+        let quiet = render_instrument(instrument_song(0.2), 1500);
+        let loud = render_instrument(instrument_song(0.8), 1500);
+        assert!(
+            (peak(&quiet) / peak(&loud) - 0.25).abs() < 0.03,
+            "plugin parameters come from the instrument"
+        );
+        // stopping releases held notes
+        let (mut engine, mut h) = trakr_engine::create(1000);
+        let mut host = ClapHost::with_paths(vec![]);
+        let song = instrument_song(0.8);
+        let p = song.instruments[0].plugin.as_ref().unwrap().plugin.clone().unwrap();
+        h.send(Command::SetSong(Arc::new(song)));
+        h.send(Command::SetInstrumentPlugin {
+            instrument: 0,
+            device: Some(host.load(&p.path, &p.plugin_id, 1000).unwrap().0),
+        });
+        h.send(Command::Play { seq_pos: 0, line: 0, loop_pattern: false });
+        let mut buf = vec![0.0; 400];
+        engine.render(&mut buf);
+        h.send(Command::Stop);
+        engine.render(&mut buf);
+        engine.render(&mut buf);
+        assert!(peak(&buf) < 1e-6, "Stop ends plugin notes");
+        // removing the plugin drops the device through the garbage queue
+        h.send(Command::SetInstrumentPlugin { instrument: 0, device: None });
+        engine.render(&mut buf);
+        h.collect_garbage();
+    }
+
+    #[test]
+    fn live_notes_reach_the_instrument_on_their_track() {
+        let (mut engine, mut h) = trakr_engine::create(1000);
+        let mut host = ClapHost::with_paths(vec![]);
+        let mut song = instrument_song(0.8);
+        song.patterns = vec![Arc::new(trakr_core::Pattern::new(8, 1))];
+        let p = song.instruments[0].plugin.as_ref().unwrap().plugin.clone().unwrap();
+        h.send(Command::SetSong(Arc::new(song)));
+        h.send(Command::SetInstrumentPlugin {
+            instrument: 0,
+            device: Some(host.load(&p.path, &p.plugin_id, 1000).unwrap().0),
+        });
+        h.send(Command::NoteOn { track: 0, instrument: 0, note: 57, volume: 1.0 });
+        let mut buf = vec![0.0; 800];
+        engine.render(&mut buf);
+        assert!(peak(&buf[200..]) > 0.05, "a live note sounds");
+        h.send(Command::NoteOff { track: 0, note: 57 });
+        engine.render(&mut buf);
+        engine.render(&mut buf);
+        assert!(peak(&buf) < 1e-6);
     }
 }

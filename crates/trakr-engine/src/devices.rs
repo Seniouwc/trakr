@@ -27,6 +27,17 @@ pub trait Device: Send {
 
     /// Called before each block with the last note played on this track and its velocity (0..1).
     fn set_track_note(&mut self, _note: u8, _velocity: f32) {}
+
+    /// Instrument plugins: start a note (velocity 0..1). Effects ignore it.
+    fn note_on(&mut self, _key: u8, _velocity: f32) {}
+
+    fn note_off(&mut self, _key: u8) {}
+
+    /// True for devices that generate sound from notes; `process` then fills the buffer instead of
+    /// filtering it.
+    fn is_instrument(&self) -> bool {
+        false
+    }
 }
 
 /// Build a device for a catalogue id at the engine's sample rate.

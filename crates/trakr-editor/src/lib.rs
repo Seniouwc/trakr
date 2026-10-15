@@ -100,7 +100,10 @@ fn chain_key(spec: &trakr_core::DeviceSpec, instruments: &[trakr_core::Instrumen
             }
             None => spec.id.clone(),
         },
-        _ => spec.id.clone(),
+        _ => match &spec.plugin {
+            Some(p) => format!("{}\u{1}{}", spec.id, p.path),
+            None => spec.id.clone(),
+        },
     }
 }
 
@@ -220,6 +223,8 @@ pub struct Editor {
     last_key: Option<&'static str>,
     /// Device ids last sent to the engine per track, so only changed chains are rebuilt.
     sent_chains: Vec<Vec<String>>,
+    /// Per instrument: what its plugin looked like when last sent to the engine.
+    sent_inst_plugins: Vec<String>,
     plugin_host: Option<Box<dyn trakr_engine::PluginHost>>,
     plugin_list: Vec<trakr_core::PluginInfo>,
     plugin_errors: Vec<String>,
@@ -322,6 +327,7 @@ impl Editor {
             needs_sync: false,
             last_key: None,
             sent_chains: Vec::new(),
+            sent_inst_plugins: Vec::new(),
             midi_backend: None,
             midi_in: None,
             midi_buf: Vec::new(),
@@ -403,7 +409,7 @@ impl Editor {
             self.needs_sync = false;
             return;
         }
-        let synced = self.sync_chains();
+        let synced = self.sync_chains() && self.sync_instrument_plugins();
         if let Some(err) = self.plugin_errors.drain(..).next() {
             self.status = err;
         }
@@ -432,6 +438,39 @@ impl Editor {
             self.seq_pos = seq;
             self.cursor.line = line.min(self.lines_in_pattern().saturating_sub(1));
         }
+    }
+
+    /// Send changed instrument plugins to the engine. Returns false if the command queue was full.
+    fn sync_instrument_plugins(&mut self) -> bool {
+        let Some(e) = &mut self.engine else { return true };
+        let rate = e.sample_rate;
+        let n = self.song.instruments.len().min(255);
+        let want: Vec<String> = (0..n.max(self.sent_inst_plugins.len()))
+            .map(|i| match self.song.instruments.get(i).and_then(|inst| inst.plugin.as_ref()) {
+                Some(spec) if i < 255 => chain_key(spec, &self.song.instruments),
+                _ => String::new(),
+            })
+            .collect();
+        self.sent_inst_plugins.resize(want.len(), String::new());
+        for (i, key) in want.iter().enumerate() {
+            if self.sent_inst_plugins[i] == *key {
+                continue;
+            }
+            let device = self.song.instruments.get(i).and_then(|inst| inst.plugin.as_ref()).map(|spec| {
+                make_device(
+                    &mut self.plugin_host,
+                    spec,
+                    &self.song.instruments,
+                    rate,
+                    &mut self.plugin_errors,
+                )
+            });
+            if !e.send(Command::SetInstrumentPlugin { instrument: i, device }) {
+                return false;
+            }
+            self.sent_inst_plugins[i] = key.clone();
+        }
+        true
     }
 
     /// Rebuild the engine's device chain for every track whose device list changed. Returns false if

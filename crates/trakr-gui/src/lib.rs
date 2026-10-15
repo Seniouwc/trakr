@@ -13,6 +13,7 @@ mod mixer;
 mod modulation_view;
 mod panels;
 mod phrases_view;
+mod plugin_view;
 mod prefs_view;
 mod sample_view;
 mod scripts_view;
@@ -61,6 +62,7 @@ pub enum SampleTab {
     Sample,
     Filter,
     Modulation,
+    Plugin,
     Env(envelopes::EnvKind),
 }
 

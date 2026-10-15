@@ -1213,6 +1213,7 @@ struct FakeHost {
 impl trakr_engine::PluginHost for FakeHost {
     fn scan(&mut self) -> Vec<trakr_core::PluginInfo> {
         vec![trakr_core::PluginInfo {
+            instrument: false,
             path: "/fake/gain.clap".into(),
             plugin_id: "fake.gain".into(),
             name: "Fake Gain".into(),
@@ -1745,4 +1746,112 @@ fn switching_the_audio_output_moves_the_song_and_chains_to_the_new_engine() {
     app.audio_apply();
     assert!(app.status.contains("audio not changed"), "{}", app.status);
     assert_eq!(app.audio_info().unwrap().sample_rate, 48_000);
+}
+
+struct FakeSynth {
+    on: bool,
+}
+
+impl trakr_engine::Device for FakeSynth {
+    fn id(&self) -> &'static str {
+        "clap"
+    }
+    fn is_instrument(&self) -> bool {
+        true
+    }
+    fn note_on(&mut self, _key: u8, _velocity: f32) {
+        self.on = true;
+    }
+    fn note_off(&mut self, _key: u8) {
+        self.on = false;
+    }
+    fn process(&mut self, params: &[f32], buf: &mut [f32]) {
+        let level = params.first().copied().unwrap_or(0.5);
+        buf.fill(if self.on { level } else { 0.0 });
+    }
+}
+
+struct SynthHost;
+
+impl trakr_engine::PluginHost for SynthHost {
+    fn scan(&mut self) -> Vec<trakr_core::PluginInfo> {
+        vec![trakr_core::PluginInfo {
+            instrument: true,
+            path: "/fake/synth.clap".into(),
+            plugin_id: "fake.synth".into(),
+            name: "Fake Synth".into(),
+            vendor: "v".into(),
+        }]
+    }
+    fn load(
+        &mut self,
+        path: &str,
+        plugin_id: &str,
+        _rate: u32,
+    ) -> Result<(Box<dyn trakr_engine::Device>, trakr_core::PluginRef), String> {
+        let level = trakr_core::PluginParam {
+            id: 1,
+            name: "Level".into(),
+            min: 0.0,
+            max: 1.0,
+            default: 0.5,
+            stepped: false,
+        };
+        Ok((
+            Box::new(FakeSynth { on: false }),
+            trakr_core::PluginRef {
+                path: path.into(),
+                plugin_id: plugin_id.into(),
+                name: "Fake Synth".into(),
+                params: vec![level],
+            },
+        ))
+    }
+}
+
+#[test]
+fn instrument_plugins_play_notes_save_and_render() {
+    let (mut engine, handle) = trakr_engine::create(44_100);
+    let mut e = Editor::new(Song::demo(), None, Some(handle));
+    e.set_plugin_host(Box::new(SynthHost));
+    e.scan_plugins();
+    let info = e.plugins()[0].clone();
+    assert!(info.instrument);
+    // instruments are not effects
+    assert!(!e.device_add_plugin(0, &info));
+    assert!(e.status.contains("instrument"), "{}", e.status);
+    assert!(e.song.tracks[0].devices.is_empty());
+    // ... and the instrument panel takes them
+    assert!(e.instrument_set_plugin(&info));
+    let inst = e.instrument as usize;
+    assert_eq!(e.song.instruments[inst].plugin.as_ref().unwrap().params, vec![0.5]);
+    e.instrument_plugin_set_param(0, 9.0);
+    assert_eq!(e.song.instruments[inst].plugin.as_ref().unwrap().params, vec![1.0], "clamped to the range");
+    e.instrument_plugin_set_param(0, f32::NAN);
+    assert_eq!(e.song.instruments[inst].plugin.as_ref().unwrap().params, vec![1.0]);
+    e.instrument_plugin_set_param(0, 0.25);
+    // a live note reaches the plugin on the cursor's track
+    e.preview_note(48);
+    e.tick();
+    let mut out = vec![0.0f32; 2048];
+    engine.render(&mut out);
+    let peak = out[1000..].iter().fold(0.0f32, |m, s| m.max(s.abs()));
+    assert!((peak - 0.25).abs() < 0.01, "plugin level 0.25 expected, got {peak}");
+    // the plugin is part of the saved song and survives a roundtrip
+    let json = serde_json::to_string(&*e.song).unwrap();
+    let back: Song = serde_json::from_str(&json).unwrap();
+    assert_eq!(
+        back.instruments[inst].plugin.as_ref().unwrap().plugin.as_ref().unwrap().plugin_id,
+        "fake.synth"
+    );
+    // offline rendering uses it too: the demo's notes on instrument 0 now come from the plugin
+    e.instrument = 0;
+    e.instrument_set_plugin(&info);
+    let rendered = e.render();
+    assert!(rendered.iter().any(|s| s.abs() > 0.05), "the plugin sounds in the render");
+    // undo brings the samples back, and clearing works
+    e.instrument_clear_plugin();
+    assert!(e.song.instruments[0].plugin.is_none());
+    e.undo();
+    assert!(e.song.instruments[0].plugin.is_some());
 }

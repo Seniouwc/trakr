@@ -510,6 +510,10 @@ pub struct MidiOut {
 pub struct Instrument {
     pub name: String,
     pub samples: Vec<Sample>,
+    /// A hosted instrument plugin. When set, notes of this instrument play the plugin (samples are
+    /// kept but not used).
+    #[serde(default)]
+    pub plugin: Option<crate::track::DeviceSpec>,
     pub volume: f32,
     /// Volume multiplier over note time.
     #[serde(default)]
@@ -564,6 +568,7 @@ impl Instrument {
         Self {
             name: name.into(),
             samples: Vec::new(),
+            plugin: None,
             volume: 1.0,
             volume_env: Arc::default(),
             pan_env: Arc::default(),

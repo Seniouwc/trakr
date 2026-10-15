@@ -66,7 +66,20 @@ const LIVE_COL: usize = MAX_NOTE_COLUMNS;
 pub enum Garbage {
     Song(Arc<Song>),
     Chain(Vec<Box<dyn Device>>),
+    Device(Box<dyn Device>),
     Phrase(Arc<Phrase>),
+}
+
+const MAX_INSTRUMENT_PLUGINS: usize = 255;
+const MAX_PLUGIN_NOTES: usize = 256;
+
+/// A note held on an instrument plugin.
+#[derive(Clone, Copy)]
+struct PluginNote {
+    inst: u8,
+    track: usize,
+    column: usize,
+    key: u8,
 }
 
 /// A note sent to the MIDI output that has not been released yet.
@@ -142,6 +155,12 @@ pub enum Command {
         last: u16,
     },
     Stop,
+    /// Install (or remove) the instrument plugin for one instrument slot. The device receives that
+    /// instrument's notes; its audio joins the track the notes were played on.
+    SetInstrumentPlugin {
+        instrument: usize,
+        device: Option<Box<dyn Device>>,
+    },
     /// Pitch wheel: offset in semitones applied to every sounding voice (0 = centred).
     PitchBend(f32),
     /// When true, playback stops (voices keep ringing out) once the sequence ends instead of looping.
@@ -337,6 +356,10 @@ pub fn create(sample_rate: u32) -> (Engine, EngineHandle) {
         pending_break: None,
         stop_at_end: false,
         bend: 0.0,
+        inst_plugins: (0..MAX_INSTRUMENT_PLUGINS).map(|_| None).collect(),
+        plugin_track: vec![0; MAX_INSTRUMENT_PLUGINS],
+        plugin_notes: Vec::with_capacity(MAX_PLUGIN_NOTES),
+        plugin_buf: vec![0.0; BLOCK * 2],
         tick: 0,
         frames_to_tick: 0.0,
         chains: (0..MAX_TRACKS).map(|_| Vec::new()).collect(),
@@ -397,6 +420,11 @@ pub struct Engine {
     pending_break: Option<u16>,
     stop_at_end: bool,
     bend: f32,
+    /// Instrument plugins by instrument index, the track each last played on, and their held notes.
+    inst_plugins: Vec<Option<Box<dyn Device>>>,
+    plugin_track: Vec<usize>,
+    plugin_notes: Vec<PluginNote>,
+    plugin_buf: Vec<f32>,
     /// Tick index within the current line and frames until the next tick.
     tick: u8,
     frames_to_tick: f64,
@@ -513,6 +541,7 @@ impl Engine {
                     0.0,
                 );
             }
+            self.render_plugins(done, chunk, frames);
             self.voices.retain(|v| v.alive());
             if self.playing {
                 self.frames_to_line -= chunk as f64;
@@ -935,6 +964,7 @@ impl Engine {
                         self.start_phrase(e.track, e.column, inst, phrase, note, vol, pan)
                     }
                     EventKind::Release => {
+                        self.release_plugin(|n| n.track == e.track && n.column == e.column);
                         self.release_midi(|n| n.track == e.track && n.column == e.column);
                         for v in self.voices.iter_mut().filter(|v| v.track == e.track && v.column == e.column)
                         {
@@ -990,6 +1020,19 @@ impl Engine {
                         std::mem::forget(chain);
                     }
                 }
+                Command::SetInstrumentPlugin { instrument, device } => {
+                    if let Some(slot) = self.inst_plugins.get_mut(instrument) {
+                        self.plugin_notes.retain(|n| n.inst as usize != instrument);
+                        let old = std::mem::replace(slot, device);
+                        if let Some(old) = old {
+                            if let Err(rtrb::PushError::Full(old)) = self.garbage.push(Garbage::Device(old)) {
+                                std::mem::forget(old);
+                            }
+                        }
+                    } else {
+                        std::mem::forget(device);
+                    }
+                }
                 Command::Play { seq_pos, line, loop_pattern } => {
                     self.bpm = self.song.bpm;
                     self.lpb = self.song.lpb;
@@ -1029,6 +1072,7 @@ impl Engine {
                 Command::Stop => {
                     self.block = None;
                     self.playing = false;
+                    self.release_plugin(|_| true);
                     self.voices.clear();
                     self.events.clear();
                     self.clear_phrases();
@@ -1056,6 +1100,7 @@ impl Engine {
                     }
                 }
                 Command::NoteOff { track, note: _ } => {
+                    self.release_plugin(|n| n.track == track);
                     for v in self.voices.iter_mut().filter(|v| v.track == track) {
                         v.release();
                     }
@@ -1116,6 +1161,13 @@ impl Engine {
                 self.midi_note_on(track, column, m, note, vol);
             }
         }
+        if instrument.plugin.is_some() {
+            if song.tracks.get(track).is_some_and(|t| t.mute == MuteState::Off) {
+                return;
+            }
+            self.plugin_note_on(track, column, inst, note, vol);
+            return;
+        }
         let velocity = (vol.clamp(0.0, 1.0) * 127.0).round() as u8;
         let Some(sample) = instrument.sample_for_velocity(note, velocity) else { return };
         if song.tracks.get(track).is_some_and(|t| t.mute == MuteState::Off) {
@@ -1134,6 +1186,63 @@ impl Engine {
             self.voices.remove(0);
         }
         self.voices.push(Voice::new(track, column, instrument, sample, note, vol, pan, opts));
+    }
+
+    /// Run every installed instrument plugin for this chunk and add its output to the track it plays on.
+    fn render_plugins(&mut self, done: usize, chunk: usize, frames: usize) {
+        let song = self.song.clone(); // refcount bump only
+        for i in 0..self.inst_plugins.len() {
+            let Some(dev) = self.inst_plugins[i].as_mut() else { continue };
+            let Some(spec) = song.instruments.get(i).and_then(|inst| inst.plugin.as_ref()) else { continue };
+            let t = self.plugin_track[i].min(MAX_TRACKS - 1);
+            let buf = &mut self.plugin_buf[..chunk * 2];
+            buf.fill(0.0);
+            dev.process(&spec.params, buf);
+            let base = t * BLOCK * 2;
+            if !self.track_used[t] {
+                self.track_bufs[base..base + frames * 2].fill(0.0);
+                self.track_used[t] = true;
+            }
+            let out = &mut self.track_bufs[base + done * 2..base + (done + chunk) * 2];
+            for (o, s) in out.iter_mut().zip(buf.iter()) {
+                *o += if s.is_finite() { *s } else { 0.0 };
+            }
+        }
+    }
+
+    /// Start a note on the instrument's plugin; the previous note in the same column ends first.
+    fn plugin_note_on(&mut self, track: usize, column: usize, inst: u8, note: u8, vol: f32) {
+        let i = inst as usize;
+        if self.inst_plugins.get(i).and_then(|d| d.as_ref()).is_none() {
+            return;
+        }
+        self.release_plugin(|n| n.inst == inst && n.track == track && n.column == column);
+        if self.plugin_notes.len() >= MAX_PLUGIN_NOTES {
+            let old = self.plugin_notes.remove(0);
+            if let Some(Some(d)) = self.inst_plugins.get_mut(old.inst as usize) {
+                d.note_off(old.key);
+            }
+        }
+        if let Some(Some(d)) = self.inst_plugins.get_mut(i) {
+            d.note_on(note, vol.clamp(0.0, 1.0));
+        }
+        self.plugin_track[i] = track.min(MAX_TRACKS - 1);
+        self.plugin_notes.push(PluginNote { inst, track, column, key: note });
+    }
+
+    /// End the plugin notes `which` selects.
+    fn release_plugin(&mut self, which: impl Fn(&PluginNote) -> bool) {
+        let mut i = 0;
+        while i < self.plugin_notes.len() {
+            if which(&self.plugin_notes[i]) {
+                let n = self.plugin_notes.swap_remove(i);
+                if let Some(Some(d)) = self.inst_plugins.get_mut(n.inst as usize) {
+                    d.note_off(n.key);
+                }
+            } else {
+                i += 1;
+            }
+        }
     }
 
     fn midi_emit(&mut self, msg: MidiOutMsg) {
@@ -1398,6 +1507,7 @@ impl Engine {
                     this.fx_pan[ti] = Some((fx.amount as f32 / 128.0 - 1.0).clamp(-1.0, 1.0))
                 }
                 b"0X" => {
+                    this.release_plugin(|n| n.track == ti);
                     for v in this.voices.iter_mut().filter(|v| v.track == ti) {
                         v.cut();
                     }
@@ -1421,6 +1531,7 @@ impl Engine {
                     if at > 0.0 {
                         self.schedule(at, ti, ci, EventKind::Release);
                     } else {
+                        self.release_plugin(|n| n.track == ti && n.column == ci);
                         self.release_midi(|n| n.track == ti && n.column == ci);
                         for v in self.voices.iter_mut().filter(|v| v.track == ti && v.column == ci) {
                             v.release();
@@ -1572,6 +1683,17 @@ pub fn render_song_with_chains(
     max_seconds: f32,
     chains: Vec<Vec<Box<dyn Device>>>,
 ) -> Vec<f32> {
+    render_song_with_plugins(song, sample_rate, max_seconds, chains, Vec::new())
+}
+
+/// Like [`render_song_with_chains`] with instrument plugin devices too, as (instrument index, device).
+pub fn render_song_with_plugins(
+    song: Arc<Song>,
+    sample_rate: u32,
+    max_seconds: f32,
+    chains: Vec<Vec<Box<dyn Device>>>,
+    instruments: Vec<(usize, Box<dyn Device>)>,
+) -> Vec<f32> {
     let song = if song.loop_range.is_some() {
         let mut s = (*song).clone();
         s.loop_range = None; // an offline render plays the whole song once
@@ -1585,6 +1707,9 @@ pub fn render_song_with_chains(
         if !chain.is_empty() {
             handle.send(Command::SetChain { track, chain });
         }
+    }
+    for (instrument, device) in instruments {
+        handle.send(Command::SetInstrumentPlugin { instrument, device: Some(device) });
     }
     handle.send(Command::SetStopAtEnd(true));
     handle.send(Command::Play { seq_pos: 0, line: 0, loop_pattern: false });

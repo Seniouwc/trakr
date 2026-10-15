@@ -66,6 +66,8 @@ pub struct PluginRef {
 /// A plugin found by scanning, before it is loaded.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PluginInfo {
+    /// True for instrument plugins (they make sound from notes instead of processing audio).
+    pub instrument: bool,
     pub path: String,
     pub plugin_id: String,
     pub name: String,

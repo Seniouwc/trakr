@@ -44,10 +44,12 @@ impl GuiApp {
                         self.editor.scan_plugins();
                     }
                     ui.separator();
-                    if self.editor.plugins().is_empty() {
-                        ui.weak("None found yet (CLAP effects only)");
+                    let effects: Vec<_> =
+                        self.editor.plugins().iter().filter(|p| !p.instrument).cloned().collect();
+                    if effects.is_empty() {
+                        ui.weak("No effects found yet (instruments go in the instrument panel)");
                     }
-                    for p in self.editor.plugins().to_vec() {
+                    for p in effects {
                         if ui.selectable_label(false, format!("{} ({})", p.name, p.vendor)).clicked() {
                             self.editor.device_add_plugin(track, &p);
                         }

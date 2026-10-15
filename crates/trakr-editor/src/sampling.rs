@@ -243,7 +243,8 @@ impl Editor {
                     .collect()
             })
             .collect();
-        trakr_engine::render_song_with_chains(self.song.clone(), rate, RENDER_MAX_SECONDS, chains)
+        let inst = self.instrument_devices_for(rate);
+        trakr_engine::render_song_with_plugins(self.song.clone(), rate, RENDER_MAX_SECONDS, chains, inst)
     }
 
     /// Render the whole song to a new stereo instrument (bounce), e.g. for resampling it further.
@@ -262,6 +263,24 @@ impl Editor {
         self.sample = 0;
         self.status = format!("rendered {secs:.1}s to instrument {:02X}", self.instrument);
         self.sync();
+    }
+
+    /// Instrument plugin devices for an offline render, as (instrument index, device).
+    fn instrument_devices_for(&mut self, rate: u32) -> Vec<(usize, Box<dyn trakr_engine::Device>)> {
+        let mut out = Vec::new();
+        for i in 0..self.song.instruments.len().min(255) {
+            if let Some(spec) = self.song.instruments[i].plugin.clone() {
+                let dev = make_device(
+                    &mut self.plugin_host,
+                    &spec,
+                    &self.song.instruments,
+                    rate,
+                    &mut self.plugin_errors,
+                );
+                out.push((i, dev));
+            }
+        }
+        out
     }
 
     /// Chains with plugins loaded, one per track.
@@ -289,7 +308,8 @@ impl Editor {
     /// Render `song` offline through the plugin-aware chains.
     fn render_song_copy(&mut self, song: Song, rate: u32) -> Vec<f32> {
         let chains = self.chains_for(rate);
-        trakr_engine::render_song_with_chains(Arc::new(song), rate, RENDER_MAX_SECONDS, chains)
+        let inst = self.instrument_devices_for(rate);
+        trakr_engine::render_song_with_plugins(Arc::new(song), rate, RENDER_MAX_SECONDS, chains, inst)
     }
 
     /// Render each sequencer track on its own (through its group, sends and master) into
