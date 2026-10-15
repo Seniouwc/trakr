@@ -1,6 +1,6 @@
 # trakr
 
-Open-source tracker DAW for the terminal, written in Rust, aiming for complete feature parity with Renoise. Linux first.
+Open-source tracker DAW written in Rust, aiming for complete feature parity with Renoise. Linux first.
 Native project format `.trkr`; imports `.xrns`.
 
 ## Commands
@@ -36,11 +36,10 @@ New commands go into `trakr-editor::Action` (label + shortcut) so menus, keys an
 | `trakr-clap` | Hosts local CLAP effect plugins (clap-sys + libloading); implements `trakr_engine::PluginHost`. `trakr-test-plugin` is a tiny CLAP effect used by its tests. |
 | `trakr-osc` | UDP OSC receiver (no deps): `parse`, `OscServer`. The editor maps addresses to commands (`osc_ops.rs`). |
 | `trakr-editor` | Frontend-neutral `Editor`: cursor, cell entry, transport keys, save. Own `KeyEvent` type; no UI deps. All editing behavior lives here. |
-| `trakr-tui` | ratatui frontend: key translation + rendering only. |
-| `trakr-gui` | egui/eframe frontend (default): key translation + painter-based grid. |
-| `trakr` | Binary: arg parsing (`--tui` selects the terminal UI, GUI otherwise), file loading, wires audio + frontend. |
+| `trakr-gui` | egui/eframe frontend: key translation + painter-based grid. |
+| `trakr` | Binary: arg parsing, file loading, wires audio + the GUI. |
 
-Dependency direction: core <- engine/format/xrns/script/osc <- editor <- tui/gui <- trakr. Never make core depend on anything heavier than serde.
+Dependency direction: core <- engine/format/xrns/script/osc <- editor <- gui <- trakr. Never make core depend on anything heavier than serde.
 
 ## Plugins
 
@@ -60,8 +59,8 @@ Dependency direction: core <- engine/format/xrns/script/osc <- editor <- tui/gui
 
 - UI to engine sync sends an `Arc<Song>` snapshot on every edit (`Editor::sync`), cheap because `Song.patterns` are `Arc<Pattern>` (an edit clones only the touched pattern). Undo is snapshot-based (`Snapshot`, 500 deep). Incremental edit commands would need dense or preallocated pattern storage in the engine (BTreeMap inserts allocate); not done.
 - Engine ignores: special volume/panning column commands, effects on delayed notes. NNA (cut/note-off/continue) detaches old voices from their column (`Voice::detach`). `Song::showcase()` is the default song for the app; `Song::demo()` stays minimal for tests. Implemented: delay column, `ZT ZL ZB 0S 0B 0C 0Q 0R 0U 0D 0G 0V 0T 0A 0W 0I 0O` (table in `trakr_core::effects`), volume/pan column on running notes, instrument volume/pan/pitch envelopes, all loop modes, track mute/solo/off, master volume, meters, song loop range. Per-tick effects run in `Voice::tick`; LFOs and envelopes run in real time in `Voice::retarget`. Mixing: voices write into one stereo bus per track (max 64, `MAX_METER_TRACKS`); sequencer tracks feed their group (`Track.group`) or the master and any send tracks (`Track.sends`); groups run deepest-first, then sends, then the master. Editor track insert/remove remaps stored indices (`shift_track_refs`). Each track's device chain (`devices.rs`, built on the UI thread via `devices::create_or_passthrough` and sent as `Command::SetChain`) runs on its bus, then the fader (volume/pan/mute/solo, ramped per block) sums into the master bus, which runs the master chain and master volume. Device parameters are read from the `Song` snapshot each block; pattern automation overrides them per block. `Editor::sync_chains` diffs device id lists per track and only rebuilds changed chains. Voices hold `Arc` clones of sample data and envelopes: dropping the last reference on the audio thread frees there (rare: old undo snapshots normally keep them alive).
-- No song loop range. Sample editing lives in `trakr-core::Sample` (range ops, slices, resample) with undo via `Editor::edit_sample`; no resampling on import, no sample view in the TUI. Recording goes through `trakr_engine::InputRecorder` (cpal impl behind the `audio` feature, injected by the binary via `Editor::set_recorder_factory`).
-- TUI keymap is mine, not Renoise's, apart from the tracker-style piano layout, F1/F2 octave, backtick note-off. Terminals cannot report key release or distinguish left/right modifiers; design around that.
+- No song loop range. Sample editing lives in `trakr-core::Sample` (range ops, slices, resample) with undo via `Editor::edit_sample`; no resampling on import,. Recording goes through `trakr_engine::InputRecorder` (cpal impl behind the `audio` feature, injected by the binary via `Editor::set_recorder_factory`).
+- The keymap is mine, not Renoise's, apart from the tracker-style piano layout, F1/F2 octave, backtick note-off. Key release is not reported to the editor; design around that.
 
 ## Robustness tests
 
@@ -77,7 +76,7 @@ Dependency direction: core <- engine/format/xrns/script/osc <- editor <- tui/gui
 ## Conventions
 
 - Rust 2021, `cargo fmt` (max_width 110), clippy clean.
-- Errors: `thiserror` in libraries, `anyhow` only in binaries/TUI glue.
+- Errors: `thiserror` in libraries, `anyhow` only in binaries and the GUI glue.
 - Internal note numbering: 0..=119 = C-0..B-9, 48 = C-4 = MIDI 60, 120 = OFF, 121 = empty. Instrument/volume/pan empty = 0xFF; delay empty = 0.
 - Effect ids are two ASCII bytes (`*b"0A"`), `[0,0]` = empty.
 - Prefer small, reviewable commits that keep `cargo test --workspace` green.

@@ -1,8 +1,8 @@
 # trakr
 
-An open source tracker DAW written in Rust, with a native window (egui) and a terminal mode (ratatui) in one binary. The goal is a free, Linux-first alternative to Renoise with full feature parity.
+An open source tracker DAW written in Rust, with a native window (egui). The goal is a free, Linux-first alternative to Renoise with full feature parity.
 
-**Status: early scaffold (v0.0.1).** The core model, a basic audio engine, a terminal UI, a native project format and a minimal XRNS importer work. Most sequencer effects, DSP, automation and plugin hosting are not implemented yet. See the [roadmap](docs/ROADMAP.md), the [parity checklist](docs/PARITY.md) and the scored [parity report](docs/PARITY_REPORT.md).
+**Status: early scaffold (v0.0.1).** The core model, a basic audio engine, a native window UI, a native project format and a minimal XRNS importer work. Most sequencer effects, DSP, automation and plugin hosting are not implemented yet. See the [roadmap](docs/ROADMAP.md), the [parity checklist](docs/PARITY.md) and the scored [parity report](docs/PARITY_REPORT.md).
 
 ## Goals
 
@@ -43,7 +43,6 @@ Requirements: a recent stable Rust toolchain (1.81+) and ALSA headers on Linux (
 
 ```
 cargo run -p trakr                 # native window, built-in demo song
-cargo run -p trakr -- --tui        # same, in the terminal
 cargo run -p trakr -- song.trkr    # open a native project
 cargo run -p trakr -- song.xrns    # import an XRNS file
 cargo run -p trakr -- song.mod     # import a ProTracker module
@@ -80,9 +79,8 @@ The keymap is the same in both frontends and can be changed in Edit > Preference
 | `trakr-format` | Native `.trkr` reader/writer |
 | `trakr-xrns` | `.xrns` importer |
 | `trakr-editor` | Frontend-neutral editor state, cursor and input handling |
-| `trakr-tui` | ratatui frontend |
 | `trakr-gui` | egui/eframe frontend |
-| `trakr` | Binary; GUI by default, `--tui` for terminal |
+| `trakr` | Binary |
 
 ## Development
 

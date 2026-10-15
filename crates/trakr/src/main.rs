@@ -3,13 +3,11 @@ use std::path::PathBuf;
 use trakr_core::Song;
 
 fn main() -> Result<()> {
-    let mut tui = false;
     let mut arg = None;
     for a in std::env::args().skip(1) {
         match a.as_str() {
-            "--tui" => tui = true,
             "-h" | "--help" => {
-                println!("usage: trakr [--tui] [song.trkr | song.xrns]\n  --tui   run in the terminal instead of the native window");
+                println!("usage: trakr [song.trkr | song.xrns | song.mod | song.s3m | song.xm]");
                 return Ok(());
             }
             _ if a.starts_with('-') => anyhow::bail!("unknown option: {a}"),
@@ -53,7 +51,7 @@ fn main() -> Result<()> {
     if !editor.midi_ports().is_empty() {
         editor.midi_connect(0);
     }
-    let result = if tui { trakr_tui::run(editor) } else { trakr_gui::run(editor) };
+    let result = trakr_gui::run(editor);
     drop(audio);
     result
 }

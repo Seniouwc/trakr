@@ -1,5 +1,5 @@
 //! Frontend-neutral editor: cursor, cell entry, selection, undo, transport and song operations.
-//! Both the TUI and the GUI are thin renderers over [`Editor`].
+//! The GUI is a thin renderer over [`Editor`].
 
 mod action;
 mod edit_tools;

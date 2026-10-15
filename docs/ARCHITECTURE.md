@@ -3,7 +3,7 @@
 ## Crate graph
 
 ```
-trakr (bin) -> trakr-tui -> trakr-engine -> trakr-core
+trakr (bin) -> trakr-gui -> trakr-editor -> trakr-engine -> trakr-core
             -> trakr-xrns -----------------> trakr-core
             -> trakr-format ---------------> trakr-core
 ```
@@ -37,4 +37,4 @@ trakr (bin) -> trakr-tui -> trakr-engine -> trakr-core
 
 - Patterns are sparse (`BTreeMap<u16, Line>` per track): memory stays small at 512 lines x many tracks, and serialization stays compact. Revisit if line iteration shows up in profiles.
 - Samples are `Arc<Vec<f32>>`, skipped by serde, stored as separate zip entries. Voices clone the Arc; dropping the last reference on the audio thread would free there, so sample deletion must go through the garbage path.
-- TUI is a thin client: all behavior that is not presentation belongs in core/engine so a future GUI can reuse it.
+- The GUI is a thin client: all behavior that is not presentation belongs in the editor/engine/core crates.

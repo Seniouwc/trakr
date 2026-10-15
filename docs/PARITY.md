@@ -40,7 +40,7 @@ Compiled from memory of Renoise 3.x behavior. Verify each item against the offic
 - [x] Import WAV, AIFF, FLAC, OGG, MP3 (symphonia); RX2/REX not required initially
 - [~] Reverse and ping-pong loops work; loop release, one-shot, sustain loop do not
 - [~] Interpolation modes: linear, cubic (Hermite, default) and 8-point sinc per instrument; no "none" mode, no oversampling, sinc does not low-pass when pitching up
-- [~] Sample editor (GUI): zoomable waveform, selection, cut/copy/paste/delete/crop, silence, fades, gain, normalize, invert, DC removal, reverse, mono/stereo, tape pitch shift, resample, WAV export (16/24/32f). Missing: loop crossfade, dither, spectrum view, draw-in-waveform editing, TUI sample view
+- [~] Sample editor (GUI): zoomable waveform, selection, cut/copy/paste/delete/crop, silence, fades, gain, normalize, invert, DC removal, reverse, mono/stereo, tape pitch shift, resample, WAV export (16/24/32f). Missing: loop crossfade, dither, spectrum view, draw-in-waveform editing
 - [~] Slice markers (manual, shift-click, even split) and split-to-keys work; beat-sync, time-stretch, transient detection do not
 - [~] Key zones and velocity zones (layers), per-sample volume/pan/tune, and per-instrument NNA (cut, note-off, continue) work; mute-groups do not
 - [~] Instrument volume, pan, pitch and cutoff envelopes (points, sustain hold, GUI editor) work. Per-note LFOs (up to four; volume, pan, pitch, cutoff; five shapes, fade-in), key tracking and velocity-to-cutoff work (LFOs tab). Resonance/drive modulation, stepper, random, envelope loops and fade-out do not
@@ -69,7 +69,7 @@ Compiled from memory of Renoise 3.x behavior. Verify each item against the offic
 - [~] Modulation devices: LFO (sine/tri/saw/square/random) and envelope follower, each routed to any parameter of a device in the same chain (control rate: one value per 512-frame block, applied one block later). Hydra (one oscillator, three targets) and a tempo-synced LFO exist. Missing: formula, key/velocity tracker, meta mixer, cross-track targets
 
 ## Plugins
-- [ ] CLAP hosting (instrument + effect), parameter automation, state save/load, GUI embedding (likely external window; TUI shows parameter list)
+- [ ] CLAP hosting (instrument + effect), parameter automation, state save/load, GUI embedding
 - [ ] VST3 hosting; VST2 only if legally and practically viable
 - [ ] LV2, LADSPA/DSSI
 - [ ] Out-of-process sandboxing, crash recovery, plugin scan cache, blocklist
@@ -94,8 +94,6 @@ Compiled from memory of Renoise 3.x behavior. Verify each item against the offic
 - [x] Backup of the previous file as `<name>.bak` when saving over it (Preferences)
 
 ## Application
-- [~] TUI pattern editor (single pattern view, cursor, edit mode)
-- [ ] TUI views: sequencer/matrix, mixer, instrument editor, sample editor, automation editor, plugin browser, disk browser, settings, help
 - [~] Configurable keymap (Preferences > Keys: set, clear, reset per action; conflicts and reserved typing keys refused; saved), themes (dark, light, high contrast plus Catppuccin Latte/Frappe/Macchiato/Mocha, Dracula, Gruvbox dark/light, Nord, Solarized dark/light, Tokyo Night, One Dark, Rose Pine, Everforest, Monokai, and your own JSON files in `<config>/themes`), interface scale, pattern font size, mouse support. Command palette (Ctrl-P). No Renoise-compatible preset (the real defaults are not documented here)
 - [~] Preferences storage (octave, edit step, follow, recent files, autosave interval in `~/.config/trakr/prefs.json`); window size, bottom panel and an optional reopen-last-song setting are saved
-- [ ] Optional GUI frontend reusing core/engine
+- [x] The terminal UI was dropped; the egui GUI is the only frontend
