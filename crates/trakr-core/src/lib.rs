@@ -16,7 +16,7 @@ pub mod sample_fx;
 pub mod song;
 pub mod track;
 
-pub use automation::{AutoTarget, Automation};
+pub use automation::{AutoCurve, AutoTarget, Automation};
 pub use device::{device_info, DeviceInfo, ParamInfo, DEVICES, MODULATORS};
 pub use envelope::Envelope;
 pub use instrument::{

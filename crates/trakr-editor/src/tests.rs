@@ -1965,3 +1965,38 @@ fn plugin_windows_state_and_parameter_changes_flow_back_into_the_song() {
     e.plugin_window_toggle(PluginKey::Device(0, 5));
     assert!(e.status.contains("not loaded"), "{}", e.status);
 }
+
+#[test]
+fn automation_range_tools_curves_and_tempo_lane() {
+    use trakr_core::{AutoCurve, AutoTarget};
+    let mut e = ed();
+    let tg = AutoTarget::TrackVolume;
+    e.automation_edit("t", 0, tg, |a| {
+        for (l, v) in [(0.0, 0.0), (2.0, 0.5), (4.0, 1.0)] {
+            a.set_point(l, v);
+        }
+    });
+    assert_eq!(e.automation_copy(0, tg, 0.0, 4.0), 3);
+    e.automation_paste(0, tg, 8.0);
+    assert_eq!(e.automation_lane(0, tg).unwrap().points.len(), 6);
+    e.automation_flip(0, tg, 0.0, 4.0);
+    assert_eq!(e.automation_lane(0, tg).unwrap().points[0], (0.0, 1.0));
+    e.automation_scale(0, tg, 0.0, 4.0, 0.5);
+    e.automation_shift(0, tg, 0.0, 4.0, 1.0);
+    assert_eq!(e.automation_lane(0, tg).unwrap().points[0].0, 1.0);
+    e.automation_set_curve(0, tg, AutoCurve::Smooth);
+    assert_eq!(e.automation_lane(0, tg).unwrap().curve, AutoCurve::Smooth);
+    e.automation_clear_range(0, tg, 0.0, 16.0);
+    assert!(e.automation_lane(0, tg).is_none(), "an emptied lane disappears");
+    e.undo();
+    assert!(e.automation_lane(0, tg).is_some());
+    // the tempo lane is an ordinary lane on track 0
+    e.automation_edit("t", 0, AutoTarget::Bpm, |a| {
+        a.set_point(0.0, AutoTarget::bpm_value(120.0));
+    });
+    assert!(e.automation_lane(0, AutoTarget::Bpm).is_some());
+    let mut empty = ed();
+    assert_eq!(empty.automation_copy(0, tg, 0.0, 4.0), 0);
+    empty.automation_paste(0, tg, 0.0);
+    assert!(empty.status.contains("nothing copied"));
+}

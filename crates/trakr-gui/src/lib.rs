@@ -96,6 +96,8 @@ pub(crate) struct GuiApp {
     pub env_span: f32,
     pub auto_target: Option<(usize, trakr_core::AutoTarget)>,
     pub auto_drag: Option<usize>,
+    /// Line range the automation range tools work on.
+    pub auto_range: (f32, f32),
     pub title: String,
     /// A text field had keyboard focus at the end of the last frame.
     pub text_editing: bool,
@@ -166,6 +168,7 @@ impl GuiApp {
             env_span: 2.0,
             auto_target: None,
             auto_drag: None,
+            auto_range: (0.0, 16.0),
             title: String::new(),
             text_editing: false,
             checked_recovery: false,

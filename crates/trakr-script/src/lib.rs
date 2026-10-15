@@ -847,59 +847,77 @@ fn install_mixer_api(lua: &Lua, state: &Shared, t: &Table) -> mlua::Result<()> {
     let st = state.clone();
     t.set(
         "automate",
-        lua.create_function(move |_, (p, tr, target, points): (i64, i64, String, Table)| {
-            let mut s = st.borrow_mut();
-            let tr = track_of(&s, tr)?;
-            let p = index(p, "pattern")?;
-            if p >= s.song.patterns.len() {
-                return Err(err(format!("pattern {p} does not exist")));
-            }
-            let target = match target.as_str() {
-                "volume" => AutoTarget::TrackVolume,
-                "pan" => AutoTarget::TrackPan,
-                other => {
-                    // "device:D:P" with 0-based device and parameter numbers
-                    let parts: Vec<&str> = other.split(':').collect();
-                    match parts.as_slice() {
-                        ["device", d, pr] => match (d.parse::<usize>(), pr.parse::<usize>()) {
-                            (Ok(device), Ok(param))
-                                if s.song.tracks[tr]
-                                    .devices
-                                    .get(device)
-                                    .is_some_and(|d| param < d.param_count()) =>
-                            {
-                                AutoTarget::Device { device, param }
-                            }
-                            _ => return Err(err(format!("no such device parameter in {other:?}"))),
-                        },
-                        _ => return Err(err("target must be \"volume\", \"pan\" or \"device:D:P\"")),
-                    }
+        lua.create_function(
+            move |_, (p, tr, target, points, curve): (i64, i64, String, Table, Option<String>)| {
+                let mut s = st.borrow_mut();
+                let tr = track_of(&s, tr)?;
+                let p = index(p, "pattern")?;
+                if p >= s.song.patterns.len() {
+                    return Err(err(format!("pattern {p} does not exist")));
                 }
-            };
-            let lines = s.song.patterns[p].number_of_lines as f32;
-            let mut lane = Automation::new(tr, target);
-            for pair in points.sequence_values::<Table>() {
-                let pair = pair?;
-                let (line, value): (f32, f32) = (pair.get(1)?, pair.get(2)?);
-                if !line.is_finite()
-                    || !value.is_finite()
-                    || line < 0.0
-                    || line > lines
-                    || !(0.0..=1.0).contains(&value)
-                {
-                    return Err(err(
+                let target = match target.as_str() {
+                    "volume" => AutoTarget::TrackVolume,
+                    "pan" => AutoTarget::TrackPan,
+                    "tempo" => AutoTarget::Bpm,
+                    "lpb" => AutoTarget::Lpb,
+                    other => {
+                        // "device:D:P" with 0-based device and parameter numbers
+                        let parts: Vec<&str> = other.split(':').collect();
+                        match parts.as_slice() {
+                            ["device", d, pr] => match (d.parse::<usize>(), pr.parse::<usize>()) {
+                                (Ok(device), Ok(param))
+                                    if s.song.tracks[tr]
+                                        .devices
+                                        .get(device)
+                                        .is_some_and(|d| param < d.param_count()) =>
+                                {
+                                    AutoTarget::Device { device, param }
+                                }
+                                _ => return Err(err(format!("no such device parameter in {other:?}"))),
+                            },
+                            _ => return Err(err(
+                                "target must be \"volume\", \"pan\", \"tempo\", \"lpb\" or \"device:D:P\"",
+                            )),
+                        }
+                    }
+                };
+                let lines = s.song.patterns[p].number_of_lines as f32;
+                let mut lane = Automation::new(tr, target);
+                lane.curve = match curve.as_deref() {
+                    None | Some("linear") => trakr_core::AutoCurve::Linear,
+                    Some("step") => trakr_core::AutoCurve::Step,
+                    Some("smooth") => trakr_core::AutoCurve::Smooth,
+                    Some("ease_in") => trakr_core::AutoCurve::EaseIn,
+                    Some("ease_out") => trakr_core::AutoCurve::EaseOut,
+                    Some(_) => {
+                        return Err(err(
+                            "curve must be \"linear\", \"step\", \"smooth\", \"ease_in\" or \"ease_out\"",
+                        ))
+                    }
+                };
+                for pair in points.sequence_values::<Table>() {
+                    let pair = pair?;
+                    let (line, value): (f32, f32) = (pair.get(1)?, pair.get(2)?);
+                    if !line.is_finite()
+                        || !value.is_finite()
+                        || line < 0.0
+                        || line > lines
+                        || !(0.0..=1.0).contains(&value)
+                    {
+                        return Err(err(
                         "automation points are { line, value } with line inside the pattern and value 0..1",
                     ));
+                    }
+                    lane.set_point(line, value);
                 }
-                lane.set_point(line, value);
-            }
-            let pat = pattern_mut(&mut s, p)?;
-            pat.automation.retain(|a| !(a.track == tr && a.target == target));
-            if !lane.points.is_empty() {
-                pat.automation.push(lane);
-            }
-            Ok(())
-        })?,
+                let pat = pattern_mut(&mut s, p)?;
+                pat.automation.retain(|a| !(a.track == tr && a.target == target));
+                if !lane.points.is_empty() {
+                    pat.automation.push(lane);
+                }
+                Ok(())
+            },
+        )?,
     )?;
 
     // ---- sequence ----
@@ -1090,6 +1108,9 @@ mod tests {
             trakr.automate(0, 0, "volume", { {0, 0.5}, {8, 1.0} })
             trakr.automate(0, 0, "device:0:0", { {0, 0}, {16, 1} })
             trakr.automate(0, 0, "device:0:0", {})
+            trakr.automate(0, 0, "tempo", { {0, 0.2}, {8, 0.8} }, "smooth")
+            local ok = pcall(trakr.automate, 0, 0, "volume", { {0, 0.5} }, "wobbly")
+            assert(not ok, "unknown curve names are refused")
             local p2 = trakr.add_pattern(16)
             trakr.set_sequence{ 0, p2, 0 }
         "#)
@@ -1099,7 +1120,10 @@ mod tests {
         assert_eq!(s.tracks[0].name, "Bass");
         assert_eq!(s.tracks[0].devices.len(), 1);
         let lanes = &s.patterns[0].automation;
-        assert_eq!(lanes.len(), 1, "device lane removed again: {lanes:?}");
+        assert_eq!(lanes.len(), 2, "device lane removed again, tempo lane added: {lanes:?}");
+        assert!(lanes
+            .iter()
+            .any(|a| a.target == trakr_core::AutoTarget::Bpm && a.curve == trakr_core::AutoCurve::Smooth));
         assert_eq!(s.sequence, vec![0, 1, 0]);
     }
 

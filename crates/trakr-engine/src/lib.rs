@@ -163,7 +163,7 @@ struct PhraseRun {
 }
 
 enum EventKind {
-    NoteOn { inst: u8, note: u8, vol: f32, pan: f32, opts: TriggerOpts },
+    NoteOn { inst: u8, note: u8, vol: f32, pan: f32, opts: TriggerOpts, fx: [EffectCmd; 3] },
     Phrase { inst: u8, phrase: usize, note: u8, vol: f32, pan: f32 },
     Release,
 }
@@ -375,6 +375,7 @@ pub fn create(sample_rate: u32) -> (Engine, EngineHandle) {
         tpl: song_tpl,
         fx_vol: [None; MAX_TRACKS],
         fx_pan: [None; MAX_TRACKS],
+        fx_width: [None; MAX_TRACKS],
         chance: 0x2545_F491_4F6C_DD1D,
         voices: Vec::with_capacity(MAX_VOICES),
         events: Vec::with_capacity(MAX_EVENTS),
@@ -436,6 +437,8 @@ pub struct Engine {
     /// Track volume / pan set by `0L` / `0P` until the next play or stop.
     fx_vol: [Option<f32>; MAX_TRACKS],
     fx_pan: [Option<f32>; MAX_TRACKS],
+    /// Track stereo width set by `0H` (0 = mono, 1 = unchanged, 2 = wide).
+    fx_width: [Option<f32>; MAX_TRACKS],
     chance: u64,
     voices: Vec<Voice>,
     events: Vec<Event>,
@@ -529,6 +532,7 @@ impl Engine {
         while done < frames {
             self.midi_transport();
             if self.playing && self.frames_to_line <= 0.0 {
+                self.apply_tempo_lanes(self.seq_pos, self.line as f32);
                 self.trigger_line();
                 self.playing_seq = self.seq_pos;
                 self.playing_line = self.line;
@@ -601,6 +605,20 @@ impl Engine {
         self.mix_down(out, frames);
     }
 
+    /// Set tempo and lines per beat from the pattern's tempo lanes at line position `pos`.
+    fn apply_tempo_lanes(&mut self, seq_pos: usize, pos: f32) {
+        let song = self.song.clone();
+        let Some(pat) = song.pattern_at(seq_pos) else { return };
+        for a in &pat.automation {
+            let Some(v) = a.value_at(pos) else { continue };
+            match a.target {
+                AutoTarget::Bpm => self.bpm = AutoTarget::bpm_for(v),
+                AutoTarget::Lpb => self.lpb = AutoTarget::lpb_for(v),
+                _ => {}
+            }
+        }
+    }
+
     /// Fill `overrides` with the automated values for the current playback position.
     fn update_automation(&mut self) {
         self.overrides.clear();
@@ -618,12 +636,24 @@ impl Engine {
         };
         for a in &pat.automation {
             let Some(v) = a.value_at(pos) else { continue };
+            match a.target {
+                AutoTarget::Bpm => {
+                    self.bpm = AutoTarget::bpm_for(v);
+                    continue;
+                }
+                AutoTarget::Lpb => {
+                    self.lpb = AutoTarget::lpb_for(v);
+                    continue;
+                }
+                _ => {}
+            }
             if self.overrides.len() >= MAX_OVERRIDES || a.track >= MAX_TRACKS {
                 continue;
             }
             let (target, value) = match a.target {
                 AutoTarget::TrackVolume => (Ov::Volume, v),
                 AutoTarget::TrackPan => (Ov::Pan, v),
+                AutoTarget::Bpm | AutoTarget::Lpb => continue,
                 AutoTarget::Device { device, param } => {
                     let spec = song.tracks.get(a.track).and_then(|t| t.devices.get(device));
                     let value = match spec {
@@ -732,6 +762,7 @@ impl Engine {
 
             let (prev, target, pl, pr) = self.fader(t, tr, any_solo);
             let audible = target > 0.0 || prev > 0.0;
+            let width = self.fx_width.get(t).copied().flatten().unwrap_or(1.0).clamp(0.0, 2.0);
 
             // Sends tap the signal after the chain, before or after the fader.
             for s in &tr.sends {
@@ -764,7 +795,13 @@ impl Engine {
             if audible || prev != target {
                 for (i, (d, f)) in dst.chunks_exact_mut(2).zip(src.chunks_exact(2)).enumerate() {
                     let g = prev + (target - prev) * (i as f32 + 1.0) / frames as f32;
-                    let (l, r) = (f[0] * g * pl, f[1] * g * pr);
+                    let (fl, fr) = if width == 1.0 {
+                        (f[0], f[1])
+                    } else {
+                        let (m, s) = ((f[0] + f[1]) * 0.5, (f[0] - f[1]) * 0.5 * width);
+                        (m + s, m - s)
+                    };
+                    let (l, r) = (fl * g * pl, fr * g * pr);
                     d[0] += l;
                     d[1] += r;
                     peak = peak.max(l.abs()).max(r.abs());
@@ -991,8 +1028,16 @@ impl Engine {
             if self.events[i].at <= 0.0 {
                 let e = self.events.remove(i);
                 match e.kind {
-                    EventKind::NoteOn { inst, note, vol, pan, opts } => {
-                        self.note_on(e.track, e.column, inst, note, vol, pan, opts)
+                    EventKind::NoteOn { inst, note, vol, pan, opts, fx } => {
+                        self.note_on(e.track, e.column, inst, note, vol, pan, opts);
+                        // Effects written next to a delayed note start with it, not at the line start.
+                        if let Some(v) =
+                            self.voices.last_mut().filter(|v| v.track == e.track && v.column == e.column)
+                        {
+                            for f in fx.iter().filter(|f| !f.is_empty()) {
+                                v.apply_effect(f.id, f.amount);
+                            }
+                        }
                     }
                     EventKind::Phrase { inst, phrase, note, vol, pan } => {
                         self.start_phrase(e.track, e.column, inst, phrase, note, vol, pan)
@@ -1073,6 +1118,7 @@ impl Engine {
                     self.tpl = self.song.tpl;
                     self.fx_vol = [None; MAX_TRACKS];
                     self.fx_pan = [None; MAX_TRACKS];
+                    self.fx_width = [None; MAX_TRACKS];
                     self.seq_pos = seq_pos;
                     self.line = line;
                     self.clamp_position();
@@ -1090,6 +1136,7 @@ impl Engine {
                     self.tpl = self.song.tpl;
                     self.fx_vol = [None; MAX_TRACKS];
                     self.fx_pan = [None; MAX_TRACKS];
+                    self.fx_width = [None; MAX_TRACKS];
                     self.seq_pos = seq_pos;
                     self.clamp_position();
                     let lines = self.song.pattern_at(self.seq_pos).map_or(1, |p| p.number_of_lines);
@@ -1479,7 +1526,14 @@ impl Engine {
                 let vol = if c.volume <= 0x80 { c.volume as f32 / 128.0 } else { 1.0 } * run_vol;
                 let pan = if c.panning <= 0x80 { c.panning as f32 / 64.0 - 1.0 } else { run_pan };
                 let at = c.delay as f64 / 256.0 * fpl;
-                let kind = EventKind::NoteOn { inst, note, vol, pan, opts: TriggerOpts::default() };
+                let kind = EventKind::NoteOn {
+                    inst,
+                    note,
+                    vol,
+                    pan,
+                    opts: TriggerOpts::default(),
+                    fx: [EffectCmd::default(); 3],
+                };
                 if at > 0.0 {
                     self.schedule(at, track, vcol, kind);
                 } else {
@@ -1540,6 +1594,7 @@ impl Engine {
                 b"0P" if ti < MAX_TRACKS => {
                     this.fx_pan[ti] = Some((fx.amount as f32 / 128.0 - 1.0).clamp(-1.0, 1.0))
                 }
+                b"0H" if ti < MAX_TRACKS => this.fx_width[ti] = Some(fx.amount as f32 / 128.0),
                 b"0X" => {
                     this.release_plugin(|n| n.track == ti);
                     for v in this.voices.iter_mut().filter(|v| v.track == ti) {
@@ -1611,7 +1666,13 @@ impl Engine {
                     }
                     let opts = TriggerOpts { offset, backwards };
                     let at = col.delay as f64 / 256.0 * fpl + delay_ticks as f64 * fpt;
-                    let kind = EventKind::NoteOn { inst: col.instrument, note: col.note, vol, pan, opts };
+                    let mut fx = [EffectCmd::default(); 3];
+                    for (d, f) in fx.iter_mut().zip(
+                        std::iter::once(&col.effect).chain(line.effects.iter()).filter(|f| !f.is_empty()),
+                    ) {
+                        *d = *f;
+                    }
+                    let kind = EventKind::NoteOn { inst: col.instrument, note: col.note, vol, pan, opts, fx };
                     if at > 0.0 {
                         self.schedule(at, ti, ci, kind);
                     } else {
@@ -1623,8 +1684,14 @@ impl Engine {
                     if let Some(r) = retrig_ticks {
                         let mut t = at + r as f64 * fpt;
                         while t < fpl {
-                            let kind =
-                                EventKind::NoteOn { inst: col.instrument, note: col.note, vol, pan, opts };
+                            let kind = EventKind::NoteOn {
+                                inst: col.instrument,
+                                note: col.note,
+                                vol,
+                                pan,
+                                opts,
+                                fx: [EffectCmd::default(); 3],
+                            };
                             self.schedule(t, ti, ci, kind);
                             t += r as f64 * fpt;
                         }
@@ -2246,6 +2313,117 @@ mod sequencer_tests {
         });
         let out = render(song, 1000);
         assert_eq!(first_nonzero(&out), Some(500));
+    }
+
+    #[test]
+    fn effects_next_to_a_delayed_note_apply_to_it() {
+        // 0M sets the note volume; with a delay column the voice does not exist at the line start.
+        let level = |delay: u8| {
+            let mut song = song_with(vec![1.0; 1000], LoopMode::Off);
+            put(&mut song, 0, |l| {
+                note(&mut l.notes[0]);
+                l.notes[0].delay = delay;
+                l.notes[0].effect = EffectCmd { id: *b"0M", amount: 0x20 }; // quarter volume
+            });
+            let out = render(song, 900);
+            out[700]
+        };
+        let (direct, delayed) = (level(0), level(128));
+        assert!((direct - 0.25).abs() < 0.02, "{direct}");
+        assert!((delayed - direct).abs() < 0.02, "delayed note volume {delayed} vs {direct}");
+        // a track-level effect column too (0Q delay by ticks plus 0M in another effect column)
+        let mut song = song_with(vec![1.0; 1000], LoopMode::Off);
+        put(&mut song, 0, |l| {
+            note(&mut l.notes[0]);
+            l.effects[0] = EffectCmd { id: *b"0Q", amount: 2 };
+            l.effects[1] = EffectCmd { id: *b"0M", amount: 0x40 };
+        });
+        let out = render(song, 900);
+        assert!((out[700] - 0.5).abs() < 0.02, "{}", out[700]);
+    }
+
+    #[test]
+    fn track_width_effect_narrows_and_widens() {
+        // a hard-left stereo signal: mono makes both sides equal, width 0x80 keeps it
+        let song = song_with(vec![1.0; 1000], LoopMode::Off);
+        let sides = |amount: u8| {
+            let mut s = song.clone();
+            put(&mut s, 0, |l| {
+                note(&mut l.notes[0]);
+                l.notes[0].panning = 0; // hard left
+                l.effects[0] = EffectCmd { id: *b"0H", amount };
+            });
+            let (mut engine, mut h) = create(RATE);
+            h.send(Command::SetSong(Arc::new(s)));
+            h.send(Command::Play { seq_pos: 0, line: 0, loop_pattern: false });
+            let mut out = vec![0.0; 2 * 400];
+            engine.render(&mut out);
+            (out[2 * 300], out[2 * 300 + 1])
+        };
+        let (l0, r0) = sides(0);
+        assert!((l0 - r0).abs() < 1e-4, "width 0 is mono: {l0} {r0}");
+        let (l1, r1) = sides(0x80);
+        let (lw, rw) = sides(0xFF);
+        assert!((l1 - l0).abs() > 0.0 || (r1 - r0).abs() > 0.0);
+        assert!(
+            (lw - rw).abs() > (l1 - r1).abs() - 1e-6,
+            "wider is at least as wide: {lw} {rw} vs {l1} {r1}"
+        );
+    }
+
+    #[test]
+    fn pan_slide_moves_the_note_across_the_field() {
+        let mut song = song_with(vec![1.0; 3000], LoopMode::Off);
+        put(&mut song, 0, |l| {
+            note(&mut l.notes[0]);
+            l.effects[0] = EffectCmd { id: *b"0K", amount: 0x0F }; // right, 15/64 per tick
+        });
+        let (mut engine, mut h) = create(RATE);
+        h.send(Command::SetSong(Arc::new(song)));
+        h.send(Command::Play { seq_pos: 0, line: 0, loop_pattern: false });
+        let mut out = vec![0.0; 2 * 2500];
+        engine.render(&mut out);
+        let early = (out[2 * 100], out[2 * 100 + 1]);
+        let late = (out[2 * 2400], out[2 * 2400 + 1]);
+        assert!(late.0 < early.0 * 0.5, "left side fades as the pan slides right: {early:?} -> {late:?}");
+        assert!(late.1 >= early.1 - 1e-4);
+    }
+
+    #[test]
+    fn tempo_automation_changes_the_line_length() {
+        // 4 lines of one second each at 60 BPM / LPB 1; a tempo lane ramps up to 255 BPM
+        let line_starts = |lane: Option<trakr_core::Automation>| {
+            let mut song = song_with(vec![1.0; 50], LoopMode::Off);
+            for l in 0..4 {
+                put(&mut song, l, |ln| note(&mut ln.notes[0]));
+            }
+            if let Some(a) = lane {
+                Arc::make_mut(&mut song.patterns[0]).automation.push(a);
+            }
+            let out = render(song, 6000);
+            out.iter()
+                .enumerate()
+                .filter(|(i, s)| **s > 0.5 && (*i == 0 || out[i - 1] < 0.5))
+                .map(|(i, _)| i)
+                .collect::<Vec<_>>()
+        };
+        let plain = line_starts(None);
+        assert_eq!(plain.len().min(4), 4);
+        let mut a = trakr_core::Automation::new(0, trakr_core::AutoTarget::Bpm);
+        a.set_point(0.0, trakr_core::AutoTarget::bpm_value(240.0));
+        let fast = line_starts(Some(a));
+        assert!(
+            fast[1] < plain[1] / 2,
+            "240 BPM lines are about a quarter the length: {fast:?} vs {plain:?}"
+        );
+        // a stepped lane switches tempo at its second point
+        let mut a = trakr_core::Automation::new(0, trakr_core::AutoTarget::Bpm);
+        a.curve = trakr_core::AutoCurve::Step;
+        a.set_point(0.0, trakr_core::AutoTarget::bpm_value(60.0));
+        a.set_point(2.0, trakr_core::AutoTarget::bpm_value(240.0));
+        let s = line_starts(Some(a));
+        assert!((s[1] as i32 - 1000).abs() < 30 && (s[2] as i32 - 2000).abs() < 30, "{s:?}");
+        assert!(s[3] - s[2] < 400, "faster after the switch: {s:?}");
     }
 
     #[test]

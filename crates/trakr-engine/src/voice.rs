@@ -143,6 +143,8 @@ pub struct Voice {
     step_cur: f64,
     step_target: f64,
     pan_now: f32,
+    /// Panning slide per tick (`0K`).
+    pslide: f32,
     ctr: u32,
     /// Jump straight to the targets on the first control update instead of smoothing from zero.
     snap: bool,
@@ -268,6 +270,7 @@ impl Voice {
             bend: 0.0,
             step_target: 0.0,
             pan_now: 0.0,
+            pslide: 0.0,
             ctr: 0,
             snap: true,
             nna: inst.nna,
@@ -362,6 +365,7 @@ impl Voice {
                 }
             }
             b"0W" => self.vslide = (x - y) / 64.0,
+            b"0K" => self.pslide = (y - x) / 64.0,
             b"0M" => self.dyn_gain = (amount as f32 / 128.0).min(2.0),
             b"0N" => self.autopan = (x, y / 15.0),
             [b'M', d @ b'1'..=b'4'] => self.macros[(*d - b'1') as usize] = amount as f32 / 255.0,
@@ -390,6 +394,7 @@ impl Voice {
                 }
             }
             self.dyn_gain = (self.dyn_gain + self.vslide).clamp(0.0, 2.0);
+            self.pan = (self.pan + self.pslide).clamp(-1.0, 1.0);
         }
         self.arp_offset = match self.arp {
             Some((x, y)) => match tick % 3 {

@@ -135,4 +135,54 @@ impl Editor {
         }
         self.sync();
     }
+
+    /// Copy the lane's points in `[from, to]` (positions kept relative to `from`).
+    pub fn automation_copy(&mut self, track: usize, target: AutoTarget, from: f32, to: f32) -> usize {
+        let pts: Vec<(f32, f32)> = self
+            .automation_lane(track, target)
+            .map(|a| a.points_in(from, to).iter().map(|p| (p.0 - from, p.1)).collect())
+            .unwrap_or_default();
+        let n = pts.len();
+        self.auto_clip = pts;
+        self.status = if n == 0 { "no points in that range".into() } else { format!("copied {n} point(s)") };
+        n
+    }
+
+    /// Paste the copied points with the first one at `at`, replacing that span.
+    pub fn automation_paste(&mut self, track: usize, target: AutoTarget, at: f32) {
+        if self.auto_clip.is_empty() {
+            self.status = "nothing copied".into();
+            return;
+        }
+        let clip = self.auto_clip.clone();
+        let max = self.lines_in_pattern().saturating_sub(1) as f32;
+        self.automation_edit("auto_paste", track, target, |a| a.paste(&clip, at, max));
+    }
+
+    pub fn automation_clear_range(&mut self, track: usize, target: AutoTarget, from: f32, to: f32) {
+        self.automation_edit("auto_clear_range", track, target, |a| a.clear_range(from, to));
+    }
+
+    pub fn automation_scale(&mut self, track: usize, target: AutoTarget, from: f32, to: f32, factor: f32) {
+        if factor.is_finite() {
+            self.automation_edit("auto_scale", track, target, |a| a.scale_range(from, to, 0.5, factor));
+        }
+    }
+
+    pub fn automation_flip(&mut self, track: usize, target: AutoTarget, from: f32, to: f32) {
+        self.automation_edit("auto_flip", track, target, |a| a.flip_range(from, to));
+    }
+
+    pub fn automation_reverse(&mut self, track: usize, target: AutoTarget, from: f32, to: f32) {
+        self.automation_edit("auto_reverse", track, target, |a| a.reverse_range(from, to));
+    }
+
+    pub fn automation_shift(&mut self, track: usize, target: AutoTarget, from: f32, to: f32, delta: f32) {
+        let max = self.lines_in_pattern().saturating_sub(1) as f32;
+        self.automation_edit("auto_shift", track, target, |a| a.shift_range(from, to, delta, max));
+    }
+
+    pub fn automation_set_curve(&mut self, track: usize, target: AutoTarget, curve: trakr_core::AutoCurve) {
+        self.automation_edit("auto_curve", track, target, |a| a.curve = curve);
+    }
 }

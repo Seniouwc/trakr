@@ -246,6 +246,8 @@ pub struct Editor {
     sent_chains: Vec<Vec<String>>,
     /// Per instrument: what its plugin looked like when last sent to the engine.
     sent_inst_plugins: Vec<String>,
+    /// Automation points copied with `automation_copy`, positions relative to the copied range.
+    auto_clip: Vec<(f32, f32)>,
     plugin_guis: std::collections::HashMap<PluginKey, Box<dyn trakr_engine::PluginGui>>,
     plugin_host: Option<Box<dyn trakr_engine::PluginHost>>,
     plugin_list: Vec<trakr_core::PluginInfo>,
@@ -350,6 +352,7 @@ impl Editor {
             last_key: None,
             sent_chains: Vec::new(),
             sent_inst_plugins: Vec::new(),
+            auto_clip: Vec::new(),
             plugin_guis: Default::default(),
             midi_backend: None,
             midi_in: None,

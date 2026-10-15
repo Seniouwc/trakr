@@ -26,6 +26,12 @@ pub const EFFECTS: &[(&str, &str, &str)] = &[
     ("0L", "Track volume", "set the track's volume to xx/80 (hex) until play or stop; 80 = unity"),
     ("0P", "Track pan", "set the track's pan, 00 = left, 80 = center, FF = right, until play or stop"),
     ("0X", "Stop track", "cut every note playing on the track"),
+    (
+        "0H",
+        "Track width",
+        "set the track's stereo width, 00 = mono, 80 = unchanged, FF = wide, until play or stop",
+    ),
+    ("0K", "Pan slide", "x = left, y = right, in 1/64 per tick; 00 stops"),
     ("ZK", "Set ticks per line", "xx = ticks per line"),
     ("M1", "Macro 1", "move the instrument's macro 1 knob (M2 to M4 likewise): 00 = 0, FF = 1"),
 ];

@@ -9,6 +9,8 @@ fn target_label(editor: &trakr_editor::Editor, track: usize, target: AutoTarget)
     match target {
         AutoTarget::TrackVolume => "Track volume".into(),
         AutoTarget::TrackPan => "Track pan".into(),
+        AutoTarget::Bpm => "Tempo (BPM)".into(),
+        AutoTarget::Lpb => "Lines per beat".into(),
         AutoTarget::Device { device, param } => editor
             .song
             .tracks
@@ -206,8 +208,12 @@ impl GuiApp {
         let track = self.editor.cursor.track;
         let pattern = self.editor.pattern_index().unwrap_or(0);
         // Everything automatable on the selected track.
-        let mut targets: Vec<(usize, AutoTarget)> =
-            vec![(track, AutoTarget::TrackVolume), (track, AutoTarget::TrackPan)];
+        let mut targets: Vec<(usize, AutoTarget)> = vec![
+            (track, AutoTarget::TrackVolume),
+            (track, AutoTarget::TrackPan),
+            (0, AutoTarget::Bpm),
+            (0, AutoTarget::Lpb),
+        ];
         for (di, d) in self.editor.song.tracks[track].devices.iter().enumerate() {
             targets
                 .extend((0..d.param_count()).map(|pi| (track, AutoTarget::Device { device: di, param: pi })));
@@ -278,7 +284,61 @@ impl GuiApp {
             ui.weak("Pick a parameter (or press A next to a device parameter), then double-click the graph to add points. The value follows the curve while the pattern plays.");
             return;
         };
+        self.automation_tools(ui, t, tg);
         self.automation_graph(ui, t, tg);
+    }
+
+    /// Curve shape and range tools for the selected lane.
+    fn automation_tools(&mut self, ui: &mut egui::Ui, t: usize, tg: AutoTarget) {
+        let lines = self.editor.lines_in_pattern().max(1) as f32;
+        let curve = self.editor.automation_lane(t, tg).map(|a| a.curve).unwrap_or_default();
+        ui.horizontal_wrapped(|ui| {
+            ui.label("Curve");
+            let mut pick = curve;
+            egui::ComboBox::from_id_salt("auto_curve").selected_text(curve.label()).show_ui(ui, |ui| {
+                for c in trakr_core::AutoCurve::ALL {
+                    ui.selectable_value(&mut pick, c, c.label());
+                }
+            });
+            if pick != curve {
+                self.editor.automation_set_curve(t, tg, pick);
+            }
+            ui.separator();
+            ui.label("Range");
+            let (mut a, mut b) = self.auto_range;
+            ui.add(egui::DragValue::new(&mut a).range(0.0..=lines).speed(0.25));
+            ui.label("to");
+            ui.add(egui::DragValue::new(&mut b).range(0.0..=lines).speed(0.25));
+            self.auto_range = (a.min(b), a.max(b));
+            let (a, b) = self.auto_range;
+            if ui.small_button("Copy").clicked() {
+                self.editor.automation_copy(t, tg, a, b);
+            }
+            if ui.small_button("Paste at start").clicked() {
+                self.editor.automation_paste(t, tg, a);
+            }
+            if ui.small_button("Clear").clicked() {
+                self.editor.automation_clear_range(t, tg, a, b);
+            }
+            if ui.small_button("Flip").clicked() {
+                self.editor.automation_flip(t, tg, a, b);
+            }
+            if ui.small_button("Reverse").clicked() {
+                self.editor.automation_reverse(t, tg, a, b);
+            }
+            if ui.small_button("x0.5").clicked() {
+                self.editor.automation_scale(t, tg, a, b, 0.5);
+            }
+            if ui.small_button("x2").clicked() {
+                self.editor.automation_scale(t, tg, a, b, 2.0);
+            }
+            if ui.small_button("<<").on_hover_text("Shift the range one line earlier").clicked() {
+                self.editor.automation_shift(t, tg, a, b, -1.0);
+            }
+            if ui.small_button(">>").on_hover_text("Shift the range one line later").clicked() {
+                self.editor.automation_shift(t, tg, a, b, 1.0);
+            }
+        });
     }
 
     fn automation_graph(&mut self, ui: &mut egui::Ui, track: usize, target: AutoTarget) {
@@ -327,9 +387,22 @@ impl GuiApp {
         let accent = Color32::from_rgb(80, 160, 240);
         let pts: Vec<Pos2> = points.iter().map(|&(l, v)| to_pos(l, v)).collect();
         if pts.len() > 1 {
-            // Hold the first and last values to the edges, like the engine does.
+            // Hold the first and last values to the edges, like the engine does; segments follow the curve.
+            let curve = self.editor.automation_lane(track, target).map(|a| a.curve).unwrap_or_default();
             let mut line = vec![Pos2::new(r.left(), pts[0].y)];
-            line.extend(pts.iter().copied());
+            for (w, pw) in points.windows(2).zip(pts.windows(2)) {
+                const STEPS: usize = 24;
+                line.push(pw[0]);
+                if curve != trakr_core::AutoCurve::Linear {
+                    for k in 1..STEPS {
+                        let t = k as f32 / STEPS as f32;
+                        let v = w[0].1 + (w[1].1 - w[0].1) * curve.shape(t);
+                        let l = w[0].0 + (w[1].0 - w[0].0) * t;
+                        line.push(to_pos(l, v));
+                    }
+                }
+            }
+            line.push(pts[pts.len() - 1]);
             line.push(Pos2::new(r.right(), pts[pts.len() - 1].y));
             painter.add(egui::Shape::line(line, Stroke::new(2.0_f32, accent)));
         } else if let Some(p) = pts.first() {
@@ -340,6 +413,21 @@ impl GuiApp {
         }
         for p in &pts {
             painter.circle_filled(*p, 4.5, accent);
+        }
+        if let (Some(pos), AutoTarget::Bpm | AutoTarget::Lpb) = (resp.hover_pos(), target) {
+            let (_, v) = from_pos(pos);
+            let text = if target == AutoTarget::Bpm {
+                format!("{:.0} BPM", AutoTarget::bpm_for(v))
+            } else {
+                format!("{} LPB", AutoTarget::lpb_for(v))
+            };
+            painter.text(
+                pos + Vec2::new(12.0, -14.0),
+                egui::Align2::LEFT_TOP,
+                text,
+                egui::FontId::monospace(11.0),
+                Color32::WHITE,
+            );
         }
         // Value readout for the parameter under the pointer.
         if let (Some(pos), AutoTarget::Device { device, param }) = (resp.hover_pos(), target) {
