@@ -7,11 +7,14 @@
 #[cfg(feature = "audio")]
 pub mod audio;
 pub mod devices;
+mod devices_adv;
 mod devices_more;
 mod dsp;
+pub mod formula;
 mod voice;
 
 pub use devices::Device;
+pub use devices_adv::{create_convolver, create_formula};
 
 /// Loads hosted plugins for the UI thread (the binary supplies a real one, e.g. `trakr-clap`).
 pub trait PluginHost {
@@ -47,7 +50,7 @@ const MAX_OVERRIDES: usize = 256;
 /// Chain slots per track whose modulation output is kept (and that modulators can target).
 const MAX_MOD_DEVS: usize = 32;
 /// Modulators applied per track and block.
-const MAX_MODS: usize = 12;
+const MAX_MODS: usize = 16;
 /// Messages waiting for the MIDI output thread.
 const MIDI_QUEUE: usize = 4096;
 /// MIDI notes sounding at once.
@@ -343,6 +346,7 @@ pub fn create(sample_rate: u32) -> (Engine, EngineHandle) {
         overrides: Vec::with_capacity(MAX_OVERRIDES),
         mod_out: vec![0.0; MAX_TRACKS * MAX_MOD_DEVS],
         sc_buf: vec![0.0; BLOCK * 2],
+        track_note: [(48, 1.0); MAX_TRACKS],
         playing_seq: 0,
         playing_line: 0,
         meter_acc: [0.0; MAX_TRACKS],
@@ -407,6 +411,8 @@ pub struct Engine {
     mod_out: Vec<f32>,
     /// Copy of the key track's signal for a sidechain device.
     sc_buf: Vec<f32>,
+    /// Last note started on each track and its velocity, for the tracker modulators.
+    track_note: [(u8, f32); MAX_TRACKS],
     playing_seq: usize,
     playing_line: u16,
     meter_acc: [f32; MAX_TRACKS],
@@ -749,6 +755,19 @@ impl Engine {
             }
             let amount = self.mod_out[t * MAX_MOD_DEVS + m];
             let amount = if amount.is_finite() { amount } else { 0.0 };
+            if spec.id == "native.metamixer" {
+                // four knobs, each a fixed offset on its own target
+                for k in 0..4 {
+                    let target = spec.param(3 * k).clamp(0.0, 8.0).round() as usize;
+                    if target == 0 || nmods == MAX_MODS {
+                        continue;
+                    }
+                    let param = spec.param(3 * k + 1).clamp(0.0, 15.0).round() as usize;
+                    mods[nmods] = (target - 1, param, spec.param(3 * k + 2).clamp(-1.0, 1.0));
+                    nmods += 1;
+                }
+                continue;
+            }
             if spec.id == "native.hydra" {
                 // three targets sharing one oscillator, each with its own depth
                 for k in 0..3 {
@@ -807,8 +826,13 @@ impl Engine {
                     params[tp] = i.from_norm(i.to_norm(params[tp]) + amount);
                 }
             }
+            if spec.id == "native.send" {
+                self.run_send(t, spec, base, frames, &params);
+            }
             let buf = &mut self.track_bufs[base..base + frames * 2];
             self.chains[t][d].set_tempo(self.bpm);
+            let (note, vel) = self.track_note[t];
+            self.chains[t][d].set_track_note(note, vel);
             if spec.id == "native.sidechain" {
                 // another track's raw mix as the key signal (silence if it made no sound this block)
                 let src = params[0].round().clamp(0.0, MAX_TRACKS as f32) as usize;
@@ -862,6 +886,35 @@ impl Engine {
         }
         let buf = &mut self.track_bufs[base..base + frames * 2];
         self.chains[t][d].process(&params[..n], buf);
+    }
+
+    /// `#Send`: copy this strip's signal at this point of its chain into a send track.
+    fn run_send(
+        &mut self,
+        t: usize,
+        spec: &trakr_core::DeviceSpec,
+        base: usize,
+        frames: usize,
+        params: &[f32],
+    ) {
+        let target = params[0].round().clamp(1.0, MAX_TRACKS as f32) as usize - 1;
+        let valid = self.song.tracks.get(target).is_some_and(|x| x.kind == trakr_core::TrackKind::Send)
+            && target != t
+            // sends are mixed in track order, so a send track can only feed a later one
+            && (self.song.tracks[t].kind != trakr_core::TrackKind::Send || target > t);
+        if !valid || spec.bypass {
+            return;
+        }
+        let level = if params[1] <= -59.9 { 0.0 } else { dsp::db_to_gain(params[1]) };
+        let sbase = target * BLOCK * 2;
+        let (src, dst) =
+            (&self.track_bufs[base..base + frames * 2], &mut self.acc[sbase..sbase + frames * 2]);
+        for (d, s) in dst.iter_mut().zip(src) {
+            *d += s * level;
+        }
+        if params[2] >= 0.5 {
+            self.track_bufs[base..base + frames * 2].fill(0.0);
+        }
     }
 
     fn fire_due_events(&mut self) {
@@ -1047,6 +1100,9 @@ impl Engine {
     ) {
         let song = self.song.clone(); // refcount bump only
         let Some(instrument) = song.instruments.get(inst as usize) else { return };
+        if let Some(t) = self.track_note.get_mut(track) {
+            *t = (note.min(119), vol.clamp(0.0, 1.0));
+        }
         if let Some(m) = instrument.midi_out {
             if song.tracks.get(track).map_or(true, |t| t.mute == MuteState::Active) {
                 self.midi_note_on(track, column, m, note, vol);
@@ -2546,6 +2602,7 @@ mod device_tests {
             bypass: false,
             params: vec![],
             plugin: None,
+            text: String::new(),
         });
         let out = render(song, 5000);
         assert!((out[4000] - 1.0).abs() < 0.01);

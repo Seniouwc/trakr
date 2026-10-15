@@ -79,14 +79,50 @@ pub fn cell_text(line: Option<&Line>, c: usize, notes: usize) -> String {
     }
 }
 
+/// The sample a convolver slot uses as its impulse response: params 0 and 1 are instrument and sample index.
+fn convolver_sample<'a>(
+    spec: &trakr_core::DeviceSpec,
+    instruments: &'a [trakr_core::Instrument],
+) -> Option<&'a trakr_core::Sample> {
+    let inst = instruments.get(*spec.params.first()? as usize)?;
+    inst.samples.get(*spec.params.get(1)? as usize).filter(|s| !s.data.is_empty())
+}
+
+/// What makes a chain slot need rebuilding: its id plus any content the device is built from.
+fn chain_key(spec: &trakr_core::DeviceSpec, instruments: &[trakr_core::Instrument]) -> String {
+    match spec.id.as_str() {
+        "native.formula" => format!("{}\u{1}{}", spec.id, spec.text),
+        "native.convolver" => match convolver_sample(spec, instruments) {
+            Some(s) => {
+                format!("{}\u{1}{}:{}:{}", spec.id, s.data.len(), s.data.as_ptr() as usize, s.sample_rate)
+            }
+            None => spec.id.clone(),
+        },
+        _ => spec.id.clone(),
+    }
+}
+
 /// Build the device for one chain slot: a native device, a hosted plugin, or a pass-through when it
 /// cannot be created (the reason is appended to `errors`).
 fn make_device(
     host: &mut Option<Box<dyn trakr_engine::PluginHost>>,
     spec: &trakr_core::DeviceSpec,
+    instruments: &[trakr_core::Instrument],
     rate: u32,
     errors: &mut Vec<String>,
 ) -> Box<dyn trakr_engine::Device> {
+    if spec.id == "native.formula" {
+        let (dev, err) = trakr_engine::create_formula(&spec.text, rate as f32);
+        if let Some(e) = err {
+            errors.push(format!("formula: {e}"));
+        }
+        return dev;
+    }
+    if spec.id == "native.convolver" {
+        if let Some(s) = convolver_sample(spec, instruments) {
+            return trakr_engine::create_convolver(&s.data, s.channels as usize, s.sample_rate, rate);
+        }
+    }
     if let Some(p) = &spec.plugin {
         let loaded = match host {
             Some(h) => h.load(&p.path, &p.plugin_id, rate),
@@ -400,14 +436,23 @@ impl Editor {
         let tracks = self.song.tracks.len().min(trakr_engine::MAX_METER_TRACKS);
         self.sent_chains.resize(self.sent_chains.len().max(tracks), Vec::new());
         for t in 0..tracks {
-            let ids: Vec<String> = self.song.tracks[t].devices.iter().map(|d| d.id.clone()).collect();
+            let ids: Vec<String> =
+                self.song.tracks[t].devices.iter().map(|d| chain_key(d, &self.song.instruments)).collect();
             if self.sent_chains[t] == ids {
                 continue;
             }
             let chain = self.song.tracks[t]
                 .devices
                 .iter()
-                .map(|d| make_device(&mut self.plugin_host, d, rate, &mut self.plugin_errors))
+                .map(|d| {
+                    make_device(
+                        &mut self.plugin_host,
+                        d,
+                        &self.song.instruments,
+                        rate,
+                        &mut self.plugin_errors,
+                    )
+                })
                 .collect();
             if !e.send(Command::SetChain { track: t, chain }) {
                 return false;

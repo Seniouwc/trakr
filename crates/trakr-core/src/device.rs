@@ -64,7 +64,15 @@ const fn pstep(name: &'static str, min: f32, max: f32, default: f32) -> ParamInf
 }
 
 /// Ids of devices that modulate another device's parameter instead of (only) shaping audio.
-pub const MODULATORS: [&str; 3] = ["native.lfo", "native.follower", "native.hydra"];
+pub const MODULATORS: [&str; 7] = [
+    "native.lfo",
+    "native.follower",
+    "native.hydra",
+    "native.keytracker",
+    "native.veltracker",
+    "native.metamixer",
+    "native.formula",
+];
 
 pub const FILTER_MODES: [&str; 4] = ["Low-pass", "High-pass", "Band-pass", "Notch"];
 
@@ -344,6 +352,108 @@ pub const DEVICES: &[DeviceInfo] = &[
         ],
     },
     DeviceInfo {
+        id: "native.maximizer",
+        name: "Maximizer",
+        params: &[
+            p("Gain", 0.0, 24.0, 6.0, "dB"),
+            p("Ceiling", -12.0, 0.0, -0.3, "dB"),
+            plog("Release", 10.0, 500.0, 100.0, "ms"),
+            p("Soft clip", 0.0, 1.0, 0.3, ""),
+        ],
+    },
+    DeviceInfo {
+        id: "native.analogfilter",
+        name: "Analog filter",
+        params: &[
+            pstep("Mode (0 low-pass, 1 band-pass, 2 high-pass, 3 notch)", 0.0, 3.0, 0.0),
+            plog("Cutoff", 20.0, 20_000.0, 1000.0, "Hz"),
+            p("Resonance", 0.0, 1.0, 0.3, ""),
+            p("Drive", 0.0, 36.0, 0.0, "dB"),
+            p("Mix", 0.0, 1.0, 1.0, ""),
+        ],
+    },
+    DeviceInfo {
+        id: "native.midside",
+        name: "Mid / side",
+        params: &[
+            p("Mid gain", -48.0, 18.0, 0.0, "dB"),
+            p("Side gain", -48.0, 18.0, 0.0, "dB"),
+            p("Bass mono below (0 = off)", 0.0, 500.0, 0.0, "Hz"),
+        ],
+    },
+    DeviceInfo {
+        id: "native.convolver",
+        name: "Convolver",
+        params: &[
+            pstep("Response: instrument", 0.0, 254.0, 0.0),
+            pstep("Response: sample", 0.0, 15.0, 0.0),
+            p("Mix", 0.0, 1.0, 0.3, ""),
+            p("Gain", -48.0, 18.0, 0.0, "dB"),
+        ],
+    },
+    DeviceInfo {
+        id: "native.keytracker",
+        name: "Key tracker (modulator)",
+        params: &[
+            pstep("Target device (0 off, 1-8 slot)", 0.0, 8.0, 0.0),
+            pstep("Target parameter", 0.0, 15.0, 0.0),
+            p("Depth", -1.0, 1.0, 1.0, ""),
+            pstep("Lowest note", 0.0, 119.0, 24.0),
+            pstep("Highest note", 0.0, 119.0, 96.0),
+            pstep("Bipolar (-1..1)", 0.0, 1.0, 0.0),
+        ],
+    },
+    DeviceInfo {
+        id: "native.veltracker",
+        name: "Velocity tracker (modulator)",
+        params: &[
+            pstep("Target device (0 off, 1-8 slot)", 0.0, 8.0, 0.0),
+            pstep("Target parameter", 0.0, 15.0, 0.0),
+            p("Depth", -1.0, 1.0, 1.0, ""),
+            pstep("Bipolar (-1..1)", 0.0, 1.0, 0.0),
+        ],
+    },
+    DeviceInfo {
+        id: "native.metamixer",
+        name: "Meta mixer (modulator)",
+        params: &[
+            pstep("Knob 1 device (0 off, 1-8 slot)", 0.0, 8.0, 0.0),
+            pstep("Knob 1 parameter", 0.0, 15.0, 0.0),
+            p("Knob 1", -1.0, 1.0, 0.0, ""),
+            pstep("Knob 2 device (0 off, 1-8 slot)", 0.0, 8.0, 0.0),
+            pstep("Knob 2 parameter", 0.0, 15.0, 0.0),
+            p("Knob 2", -1.0, 1.0, 0.0, ""),
+            pstep("Knob 3 device (0 off, 1-8 slot)", 0.0, 8.0, 0.0),
+            pstep("Knob 3 parameter", 0.0, 15.0, 0.0),
+            p("Knob 3", -1.0, 1.0, 0.0, ""),
+            pstep("Knob 4 device (0 off, 1-8 slot)", 0.0, 8.0, 0.0),
+            pstep("Knob 4 parameter", 0.0, 15.0, 0.0),
+            p("Knob 4", -1.0, 1.0, 0.0, ""),
+        ],
+    },
+    DeviceInfo {
+        id: "native.formula",
+        name: "Formula (modulator)",
+        params: &[
+            pstep("Target device (0 off, 1-8 slot)", 0.0, 8.0, 0.0),
+            pstep("Target parameter", 0.0, 15.0, 0.0),
+            p("A", 0.0, 1.0, 0.0, ""),
+            p("B", 0.0, 1.0, 0.0, ""),
+            p("C", 0.0, 1.0, 0.0, ""),
+            p("D", 0.0, 1.0, 0.0, ""),
+            p("Depth", -1.0, 1.0, 1.0, ""),
+        ],
+    },
+    DeviceInfo {
+        id: "native.send",
+        name: "Send (#Send)",
+        params: &[
+            pstep("Send track number", 1.0, 64.0, 1.0),
+            p("Level", -60.0, 6.0, 0.0, "dB"),
+            pstep("Mute the signal after the send", 0.0, 1.0, 0.0),
+        ],
+    },
+    DeviceInfo {
         id: "native.exciter",
         name: "Exciter",
         params: &[plog("Frequency", 1000.0, 10_000.0, 3000.0, "Hz"), p("Amount", 0.0, 1.0, 0.3, "")],
@@ -391,7 +501,13 @@ impl DeviceSpec {
     /// A device with default parameters, or `None` for an unknown id.
     pub fn new(id: &str) -> Option<Self> {
         let info = device_info(id)?;
-        Some(Self { id: info.id.to_string(), bypass: false, params: info.defaults(), plugin: None })
+        Some(Self {
+            id: info.id.to_string(),
+            bypass: false,
+            params: info.defaults(),
+            plugin: None,
+            text: String::new(),
+        })
     }
 
     /// A device that runs a hosted plugin, with the plugin's default parameter values.
@@ -402,6 +518,7 @@ impl DeviceSpec {
             bypass: false,
             params,
             plugin: Some(plugin),
+            text: String::new(),
         }
     }
 

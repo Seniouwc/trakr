@@ -1633,3 +1633,16 @@ fn slot_mutes_sections_and_groove_follow_the_sequence_and_undo() {
     e.play_block();
     assert!(e.status.contains("02-05"));
 }
+
+#[test]
+fn formula_text_is_stored_undoable_and_bounded() {
+    let (_engine, mut app) = engine_editor();
+    assert!(app.device_add(0, "native.formula"));
+    app.device_set_text(0, 0, "sin(t) * a");
+    assert_eq!(app.song.tracks[0].devices[0].text, "sin(t) * a");
+    app.device_set_text(0, 0, &"x".repeat(5000));
+    assert_eq!(app.song.tracks[0].devices[0].text.chars().count(), 512);
+    app.device_set_text(0, 9, "ignored");
+    app.undo();
+    assert!(app.song.tracks[0].devices[0].text.chars().count() <= 512);
+}

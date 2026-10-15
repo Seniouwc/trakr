@@ -26,6 +26,9 @@ pub struct DeviceSpec {
     /// Set for hosted plugins (`id` starts with `clap:`).
     #[serde(default)]
     pub plugin: Option<crate::plugin::PluginRef>,
+    /// Free text a device needs (the formula modulator's expression).
+    #[serde(default)]
+    pub text: String,
 }
 
 /// A feed from a track into a send track.

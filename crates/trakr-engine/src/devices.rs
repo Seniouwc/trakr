@@ -24,6 +24,9 @@ pub trait Device: Send {
 
     /// Called before each block so tempo-synced devices know the song tempo.
     fn set_tempo(&mut self, _bpm: f32) {}
+
+    /// Called before each block with the last note played on this track and its velocity (0..1).
+    fn set_track_note(&mut self, _note: u8, _velocity: f32) {}
 }
 
 /// Build a device for a catalogue id at the engine's sample rate.
@@ -50,7 +53,7 @@ pub fn create(id: &str, rate: u32) -> Option<Box<dyn Device>> {
         "native.lfo" => Box::new(Lfo { phase: 0.0, held: 0.0, rng: 0x9E37_79B9, value: 0.0, fs, bpm: 120.0 }),
         "native.follower" => Box::new(Follower { env: 0.0, value: 0.0, fs }),
         "native.exciter" => Box::new(Exciter { hp: [Biquad::default(); 2], fs }),
-        _ => return crate::devices_more::create(id, fs),
+        _ => return crate::devices_more::create(id, fs).or_else(|| crate::devices_adv::create(id, fs)),
     })
 }
 
@@ -508,7 +511,7 @@ impl Device for Gate {
 
 // ---- lookahead limiter ----------------------------------------------------------------------
 
-struct Limiter {
+pub(crate) struct Limiter {
     l: DelayLine,
     r: DelayLine,
     /// Gain each of the last `look + 1` input samples would need, newest at `pos`.
@@ -520,7 +523,7 @@ struct Limiter {
 }
 
 impl Limiter {
-    fn new(fs: f32) -> Self {
+    pub(crate) fn new(fs: f32) -> Self {
         let look = ((fs * 0.002) as usize).max(8);
         Self {
             l: DelayLine::new(look + 4),

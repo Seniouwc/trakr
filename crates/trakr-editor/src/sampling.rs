@@ -227,7 +227,15 @@ impl Editor {
             .map(|t| {
                 t.devices
                     .iter()
-                    .map(|d| make_device(&mut self.plugin_host, d, RENDER_RATE, &mut self.plugin_errors))
+                    .map(|d| {
+                        make_device(
+                            &mut self.plugin_host,
+                            d,
+                            &self.song.instruments,
+                            RENDER_RATE,
+                            &mut self.plugin_errors,
+                        )
+                    })
                     .collect()
             })
             .collect();
@@ -260,7 +268,15 @@ impl Editor {
             .map(|t| {
                 t.devices
                     .iter()
-                    .map(|d| make_device(&mut self.plugin_host, d, rate, &mut self.plugin_errors))
+                    .map(|d| {
+                        make_device(
+                            &mut self.plugin_host,
+                            d,
+                            &self.song.instruments,
+                            rate,
+                            &mut self.plugin_errors,
+                        )
+                    })
                     .collect()
             })
             .collect()

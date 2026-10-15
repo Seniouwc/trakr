@@ -90,6 +90,18 @@ impl Editor {
         self.sync();
     }
 
+    /// Set a device's text (the formula source of a formula modulator).
+    pub fn device_set_text(&mut self, track: usize, index: usize, text: &str) {
+        if !self.song.tracks.get(track).is_some_and(|t| t.devices.get(index).is_some_and(|d| d.text != text))
+        {
+            return;
+        }
+        let text: String = text.chars().take(512).collect();
+        self.checkpoint_key("device_text");
+        self.song_mut().tracks[track].devices[index].text = text;
+        self.sync();
+    }
+
     // ---- automation -------------------------------------------------------------------
 
     /// The automation lane for a target in the current pattern, if it has one.

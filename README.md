@@ -32,7 +32,7 @@ An open source tracker DAW written in Rust, with a native window (egui). The goa
 - Custom fonts: pick any installed .ttf/.otf (or a file path) for the interface and the pattern grid
 - 18 colour themes (Catppuccin x4, Dracula, Gruvbox, Nord, Solarized, Tokyo Night, One Dark, Rose Pine, Everforest, Monokai) plus your own JSON theme files; Preferences (Ctrl-,) for keys, appearance, autosave, backups, OSC
 - Command palette (Ctrl-P), find and replace (Ctrl-F), randomize, expand, shrink and repeat block tools
-- Instrument LFOs, key tracking, velocity-to-cutoff; 28 native devices including sidechain, bus and multiband compressors
+- Instrument LFOs, key tracking, velocity-to-cutoff; 37 native devices (incl. convolver, maximizer, formula modulator) including sidechain, bus and multiband compressors
 - MIDI learn, MIDI clock input (tempo follow), OSC remote control, per-track stem and loop-range WAV export, CPU meter
 - Local CLAP effect plugin hosting (scan, add to a track, edit and automate parameters)
 - Lua scripting (sandboxed, one undo step per run): Scripts menu, examples, your own `.lua` files in the config folder, a console window

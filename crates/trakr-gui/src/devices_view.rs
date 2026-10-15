@@ -144,7 +144,24 @@ impl GuiApp {
                         }
                     });
                 }
-                if info.is_some_and(|i| trakr_core::MODULATORS.contains(&i.id) && i.id != "native.hydra") {
+                if spec.id == "native.formula" {
+                    let mut text = spec.text.clone();
+                    let r = ui.add(
+                        egui::TextEdit::singleline(&mut text)
+                            .desired_width(f32::INFINITY)
+                            .hint_text("e.g. sin(t * 2 * pi) * a"),
+                    );
+                    if r.changed() {
+                        self.editor.device_set_text(track, index, &text);
+                    }
+                    match trakr_engine::formula::Formula::compile(&text) {
+                        Ok(_) => ui.weak("Variables: t beat bpm a b c d note vel; sin cos tanh saw tri square noise min max clamp mix"),
+                        Err(e) => ui.colored_label(Color32::LIGHT_RED, e),
+                    };
+                }
+                if info.is_some_and(|i| {
+                    trakr_core::MODULATORS.contains(&i.id) && !matches!(i.id, "native.hydra" | "native.metamixer")
+                }) {
                     let slot = spec.param(0).round() as usize;
                     let text = if slot == 0 {
                         "Not routed: set Target device to the slot of the device to modulate".to_string()
