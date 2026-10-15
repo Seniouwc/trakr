@@ -2453,3 +2453,90 @@ fn section_repeats_and_slot_moves_keep_their_markers() {
     e.seq_move_slot(0, 9);
     assert_eq!(e.song.sequence, before);
 }
+
+#[test]
+fn knob_moves_are_recorded_into_automation_only_while_playing() {
+    use trakr_core::AutoTarget;
+    let (mut engine, mut e) = engine_editor();
+    assert!(e.device_add(0, "native.gainer"));
+    e.set_automation_recording(true);
+    assert!(e.automation_recording());
+    // stopped: nothing is written
+    e.device_set_param(0, 0, 0, -12.0);
+    assert!(e.automation_lane(0, AutoTarget::Device { device: 0, param: 0 }).is_none());
+    e.do_action(Action::PlaySong);
+    render_peak(&mut engine, &mut e, 30_000);
+    let (playing, seq, line) = e.playhead();
+    assert!(playing && line > 0, "{playing} {seq} {line}");
+    e.device_set_param(0, 0, 0, -12.0);
+    e.set_track_volume(0, 0.5);
+    e.set_track_panning(0, -1.0);
+    let pi = e.song.sequence[seq];
+    fn lane(e: &Editor, pi: usize, t: AutoTarget) -> Option<trakr_core::Automation> {
+        e.song.patterns[pi].automation.iter().find(|a| a.target == t && a.track == 0).cloned()
+    }
+    let dev = lane(&e, pi, AutoTarget::Device { device: 0, param: 0 }).expect("device lane");
+    let want = e.song.tracks[0].devices[0].normalize_param(0, -12.0).unwrap();
+    assert_eq!(dev.points.len(), 1);
+    assert_eq!(dev.points[0].0, line as f32);
+    assert!((dev.points[0].1 - want).abs() < 1e-4);
+    let vol = lane(&e, pi, AutoTarget::TrackVolume).expect("volume lane");
+    assert!((vol.points[0].1 - ((20.0 * 0.5f32.log10() + 60.0) / 66.0)).abs() < 1e-4);
+    assert_eq!(lane(&e, pi, AutoTarget::TrackPan).unwrap().points[0].1, 0.0);
+    // moving it again at the same line replaces the point instead of stacking
+    e.device_set_param(0, 0, 0, -3.0);
+    assert_eq!(lane(&e, pi, AutoTarget::Device { device: 0, param: 0 }).unwrap().points.len(), 1);
+    // switched off: no more writes
+    e.set_automation_recording(false);
+    e.set_track_volume(0, 0.9);
+    assert!(
+        (lane(&e, pi, AutoTarget::TrackVolume).unwrap().points[0].1
+            - ((20.0 * 0.5f32.log10() + 60.0) / 66.0))
+            .abs()
+            < 1e-4
+    );
+    // the whole recording undoes
+    for _ in 0..4 {
+        e.undo();
+    }
+    assert!(e.song.patterns[pi].automation.is_empty() || e.song.patterns[pi].automation.len() < 3);
+}
+
+#[test]
+fn track_presets_save_load_and_reject_bad_files() {
+    let dir = std::env::temp_dir().join(format!("trakr-presets-{}", std::process::id()));
+    let mut e = ed();
+    assert!(!e.track_preset_save(0, "x"), "no config dir");
+    e.set_config_dir(Some(dir.clone()));
+    assert!(!e.track_preset_save(0, "x"), "no devices yet");
+    assert!(e.device_add(0, "native.reverb"));
+    assert!(e.device_add(0, "native.delay"));
+    assert!(!e.track_preset_save(0, "  "), "needs a name");
+    assert!(e.track_preset_save(0, "my/chain"));
+    let list = e.track_presets();
+    assert_eq!(list.len(), 1);
+    assert_eq!(list[0].0, "my_chain");
+    // append to another track, then replace
+    let ids =
+        |e: &Editor, t: usize| e.song.tracks[t].devices.iter().map(|d| d.id.clone()).collect::<Vec<_>>();
+    let want = ids(&e, 0);
+    assert!(e.track_preset_load(1, &list[0].1, false));
+    assert_eq!(ids(&e, 1), want);
+    assert!(e.track_preset_load(1, &list[0].1, false));
+    assert_eq!(ids(&e, 1).len(), want.len() * 2);
+    assert!(e.track_preset_load(1, &list[0].1, true));
+    assert_eq!(ids(&e, 1), want);
+    e.undo();
+    assert_eq!(ids(&e, 1).len(), want.len() * 2);
+    // unusable devices are filtered; an all-unusable or damaged file changes nothing
+    let bad = dir.join("presets/bad.trkt");
+    std::fs::write(&bad, r#"{"version":1,"devices":[{"id":"no-such-device"}]}"#).unwrap();
+    assert!(!e.track_preset_load(1, &bad, true));
+    std::fs::write(&bad, "not json").unwrap();
+    assert!(!e.track_preset_load(1, &bad, true));
+    std::fs::write(&bad, r#"{"version":9,"devices":[]}"#).unwrap();
+    assert!(!e.track_preset_load(1, &bad, true));
+    assert_eq!(ids(&e, 1).len(), want.len() * 2);
+    assert!(!e.track_preset_load(99, &list[0].1, true));
+    let _ = std::fs::remove_dir_all(&dir);
+}

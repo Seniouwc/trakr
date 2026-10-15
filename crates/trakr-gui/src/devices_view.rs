@@ -36,6 +36,42 @@ impl GuiApp {
                     }
                 }
             });
+            ui.menu_button("Presets", |ui| {
+                ui.horizontal(|ui| {
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.preset_name)
+                            .hint_text("preset name")
+                            .desired_width(140.0),
+                    );
+                    if ui.button("Save chain").on_hover_text("Save this track's devices").clicked() {
+                        let name = self.preset_name.clone();
+                        if self.editor.track_preset_save(track, &name) {
+                            ui.close_menu();
+                        }
+                    }
+                });
+                ui.separator();
+                let presets = self.editor.track_presets();
+                if presets.is_empty() {
+                    ui.weak("No presets saved yet");
+                }
+                for (name, path) in presets {
+                    ui.horizontal(|ui| {
+                        if ui
+                            .button(format!("Add {name}"))
+                            .on_hover_text("Append these devices to the track")
+                            .clicked()
+                        {
+                            self.editor.track_preset_load(track, &path, false);
+                            ui.close_menu();
+                        }
+                        if ui.small_button("Replace").on_hover_text("Replace the track's devices").clicked() {
+                            self.editor.track_preset_load(track, &path, true);
+                            ui.close_menu();
+                        }
+                    });
+                }
+            });
             if self.editor.has_plugin_host() {
                 egui::ComboBox::from_id_salt("add_plugin").selected_text("+ Add plugin").show_ui(ui, |ui| {
                     if ui
@@ -251,6 +287,14 @@ impl GuiApp {
                     }
                 },
             );
+            let mut rec = self.editor.automation_recording();
+            if ui
+                .toggle_value(&mut rec, "Record knob moves")
+                .on_hover_text("While the song plays, moving a fader, pan or device knob writes points into the automation at the playing line")
+                .changed()
+            {
+                self.editor.set_automation_recording(rec);
+            }
             if let Some((t, tg)) = self.auto_target {
                 if ui.button("Clear lane").clicked() {
                     self.editor.automation_edit("auto_clear", t, tg, |a| a.points.clear());

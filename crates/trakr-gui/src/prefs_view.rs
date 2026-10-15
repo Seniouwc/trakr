@@ -299,6 +299,33 @@ impl GuiApp {
             ui.label("Pattern font size");
             ui.add(egui::Slider::new(&mut font, 10.0..=26.0).step_by(1.0));
         });
+        let (mut beat, mut bar, mut dec) = (
+            self.editor.prefs.highlight_beat,
+            self.editor.prefs.highlight_bar,
+            self.editor.prefs.decimal_lines,
+        );
+        ui.horizontal(|ui| {
+            ui.label("Highlight every");
+            ui.add(egui::DragValue::new(&mut beat).range(0..=64).custom_formatter(|v, _| {
+                if v == 0.0 {
+                    "beat".to_string()
+                } else {
+                    format!("{v:.0} lines")
+                }
+            }));
+            ui.label("and every");
+            ui.add(egui::DragValue::new(&mut bar).range(0..=32).custom_formatter(|v, _| {
+                if v == 0.0 {
+                    "4 beats".to_string()
+                } else {
+                    format!("{v:.0} beats")
+                }
+            }));
+            ui.checkbox(&mut dec, "Decimal line numbers");
+        });
+        self.editor.prefs.highlight_beat = beat;
+        self.editor.prefs.highlight_bar = bar;
+        self.editor.prefs.decimal_lines = dec;
         ui.separator();
         ui.strong("Fonts");
         let (mut ui_font, mut grid_font) =

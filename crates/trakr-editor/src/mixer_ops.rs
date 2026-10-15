@@ -3,6 +3,13 @@
 use super::*;
 use trakr_core::{AutoTarget, Automation, DeviceSpec};
 
+/// A saved device chain.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct TrackPreset {
+    version: u32,
+    devices: Vec<DeviceSpec>,
+}
+
 impl Editor {
     /// Append a native device to a track. Returns false for an unknown id.
     pub fn device_add(&mut self, track: usize, id: &str) -> bool {
@@ -87,6 +94,12 @@ impl Editor {
             d.params.extend_from_slice(&defaults[have..]);
         }
         d.params[param] = value;
+        if self.auto_record {
+            let norm = self.song.tracks[track].devices[index].normalize_param(param, value);
+            if let Some(n) = norm {
+                self.record_automation(track, AutoTarget::Device { device: index, param }, n);
+            }
+        }
         self.sync();
     }
 
@@ -102,7 +115,155 @@ impl Editor {
         self.sync();
     }
 
+    // ---- track DSP presets ------------------------------------------------------------
+
+    /// `<config dir>/presets`: saved device chains.
+    pub fn track_preset_dir(&self) -> Option<std::path::PathBuf> {
+        self.config_dir.as_ref().map(|d| d.join("presets"))
+    }
+
+    /// Saved device chains (`.trkt`) as (display name, path), sorted by name.
+    pub fn track_presets(&self) -> Vec<(String, std::path::PathBuf)> {
+        let Some(dir) = self.track_preset_dir() else { return Vec::new() };
+        let Ok(rd) = std::fs::read_dir(dir) else { return Vec::new() };
+        let mut v: Vec<(String, std::path::PathBuf)> = rd
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| p.extension().is_some_and(|e| e.eq_ignore_ascii_case("trkt")))
+            .filter_map(|p| Some((p.file_stem()?.to_string_lossy().into_owned(), p)))
+            .collect();
+        v.sort();
+        v
+    }
+
+    /// Save a track's device chain as a preset named `name` in the presets folder (or at `path`).
+    pub fn track_preset_save(&mut self, track: usize, name: &str) -> bool {
+        let Some(dir) = self.track_preset_dir() else {
+            self.status = "no settings folder for presets".into();
+            return false;
+        };
+        let Some(devices) = self.song.tracks.get(track).map(|t| t.devices.clone()) else { return false };
+        if devices.is_empty() {
+            self.status = "this track has no devices to save".into();
+            return false;
+        }
+        let safe: String = name
+            .chars()
+            .map(|c| if c.is_alphanumeric() || c == '-' || c == '_' || c == ' ' { c } else { '_' })
+            .collect();
+        let safe = safe.trim();
+        if safe.is_empty() {
+            self.status = "give the preset a name".into();
+            return false;
+        }
+        let json = match serde_json::to_string_pretty(&TrackPreset { version: 1, devices }) {
+            Ok(j) => j,
+            Err(e) => {
+                self.status = format!("saving preset failed: {e}");
+                return false;
+            }
+        };
+        if std::fs::create_dir_all(&dir).is_err() {
+            self.status = "cannot create the presets folder".into();
+            return false;
+        }
+        let path = dir.join(format!("{safe}.trkt"));
+        match std::fs::write(&path, json) {
+            Ok(()) => {
+                self.status = format!("saved preset {}", path.display());
+                true
+            }
+            Err(e) => {
+                self.status = format!("saving preset failed: {e}");
+                false
+            }
+        }
+    }
+
+    /// Load a preset file onto a track, after its current devices (`replace` false) or instead of them.
+    pub fn track_preset_load(&mut self, track: usize, path: &std::path::Path, replace: bool) -> bool {
+        if track >= self.song.tracks.len() {
+            return false;
+        }
+        let loaded: Result<TrackPreset, String> = std::fs::read_to_string(path)
+            .map_err(|e| e.to_string())
+            .and_then(|t| serde_json::from_str(&t).map_err(|e| e.to_string()));
+        match loaded {
+            Ok(p) if p.version == 1 => {
+                // devices that do not exist in this build are skipped rather than loaded as pass-throughs
+                let devices: Vec<DeviceSpec> = p
+                    .devices
+                    .into_iter()
+                    .filter(|d| d.plugin.is_some() || trakr_core::device_info(&d.id).is_some())
+                    .take(64)
+                    .collect();
+                if devices.is_empty() {
+                    self.status = "that preset holds no usable devices".into();
+                    return false;
+                }
+                self.checkpoint();
+                let n = devices.len();
+                let t = &mut self.song_mut().tracks[track];
+                if replace {
+                    t.devices.clear();
+                }
+                t.devices.extend(devices);
+                t.devices.truncate(64);
+                self.status = format!("loaded {n} device(s) from {}", path.display());
+                self.sync();
+                true
+            }
+            Ok(p) => {
+                self.status = format!("unsupported preset version {}", p.version);
+                false
+            }
+            Err(e) => {
+                self.status = format!("loading preset failed: {e}");
+                false
+            }
+        }
+    }
+
     // ---- automation -------------------------------------------------------------------
+
+    /// While on, turning a track fader, pan or device knob during playback writes a point into the lane
+    /// of the pattern that is playing, at the line that is playing.
+    pub fn automation_recording(&self) -> bool {
+        self.auto_record
+    }
+
+    pub fn set_automation_recording(&mut self, on: bool) {
+        self.auto_record = on;
+        self.status = if on {
+            "recording knob moves into automation while playing".into()
+        } else {
+            "automation recording off".into()
+        };
+    }
+
+    /// Write `norm` (0..=1) for a lane at the playing line when recording is on and the song plays.
+    pub(crate) fn record_automation(&mut self, track: usize, target: AutoTarget, norm: f32) {
+        if !self.auto_record || !norm.is_finite() {
+            return;
+        }
+        let (playing, seq, line) = self.playhead();
+        if !playing {
+            return;
+        }
+        let Some(pi) = self.song.sequence.get(seq).copied().filter(|p| *p < self.song.patterns.len()) else {
+            return;
+        };
+        self.checkpoint_key("auto_record");
+        let p = Arc::make_mut(&mut self.song_mut().patterns[pi]);
+        let i = match p.automation.iter().position(|a| a.track == track && a.target == target) {
+            Some(i) => i,
+            None => {
+                p.automation.push(Automation::new(track, target));
+                p.automation.len() - 1
+            }
+        };
+        p.automation[i].set_point(line as f32, norm);
+    }
 
     /// The automation lane for a target in the current pattern, if it has one.
     pub fn automation_lane(&self, track: usize, target: AutoTarget) -> Option<&Automation> {

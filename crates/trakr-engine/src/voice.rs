@@ -128,6 +128,11 @@ pub struct Voice {
     pan: f32,
     loop_mode: LoopMode,
     loop_release: bool,
+    one_shot: bool,
+    /// Engine rate seen by the last `mix` (for effects that convert frames to seconds).
+    rate_seen: f32,
+    /// Seconds added to the note's age for each envelope (volume, pan, pitch, cutoff): set by `0E`.
+    env_shift: [f32; 4],
     loop_start: usize,
     loop_end: usize,
     finished: bool,
@@ -258,6 +263,9 @@ impl Voice {
             pan: (pan + s.panning).clamp(-1.0, 1.0),
             loop_mode: s.loop_mode,
             loop_release: s.loop_release,
+            one_shot: s.one_shot,
+            rate_seen: 44_100.0,
+            env_shift: [0.0; 4],
             loop_start: s.loop_start,
             loop_end,
             finished: frames == 0,
@@ -295,7 +303,7 @@ impl Voice {
     }
 
     pub fn release(&mut self) {
-        if self.releasing {
+        if self.releasing || self.one_shot {
             return;
         }
         self.releasing = true;
@@ -384,6 +392,18 @@ impl Voice {
                 self.fade = Some((1.0, 1.0 / amount as f32));
             }
             b"0O" if amount > 0 => self.fade = Some((0.0, 1.0 / amount as f32)),
+            b"0E" => {
+                // x: which envelope (0 = all, 1 volume, 2 pan, 3 pitch, 4 cutoff); y: position in sixteenths
+                let now = self.age_frames as f32 / self.rate_seen.max(1.0);
+                let envs = [&self.vol_env, &self.pan_env, &self.pitch_env, &self.cutoff_env];
+                let mut shift = self.env_shift;
+                for (k, env) in envs.iter().enumerate() {
+                    if env.enabled && (x as usize == 0 || x as usize == k + 1) {
+                        shift[k] = env.end_time() * (y / 16.0) - now;
+                    }
+                }
+                self.env_shift = shift;
+            }
             _ => {}
         }
     }
@@ -511,7 +531,8 @@ impl Voice {
             semis += self.vib.1 * (self.vib_phase * std::f32::consts::TAU).sin();
         }
         if self.pitch_env.enabled {
-            let t = self.pitch_env.effective_time(age, rel);
+            let t =
+                self.pitch_env.effective_time(age + self.env_shift[2], rel.map(|r| r + self.env_shift[2]));
             semis += (self.pitch_env.value_at(t) - 0.5) * 24.0;
         }
         let native = if self.sync_lines > 0 && self.line_frames > 0.0 {
@@ -523,7 +544,7 @@ impl Voice {
         self.step_target = native * 2f64.powf(semis as f64 / 12.0);
         let mut gain = self.col_vol * self.dyn_gain * self.trem_gain * self.base_gain * lfo_vol;
         if self.vol_env.enabled {
-            let t = self.vol_env.effective_time(age, rel);
+            let t = self.vol_env.effective_time(age + self.env_shift[0], rel.map(|r| r + self.env_shift[0]));
             gain *= self.vol_env.value_at(t);
             if rel.is_some() && t >= self.vol_env.end_time() {
                 self.ending = true;
@@ -540,7 +561,7 @@ impl Voice {
         self.drive_cur = (self.drive_base + lfo_drive).clamp(0.0, 1.0);
         let mut pan = self.pan;
         if self.pan_env.enabled {
-            let t = self.pan_env.effective_time(age, rel);
+            let t = self.pan_env.effective_time(age + self.env_shift[1], rel.map(|r| r + self.env_shift[1]));
             pan += (self.pan_env.value_at(t) - 0.5) * 2.0;
         }
         if self.autopan.1 > 0.0 {
@@ -553,7 +574,9 @@ impl Voice {
         if self.filter.mode != FilterMode::Off {
             let mut cutoff = self.filter.cutoff * 2f32.powf(self.cutoff_bias + lfo_oct);
             if self.cutoff_env.enabled {
-                let t = self.cutoff_env.effective_time(age, rel);
+                let t = self
+                    .cutoff_env
+                    .effective_time(age + self.env_shift[3], rel.map(|r| r + self.env_shift[3]));
                 cutoff *= 2f32.powf((self.cutoff_env.value_at(t) - 0.5) * 10.0);
                 // +-5 octaves
             }
@@ -636,6 +659,7 @@ impl Voice {
 
     /// Add this voice into interleaved stereo `buf`; returns the peak it contributed.
     pub fn mix(&mut self, buf: &mut [f32], engine_rate: u32, track_vol: f32, track_pan: f32) -> f32 {
+        self.rate_seen = engine_rate as f32;
         let k = 1.0 - (-1.0 / (engine_rate as f32 * SMOOTH_SECONDS)).exp();
         let k64 = k as f64;
         let end_step = 1.0 / (engine_rate as f32 * 0.005); // 5 ms release

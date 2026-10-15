@@ -360,6 +360,14 @@ impl GuiApp {
             if mode != before {
                 self.editor.edit_sample(idx, |s| s.loop_mode = mode);
             }
+            let mut one_shot = self.editor.current_sample().is_some_and(|s| s.one_shot);
+            if ui
+                .checkbox(&mut one_shot, "One-shot")
+                .on_hover_text("Play to the end whatever happens: note-off does not stop it (drum hits)")
+                .changed()
+            {
+                self.editor.edit_sample(idx, |s| s.one_shot = one_shot);
+            }
             let mut release = self.editor.current_sample().is_some_and(|s| s.loop_release);
             if ui
                 .checkbox(&mut release, "Loop release")

@@ -774,7 +774,17 @@ impl Editor {
     pub fn set_track_volume(&mut self, track: usize, volume: f32) {
         if track < self.song.tracks.len() {
             self.checkpoint_key("track_volume");
-            self.song_mut().tracks[track].volume = volume.clamp(0.0, 4.0);
+            let v = volume.clamp(0.0, 4.0);
+            self.song_mut().tracks[track].volume = v;
+            if self.auto_record {
+                // the same mapping the engine uses for volume lanes: 0..1 spans -60..+6 dB
+                let db = 20.0 * v.max(1e-6).log10();
+                self.record_automation(
+                    track,
+                    trakr_core::AutoTarget::TrackVolume,
+                    ((db + 60.0) / 66.0).clamp(0.0, 1.0),
+                );
+            }
             self.sync();
         }
     }
@@ -782,7 +792,11 @@ impl Editor {
     pub fn set_track_panning(&mut self, track: usize, panning: f32) {
         if track < self.song.tracks.len() {
             self.checkpoint_key("track_pan");
-            self.song_mut().tracks[track].panning = panning.clamp(-1.0, 1.0);
+            let p = panning.clamp(-1.0, 1.0);
+            self.song_mut().tracks[track].panning = p;
+            if self.auto_record {
+                self.record_automation(track, trakr_core::AutoTarget::TrackPan, (p + 1.0) * 0.5);
+            }
             self.sync();
         }
     }

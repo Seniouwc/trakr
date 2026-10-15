@@ -23,7 +23,7 @@ Compiled from memory of Renoise 3.x behavior. Verify each item against the offic
 - [x] Undo/redo (500 steps, snapshot based)
 - [~] Block ops: transpose, interpolate (volume, pan, effect amounts), reverse, clear, randomize volumes, expand (double), shrink (half) and repeat-to-end work (Block menu); duplicate-pattern-range does not
 - [~] Insert/delete line in a track works; note-column row insert/delete and column shifting do not
-- [ ] Pattern/track/line highlight settings, beat/bar markers, hex or decimal line numbers
+- [x] Pattern/track/line highlight settings, beat/bar markers, hex or decimal line numbers (Preferences)
 - [~] Track operations: add, remove, rename, mute, solo, group and track colors (context menu) work; collapse and move do not
 - [~] Find / replace (Ctrl-F) by note, instrument or effect id in the selection, pattern or song; command palette (Ctrl-P). "Pattern properties" and sub-pattern transposition do not exist
 - [~] Phrases: per-instrument phrases (own LPB, note/effect columns, loop region, base note, key range) played by key-mapped trigger notes with transposition, editable in the Phrases dock; undo, `.trkr` roundtrip. Program mode (notes C-0..B-0 pick a phrase, other notes play it transposed) and per-phrase shuffle (swing) exist. Missing: phrase-local `Z` commands, phrase `.xrns`/`.xrni` I/O, phrase recording
@@ -38,7 +38,7 @@ Compiled from memory of Renoise 3.x behavior. Verify each item against the offic
 ## Samples and instruments
 - [~] Sample playback with linear interpolation; forward, reverse and ping-pong loops
 - [x] Import WAV, AIFF, FLAC, OGG, MP3 (symphonia); RX2/REX not required initially
-- [~] Reverse and ping-pong loops work; loop release (loop until note-off, then play on) is a per-sample switch; one-shot and sustain loop do not
+- [~] Reverse and ping-pong loops work; loop release (loop until note-off, then play on) and one-shot (play through, ignore note-off) are per-sample switches; sustain loop does not
 - [~] Interpolation modes: none (nearest), linear, cubic (Hermite, default) and 8-point sinc per instrument (sinc is band-limited when pitching up, so high content does not alias); no oversampling
 - [~] Sample editor (GUI): draw mode (drag on the waveform to draw samples), pitch shift keeping length or formants, zoomable waveform, selection, cut/copy/paste/delete/crop, silence, fades, gain, normalize, invert, DC removal, reverse, mono/stereo, tape pitch shift, resample, export to every format above. Also loop crossfade, time-stretch (WSOLA, pitch kept), slice at detected transients, bit-depth reduction with shaped dither, a spectrum view and beat sync (the sample is played so it lasts N lines at the song tempo; pitch follows speed). Missing: formant-preserving time stretch (pitch shift can keep formants)
 - [x] Slice markers (manual, shift-click, even split, transient detection) and split-to-keys work
@@ -88,7 +88,7 @@ Compiled from memory of Renoise 3.x behavior. Verify each item against the offic
 - [~] Native `.trkr` project save/load
 - [~] `.xrns` import: metadata, tracks, patterns, notes, effects, sequence, and instruments with decoded sample audio (volume, pan, transpose/finetune, loops, key mapping; warnings for anything skipped). Element names and the `SampleData/` layout are from memory and tested only against synthetic fixtures. Missing: instrument envelopes, filters, devices, automation, phrases, groups, sends
 - [~] `.xrns` export (File > Export as .xrns): metadata, tracks, patterns, sequence, instruments with 24-bit WAV samples; roundtrip-tested through the importer; warnings for envelopes, devices, automation, routing
-- [~] `.xrni` instrument import/export (File menu in the instrument panel; element names from memory, only tested through our own export), native `.trki` instrument files and an instrument bank folder; `.xrnt` track presets do not exist
+- [~] `.xrni` instrument import/export (File menu in the instrument panel; element names from memory, only tested through our own export), native `.trki` instrument files and an instrument bank folder; native `.trkt` track DSP presets (Presets menu in the device panel: save, add, replace); `.xrnt` is not read or written
 - [~] MOD import (4 to 99 channels; instruments, loops, finetune, volumes, Amiga panning, timing, common effects; unsupported effects reported); S3M (PCM channels, samples, common effects), XM (key-mapped samples, delta decoding, common effects; envelopes not imported) and IT (samples incl. compressed ones, instruments with note maps and volume/pan envelopes, patterns, common effects; format details from memory, tested against built modules only) import by content
 - [x] Autosave (every 60 s while there is unsaved work, beside the project or in the config dir), crash recovery prompt, recent files menu
 - [x] Backup of the previous file as `<name>.bak` when saving over it (Preferences)

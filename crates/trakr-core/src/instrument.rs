@@ -32,6 +32,9 @@ pub struct Sample {
     /// Loop only until note-off, then play on to the end of the sample even with a volume envelope.
     #[serde(default)]
     pub loop_release: bool,
+    /// Play to the end whatever happens: note-off and release do not stop the sample (drum hits).
+    #[serde(default)]
+    pub one_shot: bool,
     /// Inclusive key range this sample responds to.
     pub key_range: (u8, u8),
     /// Slice marker positions in frames, ascending.
@@ -62,6 +65,7 @@ impl Sample {
             loop_start: 0,
             loop_end: frames,
             loop_release: false,
+            one_shot: false,
             key_range: (0, 119),
             slices: Vec::new(),
             beat_sync_lines: 0,

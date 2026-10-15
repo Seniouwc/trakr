@@ -292,6 +292,8 @@ pub struct Editor {
     sent_chains: Vec<Vec<String>>,
     /// Per instrument: what its plugin looked like when last sent to the engine.
     sent_inst_plugins: Vec<String>,
+    /// Knob moves during playback are written into automation lanes.
+    auto_record: bool,
     /// Per instrument: the FX chain last sent to the engine, as a key.
     sent_inst_fx: Vec<String>,
     /// An event hook script is running (hooks do not trigger hooks).
@@ -403,6 +405,7 @@ impl Editor {
             last_key: None,
             sent_chains: Vec::new(),
             sent_inst_plugins: Vec::new(),
+            auto_record: false,
             sent_inst_fx: Vec::new(),
             in_hook: false,
             auto_clip: Vec::new(),

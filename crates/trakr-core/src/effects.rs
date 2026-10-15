@@ -32,6 +32,16 @@ pub const EFFECTS: &[(&str, &str, &str)] = &[
         "set the track's stereo width, 00 = mono, 80 = unchanged, FF = wide, until play or stop",
     ),
     ("0K", "Pan slide", "x = left, y = right, in 1/64 per tick; 00 stops"),
+    (
+        "0E",
+        "Envelope position",
+        "x = envelope (0 all, 1 volume, 2 pan, 3 pitch, 4 cutoff), y = position in sixteenths of its length",
+    ),
+    (
+        "ZJ",
+        "Jump to slot",
+        "after this line continue at line 0 of sequence slot xx (decimal slot number shown in hex)",
+    ),
     ("ZK", "Set ticks per line", "xx = ticks per line"),
     ("M1", "Macro 1", "move the instrument's macro 1 knob (M2 to M4 likewise): 00 = 0, FF = 1"),
 ];

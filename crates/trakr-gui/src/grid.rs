@@ -129,7 +129,13 @@ impl GuiApp {
             let height = ((area.height() / rh) as usize).saturating_sub(1).max(1);
             let nlines = ed.lines_in_pattern() as isize;
             let top = cur.line as isize - (height / 2) as isize;
-            let lpb = s.lpb.max(1) as isize;
+            let lpb = if ed.prefs.highlight_beat > 0 {
+                ed.prefs.highlight_beat as isize
+            } else {
+                s.lpb.max(1) as isize
+            };
+            let bar = lpb * if ed.prefs.highlight_bar > 0 { ed.prefs.highlight_bar as isize } else { 4 };
+            let decimal = ed.prefs.decimal_lines;
             let sel = ed.selection();
             let mut cols: Vec<ColRect> = Vec::new();
 
@@ -189,7 +195,7 @@ impl GuiApp {
                 }
                 let fg = if !in_current {
                     pal.text_other
-                } else if li % (lpb * 4) == 0 {
+                } else if li % bar == 0 {
                     pal.text_bar
                 } else if li % lpb == 0 {
                     pal.text_beat
@@ -199,7 +205,7 @@ impl GuiApp {
                 painter.text(
                     Pos2::new(area.left() + 2.0, y),
                     Align2::LEFT_TOP,
-                    format!("{li:02X}"),
+                    if decimal { format!("{li:02}") } else { format!("{li:02X}") },
                     font.clone(),
                     fg,
                 );

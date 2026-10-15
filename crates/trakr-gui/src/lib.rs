@@ -96,6 +96,8 @@ pub(crate) struct GuiApp {
     pub meter_hold: Vec<f32>,
     pub sample_tab: SampleTab,
     pub env_sel: Option<usize>,
+    /// Name typed for a new track preset.
+    pub preset_name: String,
     /// Copied envelope for the Paste button.
     pub env_clip: Option<trakr_core::Envelope>,
     pub env_drag: Option<usize>,
@@ -172,6 +174,7 @@ impl GuiApp {
             meter_hold: Vec::new(),
             sample_tab: SampleTab::Sample,
             env_sel: None,
+            preset_name: String::new(),
             env_clip: None,
             env_drag: None,
             env_span: 2.0,

@@ -24,6 +24,12 @@ pub struct Prefs {
     pub ui_scale: f32,
     /// Pattern grid font size in points.
     pub font_size: f32,
+    /// Lines between the lighter beat rows (0 = the song's lines per beat).
+    pub highlight_beat: u8,
+    /// Beat rows between the brighter bar rows (0 = four).
+    pub highlight_bar: u8,
+    /// Show line numbers in decimal instead of hex.
+    pub decimal_lines: bool,
     /// Font file for the interface text (empty = built in).
     pub ui_font: String,
     /// Font file for the pattern grid and other monospaced text (empty = built in).
@@ -68,6 +74,9 @@ impl Default for Prefs {
             theme: "dark".into(),
             ui_scale: 1.0,
             font_size: 15.0,
+            highlight_beat: 0,
+            highlight_bar: 0,
+            decimal_lines: false,
             ui_font: String::new(),
             grid_font: String::new(),
             midi_clock_out: false,

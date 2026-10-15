@@ -604,6 +604,17 @@ impl DeviceSpec {
         device_info(&self.id)?.params.get(i).map(|p| p.denormalize(t))
     }
 
+    /// Normalised 0..=1 position of `v` for parameter `i` (the inverse of `denormalize_param`).
+    pub fn normalize_param(&self, i: usize, v: f32) -> Option<f32> {
+        if !v.is_finite() {
+            return None;
+        }
+        if let Some(p) = &self.plugin {
+            return p.params.get(i).map(|p| p.normalize(v));
+        }
+        device_info(&self.id)?.params.get(i).map(|p| p.to_norm(v))
+    }
+
     /// (name, min, max, default, logarithmic, stepped, unit) of parameter `i`.
     pub fn param_meta(&self, i: usize) -> Option<(String, f32, f32, f32, bool, bool, &'static str)> {
         if let Some(p) = &self.plugin {

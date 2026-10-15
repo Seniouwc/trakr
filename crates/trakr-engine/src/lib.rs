@@ -412,6 +412,7 @@ pub fn create(sample_rate: u32) -> (Engine, EngineHandle) {
         midi_program: [0xFF; 16],
         now_frames: 0,
         pending_break: None,
+        pending_jump: None,
         stop_at_end: false,
         bend: 0.0,
         inst_plugins: (0..MAX_INSTRUMENT_PLUGINS).map(|_| None).collect(),
@@ -489,6 +490,8 @@ pub struct Engine {
     now_frames: u64,
     /// Line to jump to in the next pattern slot (ZB command).
     pending_break: Option<u16>,
+    /// Sequence slot to continue at after the current line (ZJ command).
+    pending_jump: Option<usize>,
     stop_at_end: bool,
     bend: f32,
     /// Instrument plugins by instrument index, the track each last played on, and their held notes.
@@ -1282,6 +1285,7 @@ impl Engine {
                     self.events.clear();
                     self.clear_phrases();
                     self.pending_break = None;
+                    self.pending_jump = None;
                     self.playing = true;
                 }
                 Command::PlayBlock { seq_pos, first, last } => {
@@ -1302,6 +1306,7 @@ impl Engine {
                     self.events.clear();
                     self.clear_phrases();
                     self.pending_break = None;
+                    self.pending_jump = None;
                     self.playing = true;
                 }
                 Command::Stop => {
@@ -1312,6 +1317,7 @@ impl Engine {
                     self.events.clear();
                     self.clear_phrases();
                     self.pending_break = None;
+                    self.pending_jump = None;
                 }
                 Command::SetStopAtEnd(v) => self.stop_at_end = v,
                 Command::PitchBend(semis) => {
@@ -1816,6 +1822,7 @@ impl Engine {
                 b"ZT" if fx.amount >= 32 => this.bpm = fx.amount as f32,
                 b"ZL" if fx.amount >= 1 => this.lpb = fx.amount,
                 b"ZB" => this.pending_break = Some(fx.amount as u16),
+                b"ZJ" => this.pending_jump = Some(fx.amount as usize),
                 b"ZK" if fx.amount >= 1 => this.tpl = fx.amount,
                 b"0L" if ti < MAX_TRACKS => this.fx_vol[ti] = Some(fx.amount as f32 / 128.0),
                 b"0P" if ti < MAX_TRACKS => {
@@ -2015,6 +2022,15 @@ impl Engine {
         let lines = self.song.pattern_at(self.seq_pos).map_or(1, |p| p.number_of_lines);
         self.line += 1;
         let brk = self.pending_break.take();
+        if let Some(slot) = self.pending_jump.take() {
+            if self.block.is_none() {
+                self.seq_pos = slot.min(self.song.sequence.len().saturating_sub(1));
+                self.section_plays = 0;
+                let n = self.song.pattern_at(self.seq_pos).map_or(1, |p| p.number_of_lines);
+                self.line = brk.map_or(0, |l| l.min(n - 1));
+                return;
+            }
+        }
         if let Some((first, last)) = self.block {
             if self.line > last {
                 self.line = first;
@@ -2944,6 +2960,67 @@ mod sequencer_tests {
             order.push(h.pos.get().1);
         }
         assert_eq!(&order[..6], &[0, 1, 2, 3, 0, 1], "{order:?}");
+    }
+
+    #[test]
+    fn one_shot_samples_ignore_note_off() {
+        let tail = |one_shot: bool| {
+            let mut song = song_with(vec![1.0; 3000], LoopMode::Off);
+            song.instruments[0].samples[0].one_shot = one_shot;
+            put(&mut song, 0, |l| note(&mut l.notes[0]));
+            put(&mut song, 1, |l| l.notes[0].note = NOTE_OFF);
+            let out = render(song, 4000);
+            out.iter().rposition(|s| s.abs() > 0.5).unwrap_or(0)
+        };
+        assert!(tail(false) < 1100, "a normal sample stops at its note-off");
+        assert!(tail(true) > 2900, "a one-shot plays to the end");
+    }
+
+    #[test]
+    fn envelope_position_command_jumps_inside_the_envelope() {
+        let first = |cmd: Option<u8>| {
+            let mut song = song_with(vec![1.0; 3000], LoopMode::Off);
+            song.instruments[0].volume_env = Arc::new(trakr_core::Envelope {
+                enabled: true,
+                points: vec![(0.0, 0.0), (1.0, 1.0)],
+                ..Default::default()
+            });
+            put(&mut song, 0, |l| {
+                note(&mut l.notes[0]);
+                if let Some(c) = cmd {
+                    l.notes[0].effect = EffectCmd { id: *b"0E", amount: c };
+                }
+            });
+            let out = render(song, 600);
+            out[200]
+        };
+        let plain = first(None);
+        let jumped = first(Some(0x18)); // volume envelope, halfway
+        assert!(plain < 0.4, "{plain}");
+        assert!(jumped > 0.5 && jumped < 0.8, "starts halfway up the ramp: {jumped}");
+        // x = 2 (pan envelope) leaves the volume ramp alone
+        let other = first(Some(0x28));
+        assert!((other - plain).abs() < 0.05, "{other} vs {plain}");
+    }
+
+    #[test]
+    fn zj_jumps_to_a_slot_after_the_line() {
+        let mut song = song_with(vec![1.0; 10], LoopMode::Off);
+        song.patterns[0] = Arc::new(trakr_core::Pattern::new(song.tracks.len(), 4));
+        song.sequence = vec![0, 0, 0, 0];
+        song.slot_meta = vec![];
+        put(&mut song, 1, |l| l.effects[0] = EffectCmd { id: *b"ZJ", amount: 3 });
+        let (mut engine, mut h) = create(RATE);
+        h.send(Command::SetSong(Arc::new(song)));
+        h.send(Command::Play { seq_pos: 0, line: 0, loop_pattern: false });
+        let mut seen = Vec::new();
+        for _ in 0..8 {
+            let mut out = vec![0.0; 2 * 1000];
+            engine.render(&mut out);
+            seen.push(h.pos.get());
+        }
+        let slots: Vec<(usize, u16)> = seen.iter().map(|p| (p.1, p.2)).collect();
+        assert_eq!(&slots[..4], &[(0, 0), (0, 1), (3, 0), (3, 1)], "{slots:?}");
     }
 
     #[test]
@@ -3902,10 +3979,10 @@ mod device_tests {
         }
     }
 
-    const FX_IDS: [&[u8; 2]; 33] = [
+    const FX_IDS: [&[u8; 2]; 35] = [
         b"ZT", b"ZL", b"ZB", b"0S", b"0B", b"0C", b"0Q", b"0R", b"0U", b"0D", b"0G", b"0V", b"0T", b"0A",
         b"0W", b"0I", b"0O", b"XX", b"00", b"ZZ", b"0M", b"0N", b"0Y", b"0L", b"0P", b"0X", b"ZK", b"M1",
-        b"M2", b"M4", b"M9", b"0H", b"0K",
+        b"M2", b"M4", b"M9", b"0H", b"0K", b"0E", b"ZJ",
     ];
 
     /// Stands in for a hosted plugin: scales the signal by the first parameter.
@@ -4043,6 +4120,7 @@ mod device_tests {
             }
             for s in &mut inst.samples {
                 s.loop_release = rng.below(2) == 0;
+                s.one_shot = rng.below(4) == 0;
             }
             inst.key_track = rng.below(1000) as f32 / 100.0 - 3.0;
             inst.vel_cutoff = rng.below(1000) as f32 / 100.0 - 3.0;
