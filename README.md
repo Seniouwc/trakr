@@ -25,16 +25,17 @@ An open source tracker DAW written in Rust, with a native window (egui). The goa
 - A synthesized showcase song opens by default so there is something to play and edit straight away
 - MIDI keyboard input (play and record notes, CC volume/pan, transport); MIDI output per instrument and MIDI clock/start/stop master
 - Mixer with per-track volume, pan, mute, solo, level meters; song loop range
-- 20 track devices (filters, EQs, dynamics, delay, reverb, modulation and distortion effects, plus LFO and envelope-follower modulators that drive any other device's parameter), instrument filter with cutoff envelope, and pattern automation of any device parameter
+- Track devices (filters, EQs, dynamics, delay, reverb, modulation and distortion effects, plus LFO and envelope-follower modulators that drive any other device's parameter), instrument filter with cutoff envelope, and pattern automation of any device parameter
 - Real-time engine with sequencer, voices and mixer (cpal audio output)
 - Native `.trkr` project format (zip of `song.json` and raw sample data), autosave with crash recovery, recent files, saved preferences
-- `.mod`, `.s3m` and `.xm` module import
+- `.mod`, `.s3m`, `.xm` and `.it` module import, `.xrni` and `.trki` instrument files
 - Custom fonts: pick any installed .ttf/.otf (or a file path) for the interface and the pattern grid
 - 18 colour themes (Catppuccin x4, Dracula, Gruvbox, Nord, Solarized, Tokyo Night, One Dark, Rose Pine, Everforest, Monokai) plus your own JSON theme files; Preferences (Ctrl-,) for keys, appearance, autosave, backups, OSC
 - Command palette (Ctrl-P), find and replace (Ctrl-F), randomize, expand, shrink and repeat block tools
-- Instrument LFOs, key tracking, velocity-to-cutoff; 37 native devices (incl. convolver, maximizer, formula modulator) including sidechain, bus and multiband compressors
+- Instrument LFOs, key tracking, velocity-to-cutoff; 44 native devices (incl. convolver, maximizer, formula modulator, pitch shifter, comb filter, flanger) including sidechain, bus and multiband compressors
 - MIDI learn, MIDI clock input (tempo follow), OSC remote control, per-track stem and loop-range export, CPU meter
-- Local CLAP effect plugin hosting (scan, add to a track, edit and automate parameters)
+- Local CLAP plugin hosting: effects on tracks, instruments as an instrument's Plugin tab, parameter sliders and automation, the plugin's own floating window, state saved with the song, latency compensation
+- Automation with curve shapes, range tools and tempo / lines-per-beat lanes; section repeat counts; per-instrument FX chains and drive; volume and panning column letter commands; export tags
 - Lua scripting (sandboxed, one undo step per run): Scripts menu, examples, your own `.lua` files in the config folder, a console window
 - Best-effort `.xrns` import and export (patterns and instruments with samples) for interoperability
 

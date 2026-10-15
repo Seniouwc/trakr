@@ -31,7 +31,7 @@ New commands go into `trakr-editor::Action` (label + shortcut) so menus, keys an
 | `trakr-format` | Native `.trkr` (zip: `song.json` + raw f32 samples). Versioned via `FORMAT_VERSION`. |
 | `trakr-sample` | Audio file decoding (symphonia) into `Sample`, WAV writer. |
 | `trakr-encode` | Export encoders: WAV, FLAC (flacenc), Ogg Vorbis (vorbis_rs), MP3 (LAME), AAC (fdk-aac, ADTS), Opus (libopus + ogg). `ExportFormat` with a 0..=10 quality scale. C encoders build at -O0 in dev (see Cargo.toml); needs cmake + a C++ compiler. |
-| `trakr-mod` | ProTracker `.mod`, Scream Tracker `.s3m` and FastTracker `.xm` importers (`import_any` sniffs the format). |
+| `trakr-mod` | ProTracker `.mod`, Scream Tracker `.s3m`, FastTracker `.xm` and Impulse Tracker `.it` importers (`import_any` sniffs the format). |
 | `trakr-xrns` | Best-effort `.xrns` importer. Element names are from memory, unverified against real files. |
 | `trakr-script` | Lua scripting (mlua, vendored Lua 5.4): `run(song, ctx, source)` edits a song copy, sandboxed with limits. Depends on core only. |
 | `trakr-clap` | Hosts local CLAP effect and instrument plugins (clap-sys + libloading): note input, floating windows, timers/fds, state; implements `trakr_engine::PluginHost`/`PluginGui`. `trakr-test-plugin` holds a tiny CLAP effect and a sine synth (with a fake window, timer and state) used by its tests. |
