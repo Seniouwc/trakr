@@ -398,6 +398,7 @@ pub fn create(sample_rate: u32) -> (Engine, EngineHandle) {
         fx_pan: [None; MAX_TRACKS],
         fx_width: [None; MAX_TRACKS],
         program_sel: [0; MAX_TRACKS],
+        section_plays: 0,
         chance: 0x2545_F491_4F6C_DD1D,
         voices: Vec::with_capacity(MAX_VOICES),
         events: Vec::with_capacity(MAX_EVENTS),
@@ -468,6 +469,8 @@ pub struct Engine {
     fx_pan: [Option<f32>; MAX_TRACKS],
     /// Track stereo width set by `0H` (0 = mono, 1 = unchanged, 2 = wide).
     fx_width: [Option<f32>; MAX_TRACKS],
+    /// Completed plays of the section being played (for section repeat counts).
+    section_plays: u32,
     /// Phrase picked per track by program-mode notes.
     program_sel: [u8; MAX_TRACKS],
     chance: u64,
@@ -1263,6 +1266,7 @@ impl Engine {
                     }
                 }
                 Command::Play { seq_pos, line, loop_pattern } => {
+                    self.section_plays = 0;
                     self.bpm = self.song.bpm;
                     self.lpb = self.song.lpb;
                     self.tpl = self.song.tpl;
@@ -1974,6 +1978,37 @@ impl Engine {
         drop(song);
     }
 
+    /// At the end of a section that should play again, jump back to its first slot. Returns true when it did.
+    fn repeat_section(&mut self) -> bool {
+        let meta = &self.song.slot_meta;
+        let len = self.song.sequence.len();
+        if meta.is_empty() || self.seq_pos >= meta.len().min(len) {
+            self.section_plays = 0;
+            return false;
+        }
+        let mut start = self.seq_pos;
+        while start > 0 && meta[start].section.is_none() {
+            start -= 1;
+        }
+        if meta[start].section.is_none() {
+            self.section_plays = 0;
+            return false;
+        }
+        let next = self.seq_pos + 1;
+        let ends_here = next >= len || meta.get(next).is_none_or(|m| m.section.is_some());
+        if !ends_here {
+            return false;
+        }
+        self.section_plays += 1;
+        if self.section_plays < self.song.section_repeats(start) {
+            self.seq_pos = start;
+            true
+        } else {
+            self.section_plays = 0;
+            false
+        }
+    }
+
     fn advance_line(&mut self) {
         self.pos.seq_pos.store(self.seq_pos as u32, Ordering::Relaxed);
         self.pos.line.store(self.line as u32, Ordering::Relaxed);
@@ -1989,8 +2024,10 @@ impl Engine {
         if self.line >= lines || brk.is_some() {
             self.line = 0;
             if !self.loop_pattern {
-                match self.song.loop_range {
+                let loop_range = self.song.loop_range;
+                match loop_range {
                     Some((a, b)) if self.seq_pos == b && a <= b => self.seq_pos = a,
+                    _ if self.repeat_section() => {}
                     _ => {
                         self.seq_pos += 1;
                         if self.seq_pos >= self.song.sequence.len() {
@@ -2872,6 +2909,44 @@ mod sequencer_tests {
     }
 
     #[test]
+    fn sections_repeat_before_the_song_moves_on() {
+        let mut song = song_with(vec![1.0; 10], LoopMode::Off);
+        song.patterns[0] = Arc::new(trakr_core::Pattern::new(song.tracks.len(), 1));
+        song.sequence = vec![0, 0, 0, 0];
+        song.slot_meta = vec![trakr_core::SlotMeta::default(); 4];
+        song.slot_meta[0].section = Some("A".into());
+        song.slot_meta[0].repeat = 3; // slots 0 and 1, three times
+        song.slot_meta[2].section = Some("B".into());
+        song.slot_meta[2].repeat = 2; // slots 2 and 3, twice
+        let (mut engine, mut h) = create(RATE);
+        h.send(Command::SetSong(Arc::new(song.clone())));
+        h.send(Command::Play { seq_pos: 0, line: 0, loop_pattern: false });
+        let mut seen = Vec::new();
+        for _ in 0..16 {
+            // one line (1000 frames) at a time; the position is published when a line starts
+            let mut out = vec![0.0; 2 * 1000];
+            engine.render(&mut out);
+            seen.push(h.pos.get().1);
+        }
+        // the position published after each rendered line is the slot that line played
+        let expected = [0usize, 1, 0, 1, 0, 1, 2, 3, 2, 3, 0, 1, 0, 1, 0, 1];
+        assert_eq!(seen, expected);
+        // no repeat counts: unchanged behavior
+        let mut plain = song.clone();
+        plain.slot_meta.iter_mut().for_each(|m| m.repeat = 0);
+        let (mut engine, mut h) = create(RATE);
+        h.send(Command::SetSong(Arc::new(plain)));
+        h.send(Command::Play { seq_pos: 0, line: 0, loop_pattern: false });
+        let mut order = Vec::new();
+        for _ in 0..7 {
+            let mut out = vec![0.0; 2 * 1000];
+            engine.render(&mut out);
+            order.push(h.pos.get().1);
+        }
+        assert_eq!(&order[..6], &[0, 1, 2, 3, 0, 1], "{order:?}");
+    }
+
+    #[test]
     fn quantized_delay_effect_uses_ticks() {
         let mut song = song_with(vec![1.0; 100], LoopMode::Off);
         put(&mut song, 0, |l| {
@@ -3503,6 +3578,7 @@ mod device_tests {
             points: vec![(0.0, 1.0), (1.0, 1.0)],
             sustain: None,
             loop_points: None,
+            curve: Default::default(),
         });
         let out = render(song, 20_000);
         assert!(peak(&out[5000..20_000]) > 0.5);
@@ -3947,6 +4023,7 @@ mod device_tests {
                     } else {
                         None
                     },
+                    curve: *rng.pick(&trakr_core::AutoCurve::ALL),
                 };
             }
             inst.drive = rng.below(300) as f32 / 100.0 - 1.0;
@@ -4077,7 +4154,18 @@ mod device_tests {
         }
         song.patterns = vec![Arc::new(pat)];
         song.sequence = vec![0, 0];
-        song.slot_meta = vec![trakr_core::SlotMeta { mutes: rng.below(1 << 10) as u64, section: None }];
+        song.slot_meta = vec![
+            trakr_core::SlotMeta {
+                mutes: rng.below(1 << 10) as u64,
+                section: if rng.below(2) == 0 { Some("s".into()) } else { None },
+                repeat: rng.below(6) as u8,
+            },
+            trakr_core::SlotMeta {
+                section: if rng.below(2) == 0 { Some("t".into()) } else { None },
+                repeat: 255,
+                ..Default::default()
+            },
+        ];
         song.groove = (0..rng.below(10)).map(|_| *rng.pick(&[0.0, 0.3, -0.7, f32::NAN, 5.0])).collect();
         song
     }
@@ -4138,6 +4226,16 @@ mod device_tests {
                             }
                         }
                     }
+                    for (i, inst) in song.instruments.iter().enumerate() {
+                        for d in 0..inst.fx.len() {
+                            let mut one = song.clone();
+                            one.instruments[i].fx.remove(d);
+                            if finite_for(&one, rate) {
+                                culprits
+                                    .push(format!("inst{i}-fx:{}:{:?}", inst.fx[d].id, inst.fx[d].params));
+                            }
+                        }
+                    }
                     panic!(
                         "round {round} rate {rate}: culprits {culprits:?}; non-finite output. finite without devices: {}, without instrument filters: {}. devices: {devs:?}",
                         finite_for(&no_dev, rate),
@@ -4173,6 +4271,9 @@ mod device_tests {
         h.send(Command::SetSong(Arc::new(song.clone())));
         for (track, chain) in chains.into_iter().enumerate() {
             h.send(Command::SetChain { track, chain });
+        }
+        for (instrument, chain) in song_fx_chains(song, rate) {
+            h.send(Command::SetInstrumentChain { instrument, chain });
         }
         h.send(Command::Play { seq_pos: 0, line: 0, loop_pattern: true });
         for _ in 0..(rate as usize * 2 / 256) {

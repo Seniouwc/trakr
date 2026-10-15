@@ -288,6 +288,7 @@ fn read_envelope(r: &Reader, at: usize, tick_secs: f32, pan: bool) -> Option<Env
         sustain: (flags & 4 != 0 && sb == se && sb < n).then_some(sb),
         loop_points: (flags & 2 != 0 && le > lb && le < n).then_some((lb, le)),
         points,
+        curve: Default::default(),
     })
 }
 

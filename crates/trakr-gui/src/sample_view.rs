@@ -220,11 +220,17 @@ impl GuiApp {
             let before_i = interp;
             egui::ComboBox::from_id_salt("interp")
                 .selected_text(match interp {
+                    trakr_core::Interpolation::Nearest => "Interpolation: none",
                     trakr_core::Interpolation::Linear => "Interpolation: linear",
                     trakr_core::Interpolation::Cubic => "Interpolation: cubic",
                     trakr_core::Interpolation::Sinc => "Interpolation: sinc",
                 })
                 .show_ui(ui, |ui| {
+                    ui.selectable_value(
+                        &mut interp,
+                        trakr_core::Interpolation::Nearest,
+                        "None: the nearest frame, gritty like old samplers",
+                    );
                     ui.selectable_value(&mut interp, trakr_core::Interpolation::Linear, "Linear: cheapest");
                     ui.selectable_value(
                         &mut interp,

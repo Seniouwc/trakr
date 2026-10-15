@@ -15,6 +15,9 @@ pub struct SlotMeta {
     /// A section starts at this slot, with this name.
     #[serde(default)]
     pub section: Option<String>,
+    /// How many times the section that starts here plays before the song moves on (0 or 1 = once).
+    #[serde(default)]
+    pub repeat: u8,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -122,6 +125,11 @@ impl Song {
                 (*start, end.max(*start), name.to_string())
             })
             .collect()
+    }
+
+    /// Times the section starting at `slot` plays (at least once).
+    pub fn section_repeats(&self, slot: usize) -> u32 {
+        self.slot_meta.get(slot).map_or(1, |m| m.repeat.max(1) as u32)
     }
 
     /// The section a slot belongs to, if any: (first slot, last slot, name).
@@ -345,7 +353,7 @@ mod structure_tests {
     #[test]
     fn slot_meta_follows_the_sequence() {
         let mut s = Song::default();
-        s.insert_slot(1, 0, SlotMeta { mutes: 0b10, section: Some("Verse".into()) });
+        s.insert_slot(1, 0, SlotMeta { mutes: 0b10, section: Some("Verse".into()), repeat: 0 });
         s.insert_slot(2, 0, SlotMeta::default());
         assert_eq!(s.sequence.len(), 3);
         assert!(s.slot_muted(1, 1) && !s.slot_muted(1, 0) && !s.slot_muted(0, 1) && !s.slot_muted(9, 1));

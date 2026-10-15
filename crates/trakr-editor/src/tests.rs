@@ -2418,3 +2418,38 @@ fn instrument_fx_chain_edits_are_undoable_and_reach_the_engine() {
     let back: Song = serde_json::from_str(&json).unwrap();
     assert_eq!(back.instruments[0].fx.len(), 16, "FX chains are saved with the song");
 }
+
+#[test]
+fn section_repeats_and_slot_moves_keep_their_markers() {
+    let mut e = ed();
+    e.do_action(Action::SeqInsert);
+    e.do_action(Action::SeqInsert);
+    assert_eq!(e.song.sequence.len(), 3);
+    e.seq_goto(0);
+    e.section_toggle_here();
+    e.section_set_repeat(0, 4);
+    assert_eq!(e.song.section_repeats(0), 4);
+    e.section_set_repeat(1, 3);
+    assert!(e.status.contains("does not start"), "{}", e.status);
+    e.section_set_repeat(0, 200);
+    assert_eq!(e.song.section_repeats(0), 99, "clamped");
+    e.section_set_repeat(0, 0);
+    assert_eq!(e.song.section_repeats(0), 1);
+    e.section_set_repeat(0, 2);
+    // dragging slot 0 to the end carries its section marker and repeat count
+    let first_pattern = e.song.sequence[0];
+    e.seq_move_slot(0, 2);
+    assert_eq!(e.song.sequence[2], first_pattern);
+    assert_eq!(e.song.slot_meta[2].section.as_deref(), Some("Section 1"));
+    assert_eq!(e.song.slot_meta[2].repeat, 2);
+    assert!(e.song.slot_meta[0].section.is_none());
+    assert_eq!(e.seq_pos, 2);
+    e.undo();
+    assert_eq!(e.song.slot_meta[0].repeat, 2);
+    // nonsense moves are ignored
+    let before = e.song.sequence.clone();
+    e.seq_move_slot(0, 0);
+    e.seq_move_slot(9, 0);
+    e.seq_move_slot(0, 9);
+    assert_eq!(e.song.sequence, before);
+}

@@ -347,6 +347,8 @@ impl Sample {
 /// How samples are read between their stored frames when played at another pitch.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Interpolation {
+    /// No interpolation: the nearest stored frame. Gritty and exact, like old samplers and trackers.
+    Nearest,
     /// Straight line between neighbours: cheapest, dull and slightly noisy on big pitch shifts.
     Linear,
     /// 4-point Hermite spline: smooth and cheap. The default.

@@ -133,6 +133,51 @@ impl GuiApp {
             if ui.add_enabled(env.loop_points.is_some(), egui::Button::new("No loop")).clicked() {
                 self.editor.edit_instrument("env_loop", |inst| kind.get_mut(inst).loop_points = None);
             }
+            ui.separator();
+            let mut curve = env.curve;
+            egui::ComboBox::from_id_salt("env_curve")
+                .selected_text(format!("Curve: {}", curve.label()))
+                .show_ui(ui, |ui| {
+                    for c in trakr_core::AutoCurve::ALL {
+                        ui.selectable_value(&mut curve, c, c.label());
+                    }
+                });
+            if curve != env.curve {
+                self.editor.edit_instrument("env_curve", |i| kind.get_mut(i).curve = curve);
+            }
+            if ui.small_button("Flip").on_hover_text("Mirror the values").clicked() {
+                self.editor.edit_instrument("env_flip", |i| kind.get_mut(i).flip());
+            }
+            if ui.small_button("Reverse").on_hover_text("Play the shape backwards").clicked() {
+                self.editor.edit_instrument("env_reverse", |i| kind.get_mut(i).reverse());
+            }
+            if ui.small_button("x0.5").on_hover_text("Halve the depth around the middle").clicked() {
+                self.editor.edit_instrument("env_scale", |i| kind.get_mut(i).scale_values(0.5));
+            }
+            if ui.small_button("x2").on_hover_text("Double the depth around the middle").clicked() {
+                self.editor.edit_instrument("env_scale", |i| kind.get_mut(i).scale_values(2.0));
+            }
+            if ui.small_button("Slower").on_hover_text("Stretch the time axis by two").clicked() {
+                self.editor.edit_instrument("env_time", |i| kind.get_mut(i).scale_time(2.0));
+            }
+            if ui.small_button("Faster").on_hover_text("Squeeze the time axis by two").clicked() {
+                self.editor.edit_instrument("env_time", |i| kind.get_mut(i).scale_time(0.5));
+            }
+            if ui.small_button("Copy").on_hover_text("Copy this envelope").clicked() {
+                self.env_clip = Some(env.clone());
+            }
+            if ui
+                .add_enabled(self.env_clip.is_some(), egui::Button::new("Paste"))
+                .on_hover_text(
+                    "Replace this envelope with the copied one (also between instruments and envelope types)",
+                )
+                .clicked()
+            {
+                if let Some(c) = self.env_clip.clone() {
+                    self.editor.edit_instrument("env_paste", |i| *kind.get_mut(i) = c);
+                    self.env_sel = None;
+                }
+            }
             ui.label("View");
             ui.add(egui::DragValue::new(&mut self.env_span).range(0.1..=30.0).speed(0.05).suffix(" s"));
             ui.weak(kind.hint());
@@ -177,7 +222,23 @@ impl GuiApp {
         let accent = if env.enabled { Color32::from_rgb(90, 200, 120) } else { Color32::from_gray(110) };
         let pts: Vec<Pos2> = env.points.iter().map(|&(t, v)| to_pos(t, v)).collect();
         if pts.len() > 1 {
-            painter.add(egui::Shape::line(pts.clone(), Stroke::new(2.0_f32, accent)));
+            if env.curve == trakr_core::AutoCurve::Linear {
+                painter.add(egui::Shape::line(pts.clone(), Stroke::new(2.0_f32, accent)));
+            } else {
+                // draw the segments the way the engine evaluates them
+                let mut line = Vec::new();
+                for w in env.points.windows(2) {
+                    for k in 0..24 {
+                        let f = k as f32 / 24.0;
+                        line.push(to_pos(
+                            w[0].0 + (w[1].0 - w[0].0) * f,
+                            w[0].1 + (w[1].1 - w[0].1) * env.curve.shape(f),
+                        ));
+                    }
+                }
+                line.push(pts[pts.len() - 1]);
+                painter.add(egui::Shape::line(line, Stroke::new(2.0_f32, accent)));
+            }
         }
         for (i, p) in pts.iter().enumerate() {
             let selected = self.env_sel == Some(i);

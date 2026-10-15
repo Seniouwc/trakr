@@ -13,6 +13,9 @@ pub struct Envelope {
     /// Point indices `(from, to)`: while the key is held the envelope repeats the stretch between them.
     #[serde(default)]
     pub loop_points: Option<(usize, usize)>,
+    /// Shape of the segments between points.
+    #[serde(default)]
+    pub curve: crate::automation::AutoCurve,
 }
 
 impl Envelope {
@@ -28,6 +31,7 @@ impl Envelope {
             ],
             sustain: Some(2),
             loop_points: None,
+            curve: crate::automation::AutoCurve::Linear,
         }
     }
 
@@ -75,11 +79,41 @@ impl Envelope {
                 for w in p.windows(2) {
                     if t <= w[1].0 {
                         let span = (w[1].0 - w[0].0).max(1e-6);
-                        return w[0].1 + (w[1].1 - w[0].1) * ((t - w[0].0) / span);
+                        let k = self.curve.shape((t - w[0].0) / span);
+                        return w[0].1 + (w[1].1 - w[0].1) * k;
                     }
                 }
                 p[p.len() - 1].1
             }
+        }
+    }
+
+    /// Mirror every value (high becomes low).
+    pub fn flip(&mut self) {
+        self.points.iter_mut().for_each(|p| p.1 = 1.0 - p.1);
+    }
+
+    /// Play the shape backwards in time. Sustain and loop points follow their points.
+    pub fn reverse(&mut self) {
+        let end = self.end_time();
+        let n = self.points.len();
+        self.points.reverse();
+        self.points.iter_mut().for_each(|p| p.0 = end - p.0);
+        self.sustain = self.sustain.map(|s| n - 1 - s);
+        self.loop_points = self.loop_points.map(|(a, b)| (n - 1 - b, n - 1 - a));
+    }
+
+    /// Scale the values around the middle (0.5) by `factor`.
+    pub fn scale_values(&mut self, factor: f32) {
+        if factor.is_finite() {
+            self.points.iter_mut().for_each(|p| p.1 = (0.5 + (p.1 - 0.5) * factor).clamp(0.0, 1.0));
+        }
+    }
+
+    /// Stretch or squeeze the time axis by `factor` (2.0 = twice as slow).
+    pub fn scale_time(&mut self, factor: f32) {
+        if factor.is_finite() && factor > 0.0 {
+            self.points.iter_mut().for_each(|p| p.0 *= factor);
         }
     }
 
@@ -155,6 +189,7 @@ mod tests {
             points: vec![(0.0, 0.0), (0.1, 1.0), (0.2, 0.0), (0.5, 0.0)],
             sustain: None,
             loop_points: Some((1, 2)),
+            curve: Default::default(),
         };
         // held: 0..0.1 plays once, then 0.1..0.2 repeats forever
         assert!((e.effective_time(0.05, None) - 0.05).abs() < 1e-6);
@@ -168,5 +203,39 @@ mod tests {
         assert_eq!(bad.effective_time(0.3, None), 0.3);
         bad.loop_points = Some((1, 99));
         assert_eq!(bad.effective_time(0.3, None), 0.3);
+    }
+
+    #[test]
+    fn curves_and_edit_helpers() {
+        let mut e = Envelope::adsr(0.1, 0.1, 0.5, 0.2);
+        assert!((e.value_at(0.05) - 0.5).abs() < 1e-6);
+        e.curve = crate::automation::AutoCurve::EaseIn;
+        assert!((e.value_at(0.05) - 0.25).abs() < 1e-6, "ease-in is below the straight line");
+        e.curve = Default::default();
+        let before = e.clone();
+        e.flip();
+        assert!((e.points[1].1 - 0.0).abs() < 1e-6 && (e.points[0].1 - 1.0).abs() < 1e-6);
+        e.flip();
+        assert_eq!(e, before);
+        e.scale_values(0.5);
+        assert!((e.points[1].1 - 0.75).abs() < 1e-6);
+        e.scale_values(f32::NAN);
+        assert!((e.points[1].1 - 0.75).abs() < 1e-6);
+        let mut r = before.clone();
+        r.reverse();
+        assert!((r.points[0].0 - 0.0).abs() < 1e-6 && (r.points[3].0 - r.end_time()).abs() < 1e-6);
+        assert_eq!(r.sustain, Some(1), "sustain follows its point (2 of 4 mirrors to 1)");
+        assert!((r.points[3].1 - 0.0).abs() < 1e-6 && (r.points[0].1 - 0.0).abs() < 1e-6);
+        r.reverse();
+        assert_eq!(
+            r.points.iter().map(|p| (p.0 * 1000.0).round()).collect::<Vec<_>>(),
+            before.points.iter().map(|p| (p.0 * 1000.0).round()).collect::<Vec<_>>()
+        );
+        let mut t = before.clone();
+        t.scale_time(2.0);
+        assert!((t.end_time() - before.end_time() * 2.0).abs() < 1e-6);
+        t.scale_time(-1.0);
+        t.scale_time(0.0);
+        assert!((t.end_time() - before.end_time() * 2.0).abs() < 1e-6, "bad factors are ignored");
     }
 }

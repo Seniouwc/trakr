@@ -37,6 +37,8 @@ impl GuiApp {
             }
         });
         let mut rename: Option<(usize, String)> = None;
+        let mut repeat: Option<(usize, u8)> = None;
+        let mut moved: Option<(usize, usize)> = None;
         egui::ScrollArea::both().id_salt("matrix").auto_shrink([false, false]).show(ui, |ui| {
             egui::Grid::new("matrix_grid").spacing([2.0, 2.0]).show(ui, |ui| {
                 // section names above the slot numbers
@@ -45,14 +47,24 @@ impl GuiApp {
                     let name = self.editor.song.slot_meta.get(slot).and_then(|m| m.section.clone());
                     match name {
                         Some(mut n) => {
-                            let r = ui.add(
-                                egui::TextEdit::singleline(&mut n)
-                                    .desired_width(CELL.x)
-                                    .font(egui::TextStyle::Small),
-                            );
-                            if r.changed() {
-                                rename = Some((slot, n));
-                            }
+                            ui.horizontal(|ui| {
+                                let r = ui.add(
+                                    egui::TextEdit::singleline(&mut n)
+                                        .desired_width(CELL.x)
+                                        .font(egui::TextStyle::Small),
+                                );
+                                if r.changed() {
+                                    rename = Some((slot, n.clone()));
+                                }
+                                let mut times = self.editor.song.section_repeats(slot) as u8;
+                                if ui
+                                    .add(egui::DragValue::new(&mut times).range(1..=99).prefix("x"))
+                                    .on_hover_text("How many times this section plays")
+                                    .changed()
+                                {
+                                    repeat = Some((slot, times));
+                                }
+                            });
                         }
                         None => {
                             ui.label("");
@@ -66,11 +78,18 @@ impl GuiApp {
                     let label = egui::RichText::new(format!("{slot:02X}")).monospace().color(
                         if playing && play_seq == slot { Color32::LIGHT_GREEN } else { Color32::GRAY },
                     );
-                    let r = ui
-                        .selectable_label(self.editor.seq_pos == slot, label)
-                        .on_hover_text(format!("pattern {pi:02X}"));
-                    if r.clicked() {
+                    // drag a slot number onto another to move the slot there
+                    let dragged = ui
+                        .dnd_drag_source(egui::Id::new(("slot_drag", slot)), slot, |ui| {
+                            ui.selectable_label(self.editor.seq_pos == slot, label)
+                        })
+                        .inner
+                        .on_hover_text(format!("pattern {pi:02X} (drag to move the slot)"));
+                    if dragged.clicked() {
                         self.editor.seq_goto(slot);
+                    }
+                    if let Some(from) = dragged.dnd_release_payload::<usize>() {
+                        moved = Some((*from, slot));
                     }
                 }
                 ui.end_row();
@@ -144,6 +163,12 @@ impl GuiApp {
         });
         if let Some((slot, name)) = rename {
             self.editor.section_set(slot, Some(name));
+        }
+        if let Some((slot, times)) = repeat {
+            self.editor.section_set_repeat(slot, times);
+        }
+        if let Some((from, to)) = moved {
+            self.editor.seq_move_slot(from, to);
         }
     }
 

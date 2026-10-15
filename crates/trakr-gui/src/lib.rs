@@ -96,6 +96,8 @@ pub(crate) struct GuiApp {
     pub meter_hold: Vec<f32>,
     pub sample_tab: SampleTab,
     pub env_sel: Option<usize>,
+    /// Copied envelope for the Paste button.
+    pub env_clip: Option<trakr_core::Envelope>,
     pub env_drag: Option<usize>,
     pub env_span: f32,
     pub auto_target: Option<(usize, trakr_core::AutoTarget)>,
@@ -170,6 +172,7 @@ impl GuiApp {
             meter_hold: Vec::new(),
             sample_tab: SampleTab::Sample,
             env_sel: None,
+            env_clip: None,
             env_drag: None,
             env_span: 2.0,
             auto_target: None,

@@ -491,7 +491,7 @@ impl Editor {
 
     // ---- sequence and patterns --------------------------------------------
 
-    fn after_structure_change(&mut self) {
+    pub(crate) fn after_structure_change(&mut self) {
         self.clamp_cursor();
         self.sync();
     }
@@ -532,7 +532,7 @@ impl Editor {
         song.patterns.push(Arc::new(copy));
         let idx = song.patterns.len() - 1;
         let mutes = song.slot_meta.get(at - 1).map_or(0, |m| m.mutes);
-        song.insert_slot(at, idx, trakr_core::SlotMeta { mutes, section: None });
+        song.insert_slot(at, idx, trakr_core::SlotMeta { mutes, section: None, repeat: 0 });
         self.seq_pos = at;
         self.after_structure_change();
     }

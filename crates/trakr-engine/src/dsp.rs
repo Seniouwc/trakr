@@ -99,6 +99,13 @@ impl Biquad {
         let y = c.b0 * x + self.z1;
         self.z1 = c.b1 * x - c.a1 * y + self.z2;
         self.z2 = c.b2 * x - c.a2 * y;
+        // A filter whose coefficients are swept hard (high Q, fast modulation) can run away; start over
+        // instead of letting infinities reach the output.
+        if y.is_nan() || y.abs() >= 1.0e6 {
+            self.z1 = 0.0;
+            self.z2 = 0.0;
+            return 0.0;
+        }
         y
     }
 }
@@ -152,4 +159,28 @@ impl DelayLine {
 
 pub fn sine_phase(phase: f32) -> f32 {
     (phase * TAU).sin()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_runaway_filter_recovers_instead_of_reaching_the_output() {
+        // deliberately unstable poles: the state would grow without bound
+        let bad = Coeffs { b0: 1.0, b1: 0.0, b2: 0.0, a1: -2.5, a2: 1.5 };
+        let mut f = Biquad::default();
+        let mut peak = 0.0f32;
+        for i in 0..20_000 {
+            let y = f.process(&bad, if i % 100 == 0 { 1.0 } else { 0.0 });
+            assert!(y.is_finite());
+            peak = peak.max(y.abs());
+        }
+        assert!(peak < 1.0e6 * 1.01, "output stays bounded: {peak}");
+        // a normal filter is untouched
+        let c = Coeffs::lowpass(44_100.0, 1000.0, 0.707);
+        let mut g = Biquad::default();
+        let out: Vec<f32> = (0..2000).map(|_| g.process(&c, 0.5)).collect();
+        assert!((out[1999] - 0.5).abs() < 1e-3, "DC passes a low-pass: {}", out[1999]);
+    }
 }

@@ -34,6 +34,40 @@ impl Editor {
         self.sync();
     }
 
+    /// How many times the section starting at `slot` plays (1..=99; the slot must start a section).
+    pub fn section_set_repeat(&mut self, slot: usize, times: u8) {
+        if !self.song.slot_meta.get(slot).is_some_and(|m| m.section.is_some()) {
+            self.status = "that slot does not start a section".into();
+            return;
+        }
+        let times = times.clamp(1, 99);
+        if self.song.section_repeats(slot) == times as u32 {
+            return;
+        }
+        self.checkpoint_key("section_repeat");
+        self.song_mut().slot_meta[slot].repeat = times;
+        self.status = format!("section plays {times} time(s)");
+        self.sync();
+    }
+
+    /// Move the slot at `from` so it ends up at `to` (drag and drop in the pattern matrix), carrying its
+    /// mutes and section marker.
+    pub fn seq_move_slot(&mut self, from: usize, to: usize) {
+        let n = self.song.sequence.len();
+        if from >= n || to >= n || from == to {
+            return;
+        }
+        self.checkpoint();
+        let song = self.song_mut();
+        song.normalize_slot_meta();
+        let pat = song.sequence.remove(from);
+        let meta = song.slot_meta.remove(from);
+        song.sequence.insert(to, pat);
+        song.slot_meta.insert(to, meta);
+        self.seq_pos = to;
+        self.after_structure_change();
+    }
+
     /// Add or remove a section marker at the current slot.
     pub fn section_toggle_here(&mut self) {
         let slot = self.seq_pos;

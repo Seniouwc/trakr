@@ -609,6 +609,7 @@ impl Voice {
             }
         }
         match self.interp {
+            Interpolation::Nearest => self.at(i, ch),
             Interpolation::Linear => self.at(i, ch) * (1.0 - frac) + self.at(i + 1, ch) * frac,
             Interpolation::Cubic => {
                 let (p0, p1, p2, p3) =
