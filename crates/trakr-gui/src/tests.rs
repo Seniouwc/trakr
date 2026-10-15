@@ -500,3 +500,27 @@ fn user_theme_files_appear_in_the_picker_and_apply() {
     h.frame(vec![]);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn choosing_fonts_in_preferences_applies_and_draws() {
+    let mono = "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf";
+    if !std::path::Path::new(mono).exists() {
+        return;
+    }
+    let mut h = Harness::new();
+    h.app.show_prefs = true;
+    h.app.prefs_tab = prefs_view::PrefsTab::Appearance;
+    h.app.editor.prefs.grid_font = mono.into();
+    h.app.editor.prefs.ui_font = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf".into();
+    for _ in 0..4 {
+        h.frame(vec![]);
+    }
+    assert!(h.app.applied_fonts.is_some() && h.app.font_message.is_empty());
+    assert!(!h.app.font_list.is_empty(), "the picker scanned the system fonts");
+    // a bad path falls back to the built-in font and says so
+    h.app.editor.prefs.grid_font = "/nonexistent/font.ttf".into();
+    for _ in 0..3 {
+        h.frame(vec![]);
+    }
+    assert!(h.app.font_message.contains("cannot read"), "{}", h.app.font_message);
+}

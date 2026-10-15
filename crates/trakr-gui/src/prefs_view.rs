@@ -133,6 +133,16 @@ impl GuiApp {
             }
             self.applied_theme = id;
         }
+        let fonts = (self.editor.prefs.ui_font.clone(), self.editor.prefs.grid_font.clone());
+        if self.applied_fonts.as_ref() != Some(&fonts) {
+            let (defs, problems) = crate::fonts::definitions(&fonts.0, &fonts.1);
+            ctx.set_fonts(defs);
+            self.font_message = problems.join("; ");
+            if !problems.is_empty() {
+                self.editor.status = problems[0].clone();
+            }
+            self.applied_fonts = Some(fonts);
+        }
         let scale = self.editor.prefs.ui_scale.clamp(0.6, 3.0);
         if (self.applied_scale - scale).abs() > f32::EPSILON {
             ctx.set_zoom_factor(scale);
@@ -286,6 +296,24 @@ impl GuiApp {
             ui.label("Pattern font size");
             ui.add(egui::Slider::new(&mut font, 10.0..=26.0).step_by(1.0));
         });
+        ui.separator();
+        ui.strong("Fonts");
+        let (mut ui_font, mut grid_font) =
+            (self.editor.prefs.ui_font.clone(), self.editor.prefs.grid_font.clone());
+        self.font_picker(ui, "Interface font", "ui_font_pick", &mut ui_font);
+        self.font_picker(ui, "Pattern font", "grid_font_pick", &mut grid_font);
+        if !grid_font.is_empty()
+            && std::path::Path::new(&grid_font).is_file()
+            && !crate::fonts::looks_monospaced(&grid_font)
+        {
+            ui.weak("This pattern font is not monospaced: columns will not line up. Pick a mono font for the grid.");
+        }
+        if !self.font_message.is_empty() {
+            ui.colored_label(egui::Color32::LIGHT_RED, &self.font_message);
+        }
+        ui.weak("Any .ttf or .otf file. Monospaced fonts line up best in the pattern grid. Missing glyphs fall back to the built-in font.");
+        self.editor.prefs.ui_font = ui_font;
+        self.editor.prefs.grid_font = grid_font;
         self.editor.prefs.theme = theme;
         self.editor.prefs.ui_scale = scale;
         self.editor.prefs.font_size = font;
@@ -294,6 +322,55 @@ impl GuiApp {
     #[cfg(test)]
     pub fn save_theme_template_for_test(&mut self) {
         self.save_theme_template();
+    }
+
+    /// A font chooser: system fonts (filterable), a custom path, and "built in".
+    fn font_picker(&mut self, ui: &mut egui::Ui, label: &str, id: &str, value: &mut String) {
+        if self.font_list.is_empty() {
+            self.font_list = crate::fonts::scan_fonts(&crate::fonts::default_font_dirs());
+        }
+        let shown = if value.is_empty() {
+            "Built in".to_string()
+        } else {
+            std::path::Path::new(value.as_str())
+                .file_stem()
+                .map_or(value.clone(), |s| s.to_string_lossy().into_owned())
+        };
+        ui.horizontal(|ui| {
+            ui.label(label);
+            egui::ComboBox::from_id_salt(id).width(280.0).selected_text(shown).show_ui(ui, |ui| {
+                ui.add(egui::TextEdit::singleline(&mut self.font_filter).hint_text("filter..."));
+                if ui.selectable_label(value.is_empty(), "Built in").clicked() {
+                    value.clear();
+                }
+                let f = self.font_filter.to_lowercase();
+                egui::ScrollArea::vertical().max_height(260.0).id_salt((id, "list")).show(ui, |ui| {
+                    for font in
+                        self.font_list.iter().filter(|x| f.is_empty() || x.name.to_lowercase().contains(&f))
+                    {
+                        let p = font.path.to_string_lossy().into_owned();
+                        if ui.selectable_label(*value == p, &font.name).clicked() {
+                            *value = p;
+                        }
+                    }
+                });
+            });
+            if ui.small_button("Rescan").on_hover_text("Look for fonts again").clicked() {
+                self.font_list = crate::fonts::scan_fonts(&crate::fonts::default_font_dirs());
+            }
+        });
+        ui.horizontal(|ui| {
+            ui.label("   or a file");
+            let mut path = value.clone();
+            if ui
+                .add(
+                    egui::TextEdit::singleline(&mut path).desired_width(360.0).hint_text("/path/to/font.ttf"),
+                )
+                .changed()
+            {
+                *value = path;
+            }
+        });
     }
 
     /// Write the active theme's colours to `<config>/themes/my-theme.json` as a starting point.

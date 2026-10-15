@@ -3846,6 +3846,7 @@ dependencies = [
 name = "trakr-gui"
 version = "0.0.1"
 dependencies = [
+ "ab_glyph",
  "anyhow",
  "eframe",
  "serde_json",

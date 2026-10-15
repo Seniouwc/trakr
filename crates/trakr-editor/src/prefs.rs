@@ -24,6 +24,10 @@ pub struct Prefs {
     pub ui_scale: f32,
     /// Pattern grid font size in points.
     pub font_size: f32,
+    /// Font file for the interface text (empty = built in).
+    pub ui_font: String,
+    /// Font file for the pattern grid and other monospaced text (empty = built in).
+    pub grid_font: String,
     /// Send MIDI timing clock and start/stop to the output port.
     pub midi_clock_out: bool,
     /// Delay applied to MIDI output so it lines up with the audio device's latency.
@@ -58,6 +62,8 @@ impl Default for Prefs {
             theme: "dark".into(),
             ui_scale: 1.0,
             font_size: 15.0,
+            ui_font: String::new(),
+            grid_font: String::new(),
             midi_clock_out: false,
             midi_latency_ms: 30,
             midi_sync_in: false,

@@ -29,6 +29,7 @@ An open source tracker DAW written in Rust, with a native window (egui). The goa
 - Real-time engine with sequencer, voices and mixer (cpal audio output)
 - Native `.trkr` project format (zip of `song.json` and raw sample data), autosave with crash recovery, recent files, saved preferences
 - `.mod`, `.s3m` and `.xm` module import
+- Custom fonts: pick any installed .ttf/.otf (or a file path) for the interface and the pattern grid
 - 18 colour themes (Catppuccin x4, Dracula, Gruvbox, Nord, Solarized, Tokyo Night, One Dark, Rose Pine, Everforest, Monokai) plus your own JSON theme files; Preferences (Ctrl-,) for keys, appearance, autosave, backups, OSC
 - Command palette (Ctrl-P), find and replace (Ctrl-F), randomize, expand, shrink and repeat block tools
 - Instrument LFOs, key tracking, velocity-to-cutoff; 28 native devices including sidechain, bus and multiband compressors

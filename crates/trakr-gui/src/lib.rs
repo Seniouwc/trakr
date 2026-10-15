@@ -4,6 +4,7 @@
 mod devices_view;
 mod dialogs;
 mod envelopes;
+mod fonts;
 mod grid;
 mod input;
 mod menus;
@@ -96,6 +97,10 @@ pub(crate) struct GuiApp {
     /// Themes from `<config>/themes/*.json`: (id, name, scheme).
     pub user_themes: Vec<(String, String, theme::Scheme)>,
     applied_theme: String,
+    applied_fonts: Option<(String, String)>,
+    pub font_list: Vec<fonts::FontFile>,
+    pub font_filter: String,
+    pub font_message: String,
     applied_scale: f32,
     pub show_prefs: bool,
     pub prefs_tab: prefs_view::PrefsTab,
@@ -162,6 +167,10 @@ impl GuiApp {
             palette: theme::Palette::named("dark"),
             user_themes: Vec::new(),
             applied_theme: "dark".into(),
+            applied_fonts: None,
+            font_list: Vec::new(),
+            font_filter: String::new(),
+            font_message: String::new(),
             applied_scale: 1.0,
             show_prefs: false,
             prefs_tab: Default::default(),
