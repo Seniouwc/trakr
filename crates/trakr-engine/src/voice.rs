@@ -110,6 +110,9 @@ pub struct Voice {
     key_val: f32,
     vel_val: f32,
     fade_out: f32,
+    /// Instrument drive and the value after modulation (0..1).
+    drive_base: f32,
+    drive_cur: f32,
     lfo_rng: u32,
     /// Octaves of cutoff offset from key tracking and velocity.
     cutoff_bias: f32,
@@ -122,6 +125,7 @@ pub struct Voice {
     base_gain: f32,
     pan: f32,
     loop_mode: LoopMode,
+    loop_release: bool,
     loop_start: usize,
     loop_end: usize,
     finished: bool,
@@ -239,6 +243,8 @@ impl Voice {
             key_val: ((note as f32 - 48.0) / 48.0).clamp(-1.0, 1.0),
             vel_val: vol.clamp(0.0, 1.0) * 2.0 - 1.0,
             fade_out: inst.fade_out.clamp(0.0, 60.0),
+            drive_base: inst.drive.clamp(0.0, 1.0),
+            drive_cur: inst.drive.clamp(0.0, 1.0),
             lfo_rng: 0x1234_5678 ^ (note as u32) << 8 ^ column as u32,
             cutoff_bias: inst.key_track.clamp(0.0, 2.0) * (note as f32 - 48.0) / 12.0
                 - inst.vel_cutoff.clamp(0.0, 5.0) * (1.0 - vol.clamp(0.0, 1.0)),
@@ -249,6 +255,7 @@ impl Voice {
             base_gain: s.volume * inst.volume,
             pan: (pan + s.panning).clamp(-1.0, 1.0),
             loop_mode: s.loop_mode,
+            loop_release: s.loop_release,
             loop_start: s.loop_start,
             loop_end,
             finished: frames == 0,
@@ -434,8 +441,8 @@ impl Voice {
         self.trem_phase = (self.trem_phase + self.trem.0 * 0.5 * dt).fract();
         self.trem_gain = 1.0 - self.trem.1 * (0.5 + 0.5 * (self.trem_phase * std::f32::consts::TAU).sin());
         // per-note instrument LFOs
-        let (mut lfo_vol, mut lfo_pan, mut lfo_semis, mut lfo_oct, mut lfo_res) =
-            (1.0f32, 0.0f32, 0.0f32, 0.0f32, 0.0f32);
+        let (mut lfo_vol, mut lfo_pan, mut lfo_semis, mut lfo_oct, mut lfo_res, mut lfo_drive) =
+            (1.0f32, 0.0f32, 0.0f32, 0.0f32, 0.0f32, 0.0f32);
         for i in 0..self.n_lfos {
             let l = self.lfos[i];
             let before = self.lfo_phase[i];
@@ -472,6 +479,7 @@ impl Voice {
                 LfoTarget::Pitch => lfo_semis += v.clamp(-12.0, 12.0),
                 LfoTarget::Cutoff => lfo_oct += v.clamp(-5.0, 5.0),
                 LfoTarget::Resonance => lfo_res += v.clamp(-3.0, 3.0),
+                LfoTarget::Drive => lfo_drive += v.clamp(-1.0, 1.0),
             }
         }
         // key / velocity / macro routings
@@ -491,6 +499,7 @@ impl Voice {
                 LfoTarget::Pitch => lfo_semis += v.clamp(-12.0, 12.0),
                 LfoTarget::Cutoff => lfo_oct += v.clamp(-5.0, 5.0),
                 LfoTarget::Resonance => lfo_res += v.clamp(-3.0, 3.0),
+                LfoTarget::Drive => lfo_drive += v.clamp(-1.0, 1.0),
             }
         }
         let mut semis = self.semis + self.arp_offset + self.bend;
@@ -525,6 +534,7 @@ impl Voice {
             }
         }
         self.gm_target = gain;
+        self.drive_cur = (self.drive_base + lfo_drive).clamp(0.0, 1.0);
         let mut pan = self.pan;
         if self.pan_env.enabled {
             let t = self.pan_env.effective_time(age, rel);
@@ -628,7 +638,7 @@ impl Voice {
         let looping = self.loop_mode != LoopMode::Off && self.loop_end > self.loop_start;
         let len = (self.loop_end - self.loop_start.min(self.loop_end)) as f64;
         // Without a volume envelope, a released voice plays out past its loop; with one, it keeps looping.
-        let stop_loop_on_release = !self.vol_env.enabled;
+        let stop_loop_on_release = !self.vol_env.enabled || self.loop_release;
         let block = control_block(engine_rate);
         let mut peak = 0.0f32;
         for out in buf.chunks_exact_mut(2) {
@@ -662,6 +672,13 @@ impl Voice {
                     self.filter_state[0].process(&self.filter_coeffs, l),
                     self.filter_state[1].process(&self.filter_coeffs, r),
                 )
+            } else {
+                (l, r)
+            };
+            let (l, r) = if self.drive_cur > 0.001 {
+                let g = 1.0 + self.drive_cur * 15.0;
+                let norm = 1.0 / g.tanh();
+                ((l * g).tanh() * norm, (r * g).tanh() * norm)
             } else {
                 (l, r)
             };

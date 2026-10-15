@@ -315,6 +315,14 @@ impl GuiApp {
             if mode != before {
                 self.editor.edit_sample(idx, |s| s.loop_mode = mode);
             }
+            let mut release = self.editor.current_sample().is_some_and(|s| s.loop_release);
+            if ui
+                .checkbox(&mut release, "Loop release")
+                .on_hover_text("Loop until note-off, then play on to the end of the sample (even with a volume envelope)")
+                .changed()
+            {
+                self.editor.edit_sample(idx, |s| s.loop_release = release);
+            }
             ui.label("Start");
             if ui.add(egui::DragValue::new(&mut ls).range(0..=i.frames as u64).speed(16.0)).changed() {
                 self.editor
@@ -433,6 +441,15 @@ impl GuiApp {
             {
                 let st = self.pitch_st;
                 self.editor.edit_sample(idx, |s| s.pitch_shift(st));
+                self.sample_sel = None;
+            }
+            if ui
+                .button("Pitch (keep length)")
+                .on_hover_text("Shifts the pitch and stretches the sample back to its length (WSOLA)")
+                .clicked()
+            {
+                let st = self.pitch_st;
+                self.editor.edit_sample(idx, |s| s.pitch_shift_keep_length(st));
                 self.sample_sel = None;
             }
             ui.add(
@@ -701,7 +718,20 @@ impl GuiApp {
 
         // Selecting and slicing.
         let shift = ui.input(|i| i.modifiers.shift);
-        if let Some(p) = resp.interact_pointer_pos() {
+        if self.sample_draw {
+            // Draw mode: dragging writes the waveform under the pointer (the zoom decides the precision).
+            if let (Some(p), true) = (resp.interact_pointer_pos(), resp.dragged_by(PointerButton::Primary)) {
+                let f = to_frame(p.x).min(frames - 1);
+                let v = (1.0 - 2.0 * ((p.y - r.top()) / r.height())).clamp(-1.0, 1.0);
+                let (f0, v0) = self.draw_last.unwrap_or((f, v));
+                let idx = self.editor.sample_index();
+                self.editor.edit_sample_coalesced("draw", idx, |s| s.draw(f0, f, v0, v, None));
+                self.draw_last = Some((f, v));
+            }
+            if resp.drag_stopped() {
+                self.draw_last = None;
+            }
+        } else if let Some(p) = resp.interact_pointer_pos() {
             if resp.drag_started_by(PointerButton::Primary) {
                 self.sample_drag = Some(to_frame(p.x));
             }
@@ -741,6 +771,8 @@ impl GuiApp {
             if ui.small_button("Fit").clicked() {
                 self.wave_view = None;
             }
+            ui.checkbox(&mut self.sample_draw, "Draw")
+                .on_hover_text("Drag on the waveform to draw sample values by hand (zoom in first)");
             if let Some((a, b)) = self.sample_sel {
                 if ui.small_button("Zoom to selection").clicked() {
                     self.wave_view = Some((a, (b - a).max(16)));

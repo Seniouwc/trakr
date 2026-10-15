@@ -12,6 +12,9 @@ pub enum PhraseMode {
     Off,
     /// A note inside a phrase's key range starts that phrase, transposed relative to its base note.
     Keymap,
+    /// Notes C-0 to B-0 pick a phrase (note number = phrase number) and play it as written; every other
+    /// note plays the picked phrase transposed to that note.
+    Program,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -30,6 +33,9 @@ pub struct Phrase {
     pub base_note: u8,
     /// Trigger notes (inclusive) that start this phrase in `Keymap` mode.
     pub key_range: (u8, u8),
+    /// Swing: every second line is lengthened and the others shortened by this fraction of a line (0..0.75).
+    #[serde(default)]
+    pub shuffle: f32,
     pub lines: BTreeMap<u16, Line>,
 }
 
@@ -46,6 +52,7 @@ impl Phrase {
             loop_end: 0,
             base_note: 48,
             key_range: (0, 119),
+            shuffle: 0.0,
             lines: BTreeMap::new(),
         }
     }
@@ -57,6 +64,7 @@ impl Phrase {
         self.note_columns = self.note_columns.clamp(1, MAX_NOTE_COLUMNS as u8);
         self.effect_columns = self.effect_columns.clamp(0, MAX_EFFECT_COLUMNS as u8);
         self.base_note = self.base_note.min(119);
+        self.shuffle = if self.shuffle.is_finite() { self.shuffle.clamp(0.0, 0.75) } else { 0.0 };
         self.key_range = (self.key_range.0.min(119), self.key_range.1.min(119));
         let n = self.number_of_lines;
         self.lines.retain(|&i, l| i < n && !l.is_empty());

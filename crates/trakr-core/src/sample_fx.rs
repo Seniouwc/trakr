@@ -1,5 +1,6 @@
 //! Sample processing beyond the basics: loop crossfade, time-stretch, transient detection, dither.
 
+use std::sync::Arc;
 use crate::instrument::{LoopMode, Sample};
 
 /// Simple deterministic noise source for dither.
@@ -60,6 +61,55 @@ impl Sample {
         }
         self.set_data_public(out);
         true
+    }
+
+    /// Draw a straight line of sample values from `(from, v0)` to `(to, v1)` (frames, values clamped to
+    /// -1..1). `channel` limits it to one channel; `None` writes all channels.
+    pub fn draw(&mut self, from: usize, to: usize, v0: f32, v1: f32, channel: Option<usize>) {
+        let ch = self.channels.max(1) as usize;
+        let frames = self.frames();
+        if frames == 0 {
+            return;
+        }
+        let (mut a, mut b, mut va, mut vb) = (from, to, v0, v1);
+        if a > b {
+            std::mem::swap(&mut a, &mut b);
+            std::mem::swap(&mut va, &mut vb);
+        }
+        let b = b.min(frames - 1);
+        if a > b {
+            return;
+        }
+        let (va, vb) = (va.clamp(-1.0, 1.0), vb.clamp(-1.0, 1.0));
+        let data = Arc::make_mut(&mut self.data);
+        let span = (b - a).max(1) as f32;
+        for f in a..=b {
+            let v = va + (vb - va) * ((f - a) as f32 / span);
+            match channel {
+                Some(c) if c < ch => data[f * ch + c] = v,
+                Some(_) => {}
+                None => data[f * ch..f * ch + ch].fill(v),
+            }
+        }
+    }
+
+    /// Shift the pitch by `semitones` without changing the length (tape-style resample, then WSOLA
+    /// stretch back). Formants move with the pitch.
+    pub fn pitch_shift_keep_length(&mut self, semitones: f32) {
+        let frames = self.frames();
+        if frames == 0 || semitones.abs() < 1e-3 {
+            return;
+        }
+        let ratio = 2f64.powf(semitones as f64 / 12.0);
+        let (ls, le) = (self.loop_start, self.loop_end);
+        self.pitch_shift(semitones);
+        // the resampled sample is `frames / ratio` long; stretch it back
+        self.time_stretch(ratio);
+        // loop points and slices are not meaningful after a stretch of a stretch: restore the originals
+        let n = self.frames();
+        self.loop_start = ls.min(n);
+        self.loop_end = le.min(n);
+        self.slices.retain(|&s| s < n);
     }
 
     /// Change the length by `factor` (2.0 = twice as long) without changing the pitch (WSOLA). Loop
@@ -287,5 +337,39 @@ mod tests {
         let mut s = Sample::new("s", 44_100, 2, vec![0.3; 200]);
         s.reduce_bit_depth(4, true);
         assert!(s.data.iter().all(|v| (v * 8.0 - (v * 8.0).round()).abs() < 1e-3));
+    }
+
+    #[test]
+    fn drawing_writes_a_line_of_values() {
+        let mut s = Sample::new("d", 44_100, 2, vec![0.0; 200]);
+        s.draw(10, 20, -1.0, 1.0, None);
+        assert_eq!(s.data[10 * 2], -1.0);
+        assert_eq!(s.data[20 * 2 + 1], 1.0);
+        assert!((s.data[15 * 2] - 0.0).abs() < 1e-6, "linear in between");
+        s.draw(50, 40, 0.5, 0.0, Some(1)); // reversed endpoints and one channel only
+        assert_eq!(s.data[40 * 2 + 1], 0.0);
+        assert_eq!(s.data[50 * 2 + 1], 0.5);
+        assert_eq!(s.data[45 * 2], 0.0, "the other channel is untouched");
+        s.draw(90, 5000, 2.0, 2.0, None); // past the end and out of range values are clamped
+        assert_eq!(s.data[99 * 2], 1.0);
+        let mut empty = Sample::new("e", 44_100, 1, vec![]);
+        empty.draw(0, 10, 1.0, 1.0, None);
+        assert!(empty.data.is_empty());
+    }
+
+    #[test]
+    fn pitch_shift_keeps_the_length() {
+        let data: Vec<f32> = (0..44_100).map(|i| (i as f32 * 0.05).sin() * 0.5).collect();
+        let mut s = Sample::new("p", 44_100, 1, data);
+        s.pitch_shift_keep_length(7.0);
+        let diff = (s.frames() as i64 - 44_100).abs();
+        assert!(diff < 3000, "length stays close to the original: {}", s.frames());
+        let crossings = |v: &[f32]| v.windows(2).filter(|w| w[0] < 0.0 && w[1] >= 0.0).count() as f32;
+        let before = 44_100.0 * 0.05 / std::f32::consts::TAU;
+        let ratio = crossings(&s.data) / before;
+        assert!((ratio - 2f32.powf(7.0 / 12.0)).abs() < 0.08, "pitch moved by a fifth: {ratio}");
+        let mut same = Sample::new("p", 44_100, 1, vec![0.1; 1000]);
+        same.pitch_shift_keep_length(0.0);
+        assert_eq!(same.frames(), 1000);
     }
 }

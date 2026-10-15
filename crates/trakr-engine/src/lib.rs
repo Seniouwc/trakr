@@ -388,6 +388,7 @@ pub fn create(sample_rate: u32) -> (Engine, EngineHandle) {
         fx_vol: [None; MAX_TRACKS],
         fx_pan: [None; MAX_TRACKS],
         fx_width: [None; MAX_TRACKS],
+        program_sel: [0; MAX_TRACKS],
         chance: 0x2545_F491_4F6C_DD1D,
         voices: Vec::with_capacity(MAX_VOICES),
         events: Vec::with_capacity(MAX_EVENTS),
@@ -454,6 +455,8 @@ pub struct Engine {
     fx_pan: [Option<f32>; MAX_TRACKS],
     /// Track stereo width set by `0H` (0 = mono, 1 = unchanged, 2 = wide).
     fx_width: [Option<f32>; MAX_TRACKS],
+    /// Phrase picked per track by program-mode notes.
+    program_sel: [u8; MAX_TRACKS],
     chance: u64,
     voices: Vec<Voice>,
     events: Vec<Event>,
@@ -1204,9 +1207,7 @@ impl Engine {
                     self.bend = if semis.is_finite() { semis.clamp(-24.0, 24.0) } else { 0.0 };
                 }
                 Command::NoteOn { track, instrument, note, volume } => {
-                    let phrase =
-                        self.song.instruments.get(instrument as usize).and_then(|i| i.phrase_for(note));
-                    if let Some(p) = phrase {
+                    if let Some((p, note)) = self.phrase_trigger(track, instrument, note) {
                         self.start_phrase(track, LIVE_COL, instrument, p, note, volume, 0.0);
                     } else {
                         self.note_on(
@@ -1522,6 +1523,32 @@ impl Engine {
     }
 
     #[allow(clippy::too_many_arguments)]
+    /// The phrase (and the note to play it at) that a trigger note starts for this instrument, if any.
+    fn phrase_trigger(&mut self, track: usize, inst: u8, note: u8) -> Option<(usize, u8)> {
+        let i = self.song.instruments.get(inst as usize)?;
+        match i.phrase_mode {
+            trakr_core::PhraseMode::Off => None,
+            trakr_core::PhraseMode::Keymap => i.phrase_for(note).map(|p| (p, note)),
+            trakr_core::PhraseMode::Program => {
+                if i.phrases.is_empty() {
+                    return None;
+                }
+                let last = i.phrases.len() - 1;
+                if note < 12 {
+                    let pick = (note as usize).min(last);
+                    let base = i.phrases[pick].base_note;
+                    if let Some(s) = self.program_sel.get_mut(track) {
+                        *s = pick as u8;
+                    }
+                    Some((pick, base))
+                } else {
+                    let pick = (self.program_sel.get(track).copied().unwrap_or(0) as usize).min(last);
+                    Some((pick, note))
+                }
+            }
+        }
+    }
+
     fn start_phrase(
         &mut self,
         track: usize,
@@ -1564,7 +1591,14 @@ impl Engine {
             }
             let phrase = self.phrase_runs[i].phrase.clone();
             self.fire_phrase_line(i, &phrase);
-            let fpl = Song::frames_per_line(self.bpm, phrase.lpb.max(1), self.sample_rate).max(1.0);
+            let straight = Song::frames_per_line(self.bpm, phrase.lpb.max(1), self.sample_rate).max(1.0);
+            let shuffle = phrase.shuffle.clamp(0.0, 0.75) as f64;
+            // swing: a pair of lines still lasts two lines, but its first half is longer
+            let fpl = if self.phrase_runs[i].line % 2 == 0 {
+                straight * (1.0 + shuffle)
+            } else {
+                straight * (1.0 - shuffle)
+            };
             let mut next = self.phrase_runs[i].line + 1;
             let mut finished = false;
             if phrase.looping {
@@ -1711,21 +1745,19 @@ impl Engine {
                     if &col.effect.id == b"0Y" && self.next_chance() > col.effect.amount {
                         continue; // "maybe": the note plays with probability amount/255
                     }
-                    let phrase =
-                        song.instruments.get(col.instrument as usize).and_then(|i| i.phrase_for(col.note));
-                    if let Some(pi) = phrase {
+                    if let Some((pi, pnote)) = self.phrase_trigger(ti, col.instrument, col.note) {
                         let at = col.delay as f64 / 256.0 * fpl;
                         if at > 0.0 {
                             let kind = EventKind::Phrase {
                                 inst: col.instrument,
                                 phrase: pi,
-                                note: col.note,
+                                note: pnote,
                                 vol,
                                 pan,
                             };
                             self.schedule(at, ti, ci, kind);
                         } else {
-                            self.start_phrase(ti, ci, col.instrument, pi, col.note, vol, pan);
+                            self.start_phrase(ti, ci, col.instrument, pi, pnote, vol, pan);
                         }
                         continue;
                     }
@@ -2018,6 +2050,57 @@ mod sequencer_tests {
         put(&mut song, 0, |l| note(&mut l.notes[0]));
         let out = render(song, 4000);
         assert_eq!(onsets(&out), vec![0, 2000]);
+    }
+
+    #[test]
+    fn phrase_shuffle_swings_the_lines() {
+        let mut song = with_phrase(song_with(vec![1.0; 100], LoopMode::Off), |p| {
+            p.looping = false;
+            p.shuffle = 0.5;
+            for l in 0..4 {
+                p.line_mut(l).notes[0].note = 48;
+            }
+        });
+        put(&mut song, 0, |l| note(&mut l.notes[0]));
+        let out = render(song, 4000);
+        // straight lines would be at 0, 1000, 2000, 3000; with 50% shuffle the second line comes late
+        assert_eq!(onsets(&out), vec![0, 1500, 2000, 3500]);
+    }
+
+    #[test]
+    fn program_mode_picks_phrases_with_low_notes_and_transposes_with_high_ones() {
+        let mut song = song_with(vec![1.0; 100], LoopMode::Off);
+        // phrase 0: one hit at once; phrase 1: a hit on lines 0 and 2
+        let mut p0 = Phrase::new("a", 4);
+        p0.lpb = 1;
+        p0.looping = false;
+        p0.line_mut(0).notes[0].note = 48;
+        let mut p1 = Phrase::new("b", 4);
+        p1.lpb = 1;
+        p1.looping = false;
+        p1.line_mut(0).notes[0].note = 48;
+        p1.line_mut(2).notes[0].note = 48;
+        song.instruments[0].phrases.push(Arc::new(p0));
+        song.instruments[0].phrases.push(Arc::new(p1));
+        song.instruments[0].phrase_mode = trakr_core::PhraseMode::Program;
+        // line 0: note C-0+1 (B... note 1) selects and plays phrase 1; line 4: note 60 plays phrase 1 an octave up
+        song.patterns[0] = Arc::new(trakr_core::Pattern::new(8, 8));
+        put(&mut song, 0, |l| {
+            l.notes[0].note = 1;
+            l.notes[0].instrument = 0;
+        });
+        put(&mut song, 4, |l| {
+            l.notes[0].note = 60;
+            l.notes[0].instrument = 0;
+        });
+        let out = render(song, 8000);
+        let hits = onsets(&out);
+        assert_eq!(hits, vec![0, 2000, 4000, 6000], "phrase 1 (two hits) plays both times: {hits:?}");
+        // an empty phrase list is harmless
+        let mut empty = song_with(vec![1.0; 100], LoopMode::Off);
+        empty.instruments[0].phrase_mode = trakr_core::PhraseMode::Program;
+        put(&mut empty, 0, |l| note(&mut l.notes[0]));
+        assert!(first_nonzero(&render(empty, 500)).is_some(), "without phrases the note plays the sample");
     }
 
     #[test]
@@ -2535,6 +2618,27 @@ mod sequencer_tests {
         }
         assert_eq!(stopped, 8, "stopping retires the sounding voices");
         assert!(engine.is_idle());
+    }
+
+    #[test]
+    fn loop_release_plays_on_after_note_off_even_with_a_volume_envelope() {
+        let play = |release: bool| {
+            let mut song = song_with(vec![1.0; 300], LoopMode::Forward);
+            song.instruments[0].samples[0].loop_start = 0;
+            song.instruments[0].samples[0].loop_end = 100;
+            song.instruments[0].samples[0].loop_release = release;
+            let mut env = trakr_core::Envelope::default();
+            env.enabled = true;
+            env.points = vec![(0.0, 1.0), (10.0, 1.0)];
+            song.instruments[0].volume_env = Arc::new(env);
+            put(&mut song, 0, |l| note(&mut l.notes[0]));
+            put(&mut song, 1, |l| l.notes[0].note = NOTE_OFF);
+            let out = render(song, 3000);
+            out.iter().rposition(|s| s.abs() > 0.5).unwrap_or(0)
+        };
+        assert!(play(false) > 2900, "with a volume envelope the loop keeps going after note-off");
+        let last = play(true);
+        assert!(last < 1500, "loop release lets the sample finish its tail: ended at {last}");
     }
 
     #[test]
@@ -3116,6 +3220,29 @@ mod device_tests {
         song.instruments[0].filter =
             InstrumentFilter { mode: trakr_core::FilterMode::LowPass, cutoff, resonance: 0.707 };
         song
+    }
+
+    #[test]
+    fn instrument_drive_saturates_and_can_be_modulated() {
+        let level_of = |drive: f32, macro_depth: Option<f32>| {
+            let mut song = song_with(sine(200.0, 0.5, 0.2));
+            song.instruments[0].drive = drive;
+            if let Some(depth) = macro_depth {
+                song.instruments[0].mods.push(trakr_core::InstMod {
+                    source: trakr_core::ModSource::Velocity,
+                    target: trakr_core::LfoTarget::Drive,
+                    depth,
+                });
+            }
+            let out = render(song, 8000);
+            peak(&out[2000..8000])
+        };
+        let clean = level_of(0.0, None);
+        let driven = level_of(1.0, None);
+        assert!((clean - 0.2).abs() < 0.01, "{clean}");
+        assert!(driven > 0.95, "a quiet signal is pushed to the rails by full drive: {driven}");
+        // the velocity routing adds drive on top of a clean instrument (full velocity = +depth)
+        assert!(level_of(0.0, Some(1.0)) > clean * 2.0);
     }
 
     #[test]

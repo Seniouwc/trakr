@@ -42,10 +42,16 @@ impl GuiApp {
                 .selected_text(match mode {
                     PhraseMode::Off => "Phrases: off",
                     PhraseMode::Keymap => "Phrases: key mapped",
+                    PhraseMode::Program => "Phrases: program",
                 })
                 .show_ui(ui, |ui| {
                     ui.selectable_value(&mut m, PhraseMode::Off, "Off (notes play the sample)");
                     ui.selectable_value(&mut m, PhraseMode::Keymap, "Key mapped (a note plays its phrase)");
+                    ui.selectable_value(
+                        &mut m,
+                        PhraseMode::Program,
+                        "Program (C-0 to B-0 pick a phrase, other notes transpose it)",
+                    );
                 });
             if m != mode {
                 self.editor.phrase_set_mode(m);
@@ -83,6 +89,15 @@ impl GuiApp {
             ui.label("LPB");
             if ui.add(egui::DragValue::new(&mut lpb).range(1..=32)).changed() {
                 self.editor.edit_phrase("phrase_lpb", |p| p.lpb = lpb);
+            }
+            let mut shuffle = p.shuffle;
+            ui.label("Shuffle");
+            if ui
+                .add(egui::DragValue::new(&mut shuffle).range(0.0..=0.75).speed(0.01).fixed_decimals(2))
+                .on_hover_text("Swing: odd lines are shortened and even lines lengthened by this fraction of a line")
+                .changed()
+            {
+                self.editor.edit_phrase("phrase_shuffle", |p| p.shuffle = shuffle);
             }
             let (mut nc, mut ec) = (p.note_columns, p.effect_columns);
             ui.label("Note cols");

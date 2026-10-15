@@ -7,12 +7,13 @@ use trakr_core::{
     InstLfo, InstMod, LfoShape, LfoTarget, ModSource, MAX_INST_LFOS, MAX_INST_MODS, MAX_MACROS, MAX_STEPS,
 };
 
-const TARGETS: [(LfoTarget, &str); 5] = [
+const TARGETS: [(LfoTarget, &str); 6] = [
     (LfoTarget::Volume, "Volume"),
     (LfoTarget::Pan, "Pan"),
     (LfoTarget::Pitch, "Pitch (semitones)"),
     (LfoTarget::Cutoff, "Filter cutoff (octaves)"),
     (LfoTarget::Resonance, "Filter resonance (octaves)"),
+    (LfoTarget::Drive, "Drive"),
 ];
 const SHAPES: [(LfoShape, &str); 7] = [
     (LfoShape::Sine, "Sine"),
@@ -26,7 +27,7 @@ const SHAPES: [(LfoShape, &str); 7] = [
 
 fn max_depth(t: LfoTarget) -> f32 {
     match t {
-        LfoTarget::Volume | LfoTarget::Pan => 1.0,
+        LfoTarget::Volume | LfoTarget::Pan | LfoTarget::Drive => 1.0,
         LfoTarget::Pitch => 12.0,
         LfoTarget::Cutoff => 5.0,
         LfoTarget::Resonance => 3.0,
@@ -91,7 +92,8 @@ impl GuiApp {
         let Some(inst) = self.editor.current_instrument() else { return };
         let lfos = inst.lfos.clone();
         let mods = inst.mods.clone();
-        let (key, vel, fade_out, macros) = (inst.key_track, inst.vel_cutoff, inst.fade_out, inst.macros);
+        let (key, vel, fade_out, macros, drive) =
+            (inst.key_track, inst.vel_cutoff, inst.fade_out, inst.macros, inst.drive);
 
         ui.horizontal(|ui| {
             ui.strong("Per-note LFOs");
@@ -206,7 +208,7 @@ impl GuiApp {
         }
 
         ui.separator();
-        let (mut key2, mut vel2, mut fo2) = (key, vel, fade_out);
+        let (mut key2, mut vel2, mut fo2, mut drive2) = (key, vel, fade_out, drive);
         ui.horizontal_wrapped(|ui| {
             ui.label("Key tracking");
             ui.add(egui::Slider::new(&mut key2, 0.0..=2.0))
@@ -214,6 +216,9 @@ impl GuiApp {
             ui.label("Velocity to cutoff");
             ui.add(egui::Slider::new(&mut vel2, 0.0..=5.0).suffix(" oct"))
                 .on_hover_text("Octaves of cutoff lost at the lowest velocity");
+            ui.label("Drive");
+            ui.add(egui::Slider::new(&mut drive2, 0.0..=1.0).fixed_decimals(2))
+                .on_hover_text("Saturation applied to every note after the filter; LFOs and macros can move it");
             ui.label("Fade out");
             ui.add(egui::DragValue::new(&mut fo2).range(0.0..=60.0).speed(0.01).suffix(" s"))
                 .on_hover_text("How long a note takes to fade away after note-off (0 = off)");
@@ -223,6 +228,9 @@ impl GuiApp {
         }
         if vel2 != vel {
             self.editor.edit_instrument("vel_cutoff", |i| i.vel_cutoff = vel2);
+        }
+        if drive2 != drive {
+            self.editor.edit_instrument("drive", |i| i.drive = drive2);
         }
         if fo2 != fade_out {
             self.editor.edit_instrument("fade_out", |i| i.fade_out = fo2);

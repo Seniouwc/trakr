@@ -77,6 +77,9 @@ pub(crate) struct GuiApp {
     /// Selected frame range in the sample view.
     pub sample_sel: Option<(usize, usize)>,
     pub sample_drag: Option<usize>,
+    /// Draw mode in the waveform: dragging writes sample values instead of selecting.
+    pub sample_draw: bool,
+    pub draw_last: Option<(usize, f32)>,
     /// Visible frame window (start, length) in the waveform; `None` = whole sample.
     pub wave_view: Option<(usize, usize)>,
     pub gain_db: f32,
@@ -142,6 +145,8 @@ impl GuiApp {
             show_about: false,
             sample_sel: None,
             sample_drag: None,
+            sample_draw: false,
+            draw_last: None,
             wave_view: None,
             gain_db: 0.0,
             pitch_st: 0.0,

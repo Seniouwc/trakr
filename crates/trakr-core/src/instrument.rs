@@ -29,6 +29,9 @@ pub struct Sample {
     pub loop_mode: LoopMode,
     pub loop_start: usize,
     pub loop_end: usize,
+    /// Loop only until note-off, then play on to the end of the sample even with a volume envelope.
+    #[serde(default)]
+    pub loop_release: bool,
     /// Inclusive key range this sample responds to.
     pub key_range: (u8, u8),
     /// Slice marker positions in frames, ascending.
@@ -58,6 +61,7 @@ impl Sample {
             loop_mode: LoopMode::Off,
             loop_start: 0,
             loop_end: frames,
+            loop_release: false,
             key_range: (0, 119),
             slices: Vec::new(),
             beat_sync_lines: 0,
@@ -366,6 +370,8 @@ pub enum LfoTarget {
     Cutoff,
     /// depth = octaves of filter resonance (0..3); needs an instrument filter
     Resonance,
+    /// depth = added drive (0..1, see `Instrument::drive`)
+    Drive,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -557,6 +563,9 @@ pub struct Instrument {
     /// Seconds a note takes to fade away after note-off (0 = off).
     #[serde(default)]
     pub fade_out: f32,
+    /// Waveshaping drive applied to every voice after the filter (0 = clean, 1 = heavily saturated).
+    #[serde(default)]
+    pub drive: f32,
 }
 
 fn default_macros() -> [f32; MAX_MACROS] {
@@ -586,6 +595,7 @@ impl Instrument {
             mods: Vec::new(),
             macros: default_macros(),
             fade_out: 0.0,
+            drive: 0.0,
         }
     }
 
