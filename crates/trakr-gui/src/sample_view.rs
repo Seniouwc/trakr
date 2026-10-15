@@ -122,6 +122,35 @@ impl GuiApp {
             if ui.add(egui::DragValue::new(&mut volume).range(0.0..=4.0).speed(0.01)).changed() {
                 self.editor.instrument_set_volume(volume);
             }
+            ui.menu_button("File", |ui| {
+                if ui.button("Save instrument...").clicked() {
+                    self.open_dialog(crate::dialogs::FileMode::SaveInstrument);
+                    ui.close_menu();
+                }
+                if ui.button("Load instrument...").clicked() {
+                    self.open_dialog(crate::dialogs::FileMode::LoadInstrument);
+                    ui.close_menu();
+                }
+                if ui
+                    .button("Save to instrument bank")
+                    .on_hover_text("Keeps a copy in your settings folder")
+                    .clicked()
+                {
+                    self.editor.instrument_save_to_bank();
+                    ui.close_menu();
+                }
+                ui.separator();
+                let bank = self.editor.instrument_bank();
+                if bank.is_empty() {
+                    ui.weak("The bank is empty");
+                }
+                for (name, path) in bank {
+                    if ui.button(format!("Insert {name}")).clicked() {
+                        self.editor.instrument_load_file(&path);
+                        ui.close_menu();
+                    }
+                }
+            });
             let mut nna = self.editor.current_instrument().map_or(trakr_core::Nna::Cut, |i| i.nna);
             let before = nna;
             egui::ComboBox::from_id_salt("nna")

@@ -307,6 +307,118 @@ fn path_part(s: &str) -> String {
     t.trim().to_string()
 }
 
+/// Write one instrument as `<tag>...</tag>`, queueing its sample audio in `files`.
+fn write_instrument(
+    x: &mut String,
+    ii: usize,
+    inst: &Instrument,
+    tag: &str,
+    files: &mut Vec<(String, Vec<u8>)>,
+    warnings: &mut Vec<String>,
+) {
+    use std::fmt::Write as _;
+    let _ = write!(
+        x,
+        "<{tag}><Name>{}</Name><Volume>{}</Volume><SampleGenerator><Samples>",
+        esc(&inst.name),
+        inst.volume
+    );
+    for (si, s) in inst.samples.iter().enumerate() {
+        let file = format!(
+            "SampleData/Instrument{ii:02} ({})/Sample{si:02} ({}).wav",
+            path_part(&inst.name),
+            path_part(&s.name)
+        );
+        let mode = match s.loop_mode {
+            LoopMode::Off => "Off",
+            LoopMode::Forward => "Forward",
+            LoopMode::Reverse => "Reverse",
+            LoopMode::PingPong => "PingPong",
+        };
+        let _ = write!(
+            x,
+            "<Sample><Name>{}</Name><FileName>{}</FileName><Volume>{}</Volume><Panning>{}</Panning><Transpose>0</Transpose><Finetune>{}</Finetune><LoopMode>{}</LoopMode><LoopStart>{}</LoopStart><LoopEnd>{}</LoopEnd><Mapping><BaseNote>{}</BaseNote><NoteStart>{}</NoteStart><NoteEnd>{}</NoteEnd></Mapping></Sample>",
+            esc(&s.name),
+            esc(file.rsplit('/').next().unwrap_or("")),
+            s.volume,
+            (s.panning / 2.0 + 0.5).clamp(0.0, 1.0),
+            s.fine_tune,
+            mode,
+            s.loop_start,
+            s.loop_end,
+            s.base_note,
+            s.key_range.0,
+            s.key_range.1
+        );
+        let wav = trakr_sample::encode_wav(s, 0, s.frames(), trakr_sample::WavFormat::Pcm24);
+        files.push((file, wav));
+    }
+    let _ = writeln!(x, "</Samples></SampleGenerator></{tag}>");
+    if !inst.phrases.is_empty() {
+        warnings.push(format!("instrument {ii:02} ({}): phrases are not exported", inst.name));
+    }
+    if inst.volume_env.points.len() > 1 || inst.pan_env.points.len() > 1 || inst.pitch_env.points.len() > 1 {
+        warnings.push(format!("instrument {ii:02} ({}): envelopes are not exported", inst.name));
+    }
+    if inst.plugin.is_some() {
+        warnings.push(format!("instrument {ii:02} ({}): the plugin is not exported", inst.name));
+    }
+}
+
+/// Write one instrument as an `.xrni` archive (`Instrument.xml` plus its sample audio). Returns what was
+/// left out.
+pub fn export_instrument_with_report<W: Write + Seek>(
+    inst: &Instrument,
+    w: W,
+) -> Result<Vec<String>, XrnsError> {
+    let mut warnings = Vec::new();
+    let mut files = Vec::new();
+    let mut x = String::from("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n");
+    write_instrument(&mut x, 0, inst, "RenoiseInstrument", &mut files, &mut warnings);
+    let mut z = zip::ZipWriter::new(w);
+    let o = zip::write::SimpleFileOptions::default();
+    z.start_file("Instrument.xml", o)?;
+    z.write_all(x.as_bytes())?;
+    for (name, bytes) in files {
+        z.start_file(name, o)?;
+        z.write_all(&bytes)?;
+    }
+    z.finish()?;
+    Ok(warnings)
+}
+
+/// Read an `.xrni` archive. Like the song importer, element names are from memory and unverified.
+pub fn import_instrument_with_report<R: Read + Seek>(r: R) -> Result<(Instrument, Vec<String>), XrnsError> {
+    let mut zip = zip::ZipArchive::new(r)?;
+    let mut xml = String::new();
+    zip.by_name("Instrument.xml")?.read_to_string(&mut xml)?;
+    let names: Vec<String> = zip.file_names().map(str::to_owned).collect();
+    let doc = Document::parse(&xml)?;
+    let root = doc.root_element();
+    let mut warnings = Vec::new();
+    let inst = read_instrument(
+        0,
+        root,
+        &mut |inst, sample, file_name| {
+            let entry = find_sample_entry(&names, inst, sample, file_name)?;
+            let mut bytes = Vec::new();
+            zip.by_name(&entry).ok()?.read_to_end(&mut bytes).ok()?;
+            let ext = entry.rsplit('.').next().map(str::to_ascii_lowercase);
+            Some((bytes, ext))
+        },
+        &mut warnings,
+    );
+    Ok((inst, warnings))
+}
+
+pub fn import_instrument_path(path: &std::path::Path) -> Result<(Instrument, Vec<String>), XrnsError> {
+    import_instrument_with_report(std::fs::File::open(path)?)
+}
+
+pub fn export_instrument_path(inst: &Instrument, path: &std::path::Path) -> Result<Vec<String>, XrnsError> {
+    export_instrument_with_report(inst, std::fs::File::create(path)?)
+}
+
 /// Build the `Song.xml` text and the sample files `(zip path, wav bytes)` for a song.
 /// Anything that cannot be represented is listed in `warnings`.
 pub fn export_xml(song: &Song, warnings: &mut Vec<String>) -> (String, Vec<(String, Vec<u8>)>) {
@@ -326,52 +438,7 @@ pub fn export_xml(song: &Song, warnings: &mut Vec<String>) -> (String, Vec<(Stri
 
     x.push_str("<Instruments>\n");
     for (ii, inst) in song.instruments.iter().enumerate() {
-        let _ = write!(
-            x,
-            "<Instrument><Name>{}</Name><Volume>{}</Volume><SampleGenerator><Samples>",
-            esc(&inst.name),
-            inst.volume
-        );
-        for (si, s) in inst.samples.iter().enumerate() {
-            let file = format!(
-                "SampleData/Instrument{ii:02} ({})/Sample{si:02} ({}).wav",
-                path_part(&inst.name),
-                path_part(&s.name)
-            );
-            let mode = match s.loop_mode {
-                LoopMode::Off => "Off",
-                LoopMode::Forward => "Forward",
-                LoopMode::Reverse => "Reverse",
-                LoopMode::PingPong => "PingPong",
-            };
-            let _ = write!(
-                x,
-                "<Sample><Name>{}</Name><FileName>{}</FileName><Volume>{}</Volume><Panning>{}</Panning><Transpose>0</Transpose><Finetune>{}</Finetune><LoopMode>{}</LoopMode><LoopStart>{}</LoopStart><LoopEnd>{}</LoopEnd><Mapping><BaseNote>{}</BaseNote><NoteStart>{}</NoteStart><NoteEnd>{}</NoteEnd></Mapping></Sample>",
-                esc(&s.name),
-                esc(file.rsplit('/').next().unwrap_or("")),
-                s.volume,
-                (s.panning / 2.0 + 0.5).clamp(0.0, 1.0),
-                s.fine_tune,
-                mode,
-                s.loop_start,
-                s.loop_end,
-                s.base_note,
-                s.key_range.0,
-                s.key_range.1
-            );
-            let wav = trakr_sample::encode_wav(s, 0, s.frames(), trakr_sample::WavFormat::Pcm24);
-            files.push((file, wav));
-        }
-        x.push_str("</Samples></SampleGenerator></Instrument>\n");
-        if !inst.phrases.is_empty() {
-            warnings.push(format!("instrument {ii:02} ({}): phrases are not exported", inst.name));
-        }
-        if inst.volume_env.points.len() > 1
-            || inst.pan_env.points.len() > 1
-            || inst.pitch_env.points.len() > 1
-        {
-            warnings.push(format!("instrument {ii:02} ({}): envelopes are not exported", inst.name));
-        }
+        write_instrument(&mut x, ii, inst, "Instrument", &mut files, warnings);
     }
     x.push_str("</Instruments>\n<Tracks>\n");
     for t in &song.tracks {
@@ -691,5 +758,43 @@ mod import_tests {
                 let _ = import_xml(&text);
             }
         }
+    }
+
+    #[test]
+    fn instruments_roundtrip_through_xrni() {
+        use std::io::Cursor;
+        use trakr_core::Sample;
+        let mut inst = Instrument::new("Pad & <1>");
+        inst.volume = 0.8;
+        let mut a = Sample::new("a", 22_050, 1, (0..100).map(|i| (i as f32 / 100.0) - 0.5).collect());
+        a.loop_mode = LoopMode::PingPong;
+        a.loop_start = 10;
+        a.loop_end = 90;
+        a.key_range = (24, 71);
+        a.base_note = 50;
+        inst.samples.push(a);
+        inst.samples.push(Sample::new("b", 44_100, 2, vec![0.25; 40]));
+        inst.drive = 0.5; // not representable: must not break the roundtrip
+        let mut buf = Cursor::new(Vec::new());
+        let warnings = export_instrument_with_report(&inst, &mut buf).unwrap();
+        assert!(warnings.is_empty(), "{warnings:?}");
+        let (back, warnings) = import_instrument_with_report(Cursor::new(buf.into_inner())).unwrap();
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert_eq!((back.name.as_str(), back.volume), ("Pad & <1>", 0.8));
+        assert_eq!(back.samples.len(), 2);
+        let s = &back.samples[0];
+        assert_eq!((s.loop_mode, s.loop_start, s.loop_end), (LoopMode::PingPong, 10, 90));
+        assert_eq!((s.key_range, s.base_note, s.frames()), ((24, 71), 50, 100));
+        assert!((s.data[0] + 0.5).abs() < 1e-3, "24-bit audio survives");
+        assert_eq!(back.samples[1].channels, 2);
+        assert!(import_instrument_with_report(Cursor::new(b"nope".to_vec())).is_err());
+        // an archive without Instrument.xml is rejected rather than panicking
+        let mut z = Cursor::new(Vec::new());
+        {
+            let mut w = zip::ZipWriter::new(&mut z);
+            w.start_file("Song.xml", zip::write::SimpleFileOptions::default()).unwrap();
+            w.finish().unwrap();
+        }
+        assert!(import_instrument_with_report(Cursor::new(z.into_inner())).is_err());
     }
 }

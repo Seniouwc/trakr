@@ -28,7 +28,7 @@ pub fn load_song_report(path: &Path) -> Result<(Song, Vec<String>)> {
         Some("xrns") => {
             trakr_xrns::import_path_with_report(path).with_context(|| format!("importing {}", path.display()))
         }
-        Some("mod" | "s3m" | "xm") => {
+        Some("mod" | "s3m" | "xm" | "it") => {
             let bytes = std::fs::read(path).with_context(|| format!("reading {}", path.display()))?;
             trakr_mod::import_any(&bytes).with_context(|| format!("importing {}", path.display()))
         }
@@ -36,7 +36,10 @@ pub fn load_song_report(path: &Path) -> Result<(Song, Vec<String>)> {
             .map(|s| (s, Vec::new()))
             .with_context(|| format!("loading {}", path.display())),
         _ => {
-            anyhow::bail!("unknown file type: {} (expected .trkr, .xrns, .mod, .s3m or .xm)", path.display())
+            anyhow::bail!(
+                "unknown file type: {} (expected .trkr, .xrns, .mod, .s3m, .xm or .it)",
+                path.display()
+            )
         }
     }
 }

@@ -16,6 +16,8 @@ pub enum FileMode {
     ExportStems,
     ExportRange,
     ExportPattern,
+    SaveInstrument,
+    LoadInstrument,
 }
 
 pub struct FileDialog {
@@ -45,6 +47,7 @@ impl FileDialog {
             FileMode::ExportStems => "stems.wav".into(),
             FileMode::ExportRange => "range.wav".into(),
             FileMode::ExportPattern => "pattern.wav".into(),
+            FileMode::SaveInstrument => "instrument.trki".into(),
             _ => String::new(),
         };
         let mut d =
@@ -57,7 +60,7 @@ impl FileDialog {
         let ext = Path::new(file).extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase);
         let ext = ext.as_deref().unwrap_or("");
         match self.mode {
-            FileMode::Open | FileMode::SaveAs => matches!(ext, "trkr" | "xrns" | "mod" | "s3m" | "xm"),
+            FileMode::Open | FileMode::SaveAs => matches!(ext, "trkr" | "xrns" | "mod" | "s3m" | "xm" | "it"),
             FileMode::ImportSample | FileMode::AddSample => {
                 matches!(ext, "wav" | "flac" | "ogg" | "mp3" | "aif" | "aiff")
             }
@@ -67,6 +70,7 @@ impl FileDialog {
             | FileMode::ExportRange
             | FileMode::ExportPattern => ext == self.export_ext,
             FileMode::ExportXrns => ext == "xrns",
+            FileMode::SaveInstrument | FileMode::LoadInstrument => matches!(ext, "trki" | "xrni"),
         }
     }
 
@@ -139,7 +143,7 @@ impl GuiApp {
     fn file_dialog_ui(&mut self, ctx: &egui::Context) {
         let Some(mut d) = self.dialog.take() else { return };
         let title = match d.mode {
-            FileMode::Open => "Open song (.trkr, .xrns, .mod, .s3m, .xm)",
+            FileMode::Open => "Open song (.trkr, .xrns, .mod, .s3m, .xm, .it)",
             FileMode::SaveAs => "Save song as",
             FileMode::ImportSample => "Import sample as new instrument (wav, flac, ogg, mp3, aiff)",
             FileMode::AddSample => "Add sample file to the selected instrument",
@@ -149,6 +153,8 @@ impl GuiApp {
             FileMode::ExportStems => "Export each track as its own file (name is the file prefix)",
             FileMode::ExportRange => "Export the loop range (or whole song)",
             FileMode::ExportPattern => "Export the current pattern on its own",
+            FileMode::SaveInstrument => "Save the selected instrument (.trki, or .xrni to share)",
+            FileMode::LoadInstrument => "Load an instrument file (.trki or .xrni) as a new instrument",
         };
         let mut keep = true;
         let mut chosen: Option<PathBuf> = None;
@@ -223,7 +229,8 @@ impl GuiApp {
                     | FileMode::ExportXrns
                     | FileMode::ExportStems
                     | FileMode::ExportRange
-                    | FileMode::ExportPattern => "Save",
+                    | FileMode::ExportPattern
+                    | FileMode::SaveInstrument => "Save",
                     _ => "Open",
                 };
                 if ui.button(verb).clicked() && !d.name.is_empty() {
@@ -260,6 +267,18 @@ impl GuiApp {
                         }
                         self.sample_sel = None;
                         self.wave_view = None;
+                        keep = false;
+                    } else {
+                        d.error = "file does not exist".into();
+                    }
+                }
+                FileMode::SaveInstrument => {
+                    self.editor.instrument_save_file(&path);
+                    keep = false;
+                }
+                FileMode::LoadInstrument => {
+                    if path.is_file() {
+                        self.editor.instrument_load_file(&path);
                         keep = false;
                     } else {
                         d.error = "file does not exist".into();

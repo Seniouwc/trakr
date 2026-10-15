@@ -11,6 +11,7 @@
 //!   becomes `BPM = 6 * tempo / speed`.
 //! - Effects without an equivalent are skipped and counted in the warnings.
 
+pub mod it;
 pub mod s3m;
 pub mod xm;
 
@@ -255,9 +256,11 @@ pub fn import(bytes: &[u8]) -> Result<(Song, Vec<String>), ModError> {
     Ok((song, warnings))
 }
 
-/// Import a module in any supported format, chosen by its content (`.mod`, `.s3m` or `.xm`).
+/// Import a module in any supported format, chosen by its content (`.mod`, `.s3m`, `.xm` or `.it`).
 pub fn import_any(bytes: &[u8]) -> Result<(Song, Vec<String>), ModError> {
-    if bytes.len() > 0x30 && &bytes[0x2C..0x30] == b"SCRM" {
+    if bytes.starts_with(b"IMPM") {
+        it::import(bytes)
+    } else if bytes.len() > 0x30 && &bytes[0x2C..0x30] == b"SCRM" {
         s3m::import(bytes)
     } else if bytes.starts_with(b"Extended Module: ") {
         xm::import(bytes)

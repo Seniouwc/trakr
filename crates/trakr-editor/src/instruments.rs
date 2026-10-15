@@ -24,6 +24,112 @@ impl Editor {
         }
     }
 
+    /// Save the selected instrument, with its samples, as `.trki` (native) or `.xrni` (by the extension).
+    pub fn instrument_save_file(&mut self, path: &Path) -> bool {
+        let Some(inst) = self.current_instrument().cloned() else {
+            self.status = "no instrument selected".into();
+            return false;
+        };
+        let xrni = path.extension().is_some_and(|e| e.eq_ignore_ascii_case("xrni"));
+        let path = if path.extension().is_none() { path.with_extension("trki") } else { path.to_path_buf() };
+        let result = if xrni {
+            trakr_xrns::export_instrument_path(&inst, &path)
+                .map(|w| {
+                    w.first()
+                        .map(|f| format!(" ({} things skipped, first: {f})", w.len()))
+                        .unwrap_or_default()
+                })
+                .map_err(|e| e.to_string())
+        } else {
+            trakr_format::save_instrument_path(&inst, &path).map(|_| String::new()).map_err(|e| e.to_string())
+        };
+        match result {
+            Ok(note) => {
+                self.status = format!("saved instrument {}{note}", path.display());
+                true
+            }
+            Err(e) => {
+                self.status = format!("saving instrument failed: {e}");
+                false
+            }
+        }
+    }
+
+    /// Load a `.trki` or `.xrni` file as a new instrument and select it.
+    pub fn instrument_load_file(&mut self, path: &Path) -> bool {
+        let xrni = path.extension().is_some_and(|e| e.eq_ignore_ascii_case("xrni"));
+        let loaded = if xrni {
+            trakr_xrns::import_instrument_path(path).map_err(|e| e.to_string()).map(|(i, w)| {
+                let note =
+                    w.first().map(|f| format!(" ({} warnings, first: {f})", w.len())).unwrap_or_default();
+                (i, note)
+            })
+        } else {
+            trakr_format::load_instrument_path(path).map_err(|e| e.to_string()).map(|i| (i, String::new()))
+        };
+        match loaded {
+            Ok((inst, note)) => {
+                if self.song.instruments.len() >= 0xFE {
+                    self.status = "instrument limit reached".into();
+                    return false;
+                }
+                self.checkpoint();
+                let name = inst.name.clone();
+                self.song_mut().instruments.push(inst);
+                self.instrument = (self.song.instruments.len() - 1).min(0xFE) as u8;
+                self.sample = 0;
+                self.status = format!("loaded instrument {name}{note}");
+                self.sync();
+                true
+            }
+            Err(e) => {
+                self.status = format!("loading instrument failed: {e}");
+                false
+            }
+        }
+    }
+
+    /// `<config dir>/instruments`: the instrument bank.
+    pub fn instrument_bank_dir(&self) -> Option<std::path::PathBuf> {
+        self.config_dir.as_ref().map(|d| d.join("instruments"))
+    }
+
+    /// Instrument files in the bank (`.trki` and `.xrni`) as (display name, path), sorted by name.
+    pub fn instrument_bank(&self) -> Vec<(String, std::path::PathBuf)> {
+        let Some(dir) = self.instrument_bank_dir() else { return Vec::new() };
+        let Ok(rd) = std::fs::read_dir(dir) else { return Vec::new() };
+        let mut v: Vec<(String, std::path::PathBuf)> = rd
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| {
+                p.extension()
+                    .is_some_and(|e| e.eq_ignore_ascii_case("trki") || e.eq_ignore_ascii_case("xrni"))
+            })
+            .filter_map(|p| Some((p.file_stem()?.to_string_lossy().into_owned(), p)))
+            .collect();
+        v.sort();
+        v
+    }
+
+    /// Save the selected instrument into the bank under its own name.
+    pub fn instrument_save_to_bank(&mut self) -> bool {
+        let Some(dir) = self.instrument_bank_dir() else {
+            self.status = "no settings folder for the instrument bank".into();
+            return false;
+        };
+        let Some(name) = self.current_instrument().map(|i| i.name.clone()) else { return false };
+        let safe: String = name
+            .chars()
+            .map(|c| if c.is_alphanumeric() || c == '-' || c == '_' || c == ' ' { c } else { '_' })
+            .collect();
+        let safe = if safe.trim().is_empty() { "instrument".to_string() } else { safe.trim().to_string() };
+        if std::fs::create_dir_all(&dir).is_err() {
+            self.status = "cannot create the instrument bank folder".into();
+            return false;
+        }
+        self.instrument_save_file(&dir.join(format!("{safe}.trki")))
+    }
+
     pub fn instrument_add_empty(&mut self) {
         self.checkpoint();
         let n = self.song.instruments.len();

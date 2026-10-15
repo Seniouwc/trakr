@@ -68,7 +68,7 @@ fn main() -> Result<()> {
     for a in std::env::args().skip(1) {
         match a.as_str() {
             "-h" | "--help" => {
-                println!("usage: trakr [song.trkr | song.xrns | song.mod | song.s3m | song.xm]");
+                println!("usage: trakr [song.trkr | song.xrns | song.mod | song.s3m | song.xm | song.it]");
                 return Ok(());
             }
             _ if a.starts_with('-') => anyhow::bail!("unknown option: {a}"),

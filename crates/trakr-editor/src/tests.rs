@@ -2272,3 +2272,44 @@ fn osc_feedback_sends_state_and_only_changes() {
     e.tick();
     assert!(drain(&mut server).is_empty());
 }
+
+#[test]
+fn instruments_save_load_through_files_and_the_bank() {
+    let dir = std::env::temp_dir().join(format!("trakr-bank-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut e = Editor::new(Song::demo(), None, None);
+    e.set_config_dir(Some(dir.join("cfg")));
+    e.instrument = 0;
+    let name = e.song.instruments[0].name.clone();
+    let frames = e.song.instruments[0].samples[0].frames();
+    let before = e.song.instruments.len();
+    for ext in ["trki", "xrni"] {
+        let path = dir.join(format!("one.{ext}"));
+        assert!(e.instrument_save_file(&path), "{}", e.status);
+        assert!(e.instrument_load_file(&path), "{}", e.status);
+    }
+    assert_eq!(e.song.instruments.len(), before + 2);
+    let last = e.song.instruments.last().unwrap();
+    assert_eq!(last.name, name);
+    assert_eq!(e.instrument as usize, before + 1, "the loaded instrument is selected");
+    assert!((last.samples[0].frames() as i64 - frames as i64).abs() <= 1);
+    e.undo();
+    assert_eq!(e.song.instruments.len(), before + 1);
+    // the bank lives in the settings folder
+    assert!(e.instrument_bank().is_empty());
+    e.instrument = 0;
+    assert!(e.instrument_save_to_bank(), "{}", e.status);
+    let bank = e.instrument_bank();
+    assert_eq!(bank.len(), 1);
+    assert!(e.instrument_load_file(&bank[0].1));
+    // failures are explained and change nothing
+    let n = e.song.instruments.len();
+    assert!(!e.instrument_load_file(&dir.join("missing.trki")));
+    assert!(e.status.contains("failed"));
+    std::fs::write(dir.join("bad.xrni"), b"junk").unwrap();
+    assert!(!e.instrument_load_file(&dir.join("bad.xrni")));
+    assert_eq!(e.song.instruments.len(), n);
+    let mut none = Editor::new(Song::default(), None, None);
+    assert!(!none.instrument_save_to_bank());
+    let _ = std::fs::remove_dir_all(&dir);
+}
