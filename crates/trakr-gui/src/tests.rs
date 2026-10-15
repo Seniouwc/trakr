@@ -524,3 +524,30 @@ fn choosing_fonts_in_preferences_applies_and_draws() {
     }
     assert!(h.app.font_message.contains("cannot read"), "{}", h.app.font_message);
 }
+
+#[test]
+fn sample_process_rows_and_spectrum_draw_and_work() {
+    let mut h = Harness::new();
+    h.app.dock = Dock::Instrument;
+    h.app.sample_tab = SampleTab::Sample;
+    h.app.show_spectrum = true;
+    for _ in 0..3 {
+        h.frame(vec![]);
+    }
+    h.app.sample_sel = Some((100, 3000));
+    h.frame(vec![]);
+    let before = h.app.editor.current_sample().unwrap().frames();
+    let idx = h.app.editor.sample_index();
+    h.app.editor.edit_sample(idx, |s| s.time_stretch(2.0));
+    assert!(h.app.editor.current_sample().unwrap().frames() > before * 19 / 10);
+    h.app.editor.edit_sample(idx, |s| {
+        s.loop_mode = trakr_core::LoopMode::Forward;
+        s.loop_start = 3000;
+        s.loop_end = 9000;
+        assert!(s.loop_crossfade(1000));
+        s.beat_sync_lines = 8;
+        s.reduce_bit_depth(8, true);
+    });
+    h.app.editor.undo();
+    h.frame(vec![]);
+}

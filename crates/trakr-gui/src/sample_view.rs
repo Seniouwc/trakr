@@ -92,6 +92,7 @@ impl GuiApp {
             self.sample_list_row(ui);
             self.sample_props_rows(ui, &info);
             self.sample_edit_rows(ui, &info);
+            self.sample_process_rows(ui, &info);
             self.waveform(ui, &info);
         });
     }
@@ -473,6 +474,122 @@ impl GuiApp {
                 self.wave_view = None;
             }
         });
+    }
+
+    fn sample_process_rows(&mut self, ui: &mut egui::Ui, i: &Info) {
+        let idx = self.editor.sample_index();
+        ui.horizontal_wrapped(|ui| {
+            ui.label("Process");
+            let rate = i.rate.max(1) as f32;
+            ui.add(egui::DragValue::new(&mut self.xfade_ms).range(1.0..=2000.0).speed(1.0).suffix(" ms"));
+            if ui
+                .button("Loop crossfade")
+                .on_hover_text(
+                    "Blend the end of the loop into the audio before its start so it wraps without a click",
+                )
+                .clicked()
+            {
+                let n = (self.xfade_ms / 1000.0 * rate) as usize;
+                let mut ok = true;
+                self.editor.edit_sample(idx, |s| ok = s.loop_crossfade(n));
+                if !ok {
+                    self.editor.status =
+                        "loop crossfade needs a loop with some audio before its start".into();
+                }
+            }
+            ui.separator();
+            ui.add(egui::DragValue::new(&mut self.stretch).range(0.25..=4.0).speed(0.01).prefix("x"));
+            if ui
+                .button("Time-stretch")
+                .on_hover_text("Longer (above 1) or shorter without changing the pitch")
+                .clicked()
+            {
+                let f = self.stretch as f64;
+                self.editor.edit_sample(idx, |s| s.time_stretch(f));
+                self.sample_sel = None;
+            }
+            ui.separator();
+            ui.add(egui::Slider::new(&mut self.slice_sens, 0.0..=1.0).text("sensitivity"));
+            if ui
+                .button("Slice at transients")
+                .on_hover_text("Detect drum hits and notes and place markers")
+                .clicked()
+            {
+                let sens = self.slice_sens;
+                let mut n = 0;
+                self.editor.edit_sample(idx, |s| n = s.auto_slice(sens));
+                self.editor.status = format!("{n} transient marker(s) placed");
+            }
+        });
+        ui.horizontal_wrapped(|ui| {
+            ui.label("Finish");
+            ui.add(egui::DragValue::new(&mut self.dither_bits).range(2..=24).suffix(" bit"));
+            if ui.button("Reduce with dither").on_hover_text("Round to this bit depth with shaped dither").clicked() {
+                let bits = self.dither_bits;
+                self.editor.edit_sample(idx, |s| s.reduce_bit_depth(bits, true));
+            }
+            ui.separator();
+            let mut lines = self.editor.current_sample().map_or(0, |s| s.beat_sync_lines);
+            ui.label("Beat sync");
+            if ui
+                .add(egui::DragValue::new(&mut lines).range(0..=512).suffix(" lines"))
+                .on_hover_text("0 = off. Otherwise the sample is played so it lasts exactly this many pattern lines at the song tempo (pitch follows the speed)")
+                .changed()
+            {
+                self.editor.edit_sample_coalesced("beat_sync", idx, |s| s.beat_sync_lines = lines);
+            }
+            ui.separator();
+            ui.checkbox(&mut self.show_spectrum, "Spectrum");
+        });
+        if self.show_spectrum {
+            self.spectrum_view(ui);
+        }
+    }
+
+    /// Frequency spectrum of the selection (or the start of the sample), log frequency axis.
+    fn spectrum_view(&mut self, ui: &mut egui::Ui) {
+        let Some(s) = self.editor.current_sample() else { return };
+        let ch = s.channels.max(1) as usize;
+        let (a, b) = self.sample_sel.filter(|(a, b)| b > a).unwrap_or((0, s.frames()));
+        let n = (b - a).min(8192);
+        let mono: Vec<f32> =
+            (a..a + n).map(|f| (0..ch).map(|c| s.data[f * ch + c]).sum::<f32>() / ch as f32).collect();
+        let size = 4096.min(mono.len().max(2).next_power_of_two());
+        let mags = trakr_core::fft::magnitude_spectrum(&mono, size);
+        let rate = s.sample_rate as f32;
+        let (resp, painter) = ui.allocate_painter(Vec2::new(ui.available_width(), 110.0), Sense::hover());
+        let r = resp.rect;
+        painter.rect_filled(r, 2.0, Color32::from_gray(14));
+        let (fmin, fmax) = (20.0f32, (rate / 2.0).max(40.0));
+        let x_of = |f: f32| r.left() + (f / fmin).ln() / (fmax / fmin).ln() * r.width();
+        for g in [100.0, 1000.0, 10_000.0] {
+            if g < fmax {
+                let x = x_of(g);
+                painter.line_segment(
+                    [Pos2::new(x, r.top()), Pos2::new(x, r.bottom())],
+                    Stroke::new(1.0_f32, Color32::from_gray(40)),
+                );
+                painter.text(
+                    Pos2::new(x + 2.0, r.bottom() - 12.0),
+                    egui::Align2::LEFT_TOP,
+                    format!("{g} Hz"),
+                    egui::FontId::monospace(9.0),
+                    Color32::from_gray(110),
+                );
+            }
+        }
+        let y_of = |m: f32| {
+            let db = 20.0 * m.max(1e-6).log10(); // -120..0
+            r.bottom() - ((db + 100.0) / 100.0).clamp(0.0, 1.0) * (r.height() - 4.0)
+        };
+        let mut pts = Vec::new();
+        for (k, m) in mags.iter().enumerate().skip(1) {
+            let f = k as f32 * rate / size as f32;
+            if f >= fmin {
+                pts.push(Pos2::new(x_of(f), y_of(*m)));
+            }
+        }
+        painter.add(egui::Shape::line(pts, Stroke::new(1.0_f32, Color32::from_rgb(120, 180, 255))));
     }
 
     /// Zoomable waveform. Drag selects, Shift+click adds a slice marker, wheel zooms, Shift+wheel or

@@ -6,11 +6,13 @@ pub mod automation;
 pub mod device;
 pub mod effects;
 pub mod envelope;
+pub mod fft;
 pub mod instrument;
 pub mod note;
 pub mod pattern;
 pub mod phrase;
 pub mod plugin;
+pub mod sample_fx;
 pub mod song;
 pub mod track;
 

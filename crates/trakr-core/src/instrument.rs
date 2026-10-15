@@ -34,6 +34,10 @@ pub struct Sample {
     /// Slice marker positions in frames, ascending.
     #[serde(default)]
     pub slices: Vec<usize>,
+    /// 0 = off. Otherwise the sample is played so that it lasts exactly this many pattern lines at the
+    /// current tempo (the pitch follows the speed), keeping loops and breaks in time with the song.
+    #[serde(default)]
+    pub beat_sync_lines: u32,
     /// Inclusive velocity range (0..=127) this sample responds to.
     #[serde(default = "full_velocity")]
     pub vel_range: (u8, u8),
@@ -56,6 +60,7 @@ impl Sample {
             loop_end: frames,
             key_range: (0, 119),
             slices: Vec::new(),
+            beat_sync_lines: 0,
             vel_range: (0, 127),
         }
     }
@@ -65,6 +70,10 @@ impl Sample {
     }
 
     /// Replace the audio data and keep loop points and slices inside the new length.
+    pub(crate) fn set_data_public(&mut self, data: Vec<f32>) {
+        self.set_data(data);
+    }
+
     fn set_data(&mut self, data: Vec<f32>) {
         let frames = data.len() / self.channels.max(1) as usize;
         self.data = Arc::new(data);

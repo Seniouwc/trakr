@@ -476,7 +476,9 @@ impl Engine {
             if self.midi_on && self.midi_clock && self.playing {
                 chunk = chunk.min((self.midi_clock_due.ceil() as usize).max(1));
             }
+            let line_frames = Song::frames_per_line(self.bpm, self.lpb, self.sample_rate);
             for v in &mut self.voices {
+                v.set_line_frames(line_frames);
                 let t = v.track.min(MAX_TRACKS - 1);
                 let base = t * BLOCK * 2;
                 if !self.track_used[t] {
@@ -1872,6 +1874,20 @@ mod sequencer_tests {
     }
 
     #[test]
+    fn beat_sync_stretches_the_sample_over_the_given_lines() {
+        let len = |lines: u32, bpm: f32| {
+            let mut song = song_with(vec![1.0; 1000], LoopMode::Off);
+            song.bpm = bpm;
+            song.instruments[0].samples[0].beat_sync_lines = lines;
+            put(&mut song, 0, |l| note(&mut l.notes[0]));
+            render(song, 8000).iter().filter(|s| s.abs() > 1e-6).count()
+        };
+        assert!((len(0, 60.0) as i32 - 1000).abs() < 20, "off: native length");
+        assert!((len(2, 60.0) as i32 - 2000).abs() < 40, "two lines of 1000 frames: {}", len(2, 60.0));
+        assert!((len(2, 120.0) as i32 - 1000).abs() < 40, "twice the tempo, half the length");
+    }
+
+    #[test]
     fn delay_column_offsets_the_note() {
         let mut song = song_with(vec![1.0; 100], LoopMode::Off);
         put(&mut song, 0, |l| {
@@ -2766,6 +2782,7 @@ mod device_tests {
                 s.fine_tune = rng.below(256) as u8 as i8;
                 s.panning = rng.below(300) as f32 / 100.0 - 1.5;
                 s.volume = rng.below(500) as f32 / 100.0;
+                s.beat_sync_lines = if rng.below(3) == 0 { rng.below(40) } else { 0 };
                 inst.samples.push(s);
             }
             if rng.below(2) == 0 {

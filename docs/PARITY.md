@@ -40,8 +40,8 @@ Compiled from memory of Renoise 3.x behavior. Verify each item against the offic
 - [x] Import WAV, AIFF, FLAC, OGG, MP3 (symphonia); RX2/REX not required initially
 - [~] Reverse and ping-pong loops work; loop release, one-shot, sustain loop do not
 - [~] Interpolation modes: linear, cubic (Hermite, default) and 8-point sinc per instrument; no "none" mode, no oversampling, sinc does not low-pass when pitching up
-- [~] Sample editor (GUI): zoomable waveform, selection, cut/copy/paste/delete/crop, silence, fades, gain, normalize, invert, DC removal, reverse, mono/stereo, tape pitch shift, resample, WAV export (16/24/32f). Missing: loop crossfade, dither, spectrum view, draw-in-waveform editing
-- [~] Slice markers (manual, shift-click, even split) and split-to-keys work; beat-sync, time-stretch, transient detection do not
+- [~] Sample editor (GUI): zoomable waveform, selection, cut/copy/paste/delete/crop, silence, fades, gain, normalize, invert, DC removal, reverse, mono/stereo, tape pitch shift, resample, WAV export (16/24/32f). Also loop crossfade, time-stretch (WSOLA, pitch kept), slice at detected transients, bit-depth reduction with shaped dither, a spectrum view and beat sync (the sample is played so it lasts N lines at the song tempo; pitch follows speed). Missing: draw-in-waveform editing, formant-preserving stretch
+- [x] Slice markers (manual, shift-click, even split, transient detection) and split-to-keys work
 - [~] Key zones and velocity zones (layers), per-sample volume/pan/tune, and per-instrument NNA (cut, note-off, continue) work; mute-groups do not
 - [~] Instrument volume, pan, pitch and cutoff envelopes (points, sustain hold, GUI editor) work. Per-note LFOs (up to four; volume, pan, pitch, cutoff; five shapes, fade-in), key tracking and velocity-to-cutoff work (LFOs tab). Resonance/drive modulation, stepper, random, envelope loops and fade-out do not
 - [~] Instrument filter (LP/HP/BP/Notch, cutoff, resonance, cutoff envelope) works; more filter types, drive, and a per-instrument FX chain do not

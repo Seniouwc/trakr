@@ -71,6 +71,9 @@ pub struct Voice {
     trem_gain: f32,
     autopan: (f32, f32),
     autopan_phase: f32,
+    /// Beat sync: the sample spans this many lines (0 = off) and a line lasts `line_frames` engine frames.
+    sync_lines: u32,
+    line_frames: f64,
     lfos: [InstLfo; MAX_INST_LFOS],
     n_lfos: usize,
     lfo_phase: [f32; MAX_INST_LFOS],
@@ -176,6 +179,8 @@ impl Voice {
             trem_gain: 1.0,
             autopan: (0.0, 0.0),
             autopan_phase: 0.0,
+            sync_lines: s.beat_sync_lines,
+            line_frames: 0.0,
             lfos: {
                 let mut a = [InstLfo::default(); MAX_INST_LFOS];
                 for (d, s) in a.iter_mut().zip(&inst.lfos) {
@@ -222,6 +227,11 @@ impl Voice {
             interp: inst.interpolation,
             fresh_fx: false,
         }
+    }
+
+    /// Engine frames per pattern line right now (for beat-synced samples).
+    pub fn set_line_frames(&mut self, frames: f64) {
+        self.line_frames = frames;
     }
 
     pub fn release(&mut self) {
@@ -412,7 +422,13 @@ impl Voice {
             let t = self.pitch_env.effective_time(age, rel);
             semis += (self.pitch_env.value_at(t) - 0.5) * 24.0;
         }
-        self.step_target = self.sample_rate * 2f64.powf(semis as f64 / 12.0) / rate as f64;
+        let native = if self.sync_lines > 0 && self.line_frames > 0.0 {
+            // stretch the whole sample over `sync_lines` lines of the current tempo
+            self.frames as f64 / (self.sync_lines as f64 * self.line_frames)
+        } else {
+            self.sample_rate / rate as f64
+        };
+        self.step_target = native * 2f64.powf(semis as f64 / 12.0);
         let mut gain = self.col_vol * self.dyn_gain * self.trem_gain * self.base_gain * lfo_vol;
         if self.vol_env.enabled {
             let t = self.vol_env.effective_time(age, rel);
